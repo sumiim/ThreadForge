@@ -8,7 +8,7 @@ ThreadForge 是一个面向本地代码仓库的 Web Coding Agent 工作台。�
 
 ```text
 ThreadForge
-├── web-console/          React Web 工作台（规划中）
+├── client/               React Web 工作台（规划中）
 ├── api-server/           FastAPI、REST 与 SSE 服务（规划中）
 ├── agent-orchestrator/   LangGraph 编排、意图路由与多角色协作
 ├── sandbox-workers/      Docker 工具执行隔离（后续版本）
@@ -36,7 +36,7 @@ ThreadForge 计划覆盖以下能力：
 | --- | --- | --- |
 | Pico Legacy Runtime | 已迁移 | AgentLoop、Prompt、Context、Memory、Session、Checkpoint、工具、安全策略、CLI、评测和测试 |
 | Agent Orchestrator | 已迁移 | LangGraph wrapper、意图路由、Research/Execute/Review 工作流和 backend adapter |
-| Web Console | 规划中 | V1 使用 React、Vite、TypeScript、Ant Design 和 TailwindCSS |
+| Web Console | 规划中 | V1 使用 React 19、Vite、TypeScript、Ant Design v6 和 TailwindCSS v4（位于 client/） |
 | API Server | 规划中 | V1 使用 FastAPI、REST 和 SSE |
 | Sandbox Workers | 后续版本 | 每个任务或 Worker 的独立 Docker 执行环境 |
 | Skills Registry | 后续版本 | Skill Manifest、版本、评测、发布和回滚 |

@@ -8,7 +8,7 @@ V1 优先复用已经通过测试的 Pico Legacy Runtime，不在第一版同时
 
 ## 必须实现
 
-- React + Vite + TypeScript Web Console。
+- React + Vite + TypeScript Web Console（client/）。
 - Ant Design 控件与 TailwindCSS 布局。
 - FastAPI REST API。
 - SSE 任务生命周期和工具事件。

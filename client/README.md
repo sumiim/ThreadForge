@@ -1,6 +1,6 @@
-# Web Console
+# Client — ThreadForge Web Console
 
-ThreadForge 的 React Web 工作台。
+ThreadForge 的 React Web 工作台。Agent 协作约定见 [AGENTS.md](AGENTS.md)。
 
 ## V1 范围
 
@@ -15,9 +15,9 @@ ThreadForge 的 React Web 工作台。
 
 - pnpm
 - Vite
-- React
+- React 19
 - TypeScript
-- Ant Design
-- TailwindCSS
+- Ant Design v6
+- TailwindCSS v4
 
 该模块尚未实现。V1 不包含完整 Plan 树、Agent 树、Skills 管理或桌面端打包。
