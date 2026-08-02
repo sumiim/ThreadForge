@@ -1,0 +1,19 @@
+# 桌面打包配置(electron-builder)。当前仅 Windows NSIS 目标;macOS/Linux 待有需要时补充
+appId: com.threadforge.console
+productName: ThreadForge
+directories:
+  # 输出到仓库根(相对本文件所在项目目录)。builder 解压后需重命名目录,
+  # 而 client/ 常被本地开发进程(如 vite dev 的 chokidar)持有目录句柄,重命名会被拒
+  output: ../release-desktop
+files:
+  - dist/**
+  - dist-electron/**
+  - package.json
+win:
+  target:
+    - nsis
+  artifactName: ThreadForge-${version}-setup.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
