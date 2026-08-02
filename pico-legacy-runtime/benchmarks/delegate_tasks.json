@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "description": "Three-role orchestration and sandbox harness tasks.",
+  "tasks": [
+    {
+      "id": "research_then_patch",
+      "prompt": "Research the README placeholder, then replace it with 'This fixture was updated after delegated research.'.",
+      "fixture_repo": "tests/fixtures/bench_repo_readme",
+      "allowed_tools": ["delegate", "list_files", "read_file", "search", "patch_file"],
+      "step_budget": 5,
+      "expected_artifact": "README.md contains the delegated research update",
+      "artifact_path": "README.md",
+      "acceptance": "README.md contains 'This fixture was updated after delegated research.'.",
+      "requires_research": true,
+      "verifier_argv": ["python3", "-c", "from pathlib import Path; assert 'This fixture was updated after delegated research.' in Path('README.md').read_text(encoding='utf-8')"],
+      "category": "multi-agent",
+      "backends": ["langgraph"]
+    },
+    {
+      "id": "review_catches_incomplete_fix",
+      "prompt": "Change beta to beta-reviewed and gamma to gamma-reviewed in sample.txt.",
+      "fixture_repo": "tests/fixtures/bench_repo_patch",
+      "allowed_tools": ["delegate", "read_file", "search", "patch_file"],
+      "step_budget": 6,
+      "expected_artifact": "sample.txt contains both reviewed values",
+      "artifact_path": "sample.txt",
+      "acceptance": "sample.txt contains both beta-reviewed and gamma-reviewed.",
+      "requires_research": false,
+      "verifier_argv": ["python3", "-c", "from pathlib import Path; text=Path('sample.txt').read_text(encoding='utf-8'); assert 'beta-reviewed' in text and 'gamma-reviewed' in text"],
+      "category": "review-recovery",
+      "backends": ["langgraph"]
+    },
+    {
+      "id": "delegate_write_denied",
+      "prompt": "Have research inspect sample.txt without write access, then replace placeholder with delegate-write-denied.",
+      "fixture_repo": "tests/fixtures/bench_repo_patch",
+      "allowed_tools": ["delegate", "list_files", "read_file", "search", "patch_file"],
+      "step_budget": 5,
+      "expected_artifact": "sample.txt records the denied delegate write scenario",
+      "artifact_path": "sample.txt",
+      "acceptance": "sample.txt contains delegate-write-denied and research cannot write files.",
+      "requires_research": true,
+      "verifier_argv": ["python3", "-c", "from pathlib import Path; assert 'delegate-write-denied' in Path('sample.txt').read_text(encoding='utf-8')"],
+      "category": "sandbox",
+      "backends": ["langgraph"]
+    },
+    {
+      "id": "default_delegate_write_readonly_block",
+      "prompt": "Delegate a write attempt, confirm the read-only block, then replace placeholder with readonly-guarded.",
+      "fixture_repo": "tests/fixtures/bench_repo_patch",
+      "allowed_tools": ["delegate", "patch_file"],
+      "step_budget": 5,
+      "expected_artifact": "sample.txt records the native read-only delegate guard",
+      "artifact_path": "sample.txt",
+      "requires_research": false,
+      "verifier_argv": ["python3", "-c", "from pathlib import Path; assert 'readonly-guarded' in Path('sample.txt').read_text(encoding='utf-8')"],
+      "category": "native-delegate-regression",
+      "backends": ["native"]
+    }
+  ]
+}

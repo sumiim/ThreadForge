@@ -1,0 +1,8 @@
+{
+  "timeout": 10,
+  "retries": 1,
+  "log_level": "info",
+  "audit": false,
+  "cache_ttl": 30,
+  "batch_size": 10
+}

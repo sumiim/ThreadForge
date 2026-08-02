@@ -1,0 +1,6 @@
+enabled = false
+mode = "legacy"
+workers = 1
+region = "local"
+compression = false
+format = "text"
