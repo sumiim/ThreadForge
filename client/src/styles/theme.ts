@@ -1,3 +1,4 @@
+import { theme as antdTheme } from 'antd'
 import type { ThemeConfig } from 'antd'
 
 // 设计基线（design-taste-frontend 方法）：白色调对话工作台
@@ -40,6 +41,46 @@ export const themeConfig: ThemeConfig = {
       // borderless 输入框保持白底、无内阴影，避免与容器 focus ring 双重高亮
       hoverBg: '#ffffff',
       activeBg: '#ffffff',
+      activeShadow: 'none',
+    },
+  },
+}
+
+// 暗色主题:darkAlgorithm 派生 + 品牌暖灰覆盖。
+// 关键联动:colorBgContainer == --tf-white(dark)、siderBg == --tf-stone-100(dark)、
+// colorBorder == --tf-stone-200(dark),保证 antd 组件与 Tailwind 区域视觉一致。
+export const darkThemeConfig: ThemeConfig = {
+  algorithm: antdTheme.darkAlgorithm,
+  token: {
+    colorPrimary: '#3b82f6', // 暗底上比亮色提亮一档,维持 AA 对比
+    colorInfo: '#3b82f6',
+    colorSuccess: '#22c55e',
+    colorWarning: '#f59e0b',
+    colorError: '#ef4444',
+    colorBgLayout: '#171513',
+    colorBgContainer: '#1c1a18',
+    colorText: '#e7e5e4',
+    colorTextSecondary: '#a8a29e',
+    colorTextPlaceholder: '#78716c',
+    colorBorder: '#2e2b28',
+    colorBorderSecondary: '#262422',
+    borderRadius: 10,
+    fontSize: 14,
+    fontFamily: "'Geist Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+  },
+  components: {
+    Layout: {
+      headerBg: '#1c1a18',
+      siderBg: '#242220',
+      lightSiderBg: '#242220',
+    },
+    Button: {
+      controlHeight: 34,
+      primaryColor: '#ffffff',
+    },
+    Input: {
+      hoverBg: '#1c1a18',
+      activeBg: '#1c1a18',
       activeShadow: 'none',
     },
   },

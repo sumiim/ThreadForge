@@ -32,3 +32,8 @@ tmp/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Electron desktop shell
+dist-electron/
+release/
+/release-desktop/

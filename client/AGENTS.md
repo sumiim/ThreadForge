@@ -85,6 +85,7 @@ Electron 桥接(`electron/preload.ts`)经 `contextBridge` 暴露 `window.threadf
 V1 页面骨架已实现（白色调对话工作台）：
 
 - Session 侧边栏（列表 / 新建 / workspace / model 提示）与对话区（消息流、工具调用卡片、危险操作审批、停止按钮、空态欢迎页）。
+- 亮/暗主题切换（侧边栏底部设置右侧）：`useTheme`（localStorage `threadforge-theme` 持久化，缺省跟随系统）。antd 走 `darkThemeConfig`（darkAlgorithm），Tailwind 色板经 `@theme inline` 映射为 `--tf-*` CSS 变量、`.dark` 下覆盖 —— **组件新增颜色必须从现有类名选**，自定义色值需同步进变量色板。
 - 运行模拟：`useSessions` 内置 mock 序列（发送 → 工具调用 → 审批 → 回答），后端未实现。
 - 数据契约在 `src/api/types.ts`（与 api-server SSE 事件对齐）；`src/api/mock.ts` 为占位数据，接后端后移除。
 

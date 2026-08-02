@@ -3,15 +3,18 @@ import type { ReactNode } from 'react'
 import { Button, Input } from 'antd'
 import {
   ApiOutlined,
+  MoonOutlined,
   PlusOutlined,
   RightOutlined,
   SearchOutlined,
   SettingOutlined,
+  SunOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons'
 import Logo from '../../components/Logo'
 import { WORKSPACE_OPTIONS } from '../../api/mock'
 import type { Session } from '../../api/types'
+import type { ThemeMode } from '../../hooks/useTheme'
 import NewSessionModal from './NewSessionModal'
 
 export type PanelView = 'chat' | 'skills' | 'mcp'
@@ -24,6 +27,8 @@ interface SessionPanelProps {
   onCreate: (workspace: string) => void
   onNavigate: (view: PanelView) => void
   onOpenSettings: () => void
+  themeMode: ThemeMode
+  onToggleTheme: () => void
 }
 
 // 侧边栏：搜索 + 新建会话 + Skills/MCP 导航（点击切换主区域子页面）
@@ -35,6 +40,8 @@ export default function SessionPanel({
   onCreate,
   onNavigate,
   onOpenSettings,
+  themeMode,
+  onToggleTheme,
 }: SessionPanelProps) {
   const [query, setQuery] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
@@ -144,16 +151,27 @@ export default function SessionPanel({
         )}
       </div>
 
-      {/* 底部：设置入口（页面左下角） */}
+      {/* 底部：设置入口 + 主题切换（设置右侧） */}
       <div className="border-t border-stone-200 p-2">
-        <button
-          type="button"
-          onClick={onOpenSettings}
-          className="flex h-10 w-full items-center gap-2 rounded-xl px-3 text-sm text-stone-600 transition-all hover:bg-white hover:text-stone-900"
-        >
-          <SettingOutlined className="text-stone-500" />
-          设置
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-xl px-3 text-sm text-stone-600 transition-all hover:bg-white hover:text-stone-900"
+          >
+            <SettingOutlined className="text-stone-500" />
+            设置
+          </button>
+          <button
+            type="button"
+            onClick={onToggleTheme}
+            title={themeMode === 'dark' ? '切换到白天模式' : '切换到黑夜模式'}
+            aria-label={themeMode === 'dark' ? '切换到白天模式' : '切换到黑夜模式'}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-stone-500 transition-all hover:bg-white hover:text-stone-900"
+          >
+            {themeMode === 'dark' ? <SunOutlined /> : <MoonOutlined />}
+          </button>
+        </div>
       </div>
 
       {/* 新建会话：选择工作区（对应 GET /api/v1/workspaces + 路径边界） */}

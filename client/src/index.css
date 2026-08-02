@@ -5,6 +5,72 @@
 @import '@fontsource/geist-mono/400.css';
 @import '@fontsource/geist-mono/500.css';
 
+/* 主题色板:组件只写 Tailwind 类,颜色值全部走 CSS 变量。
+   亮色在 :root,暗色在 .dark 覆盖 —— 切换主题时组件零改动。
+   @theme inline:值直接内联为 var(--tf-*),不经过主题变量转发。 */
+@theme inline {
+  --color-stone-50: var(--tf-stone-50);
+  --color-stone-100: var(--tf-stone-100);
+  --color-stone-200: var(--tf-stone-200);
+  --color-stone-300: var(--tf-stone-300);
+  --color-stone-400: var(--tf-stone-400);
+  --color-stone-500: var(--tf-stone-500);
+  --color-stone-600: var(--tf-stone-600);
+  --color-stone-700: var(--tf-stone-700);
+  --color-stone-800: var(--tf-stone-800);
+  --color-stone-900: var(--tf-stone-900);
+  --color-white: var(--tf-white);
+  --color-blue-50: var(--tf-blue-50);
+  --color-blue-600: var(--tf-blue-600);
+  --color-blue-700: var(--tf-blue-700);
+  --color-amber-600: var(--tf-amber-600);
+  --color-amber-700: var(--tf-amber-700);
+  --color-red-600: var(--tf-red-600);
+}
+
+:root {
+  /* 亮色 = Tailwind 默认 stone 系(暖灰) */
+  --tf-stone-50: #fafaf9;
+  --tf-stone-100: #f5f5f4;
+  --tf-stone-200: #e7e5e4;
+  --tf-stone-300: #d6d3d1;
+  --tf-stone-400: #a8a29e;
+  --tf-stone-500: #78716c;
+  --tf-stone-600: #57534e;
+  --tf-stone-700: #44403c;
+  --tf-stone-800: #292524;
+  --tf-stone-900: #1c1917;
+  --tf-white: #ffffff;
+  --tf-blue-50: #eff6ff;
+  --tf-blue-600: #2563eb;
+  --tf-blue-700: #1d4ed8;
+  --tf-amber-600: #d97706;
+  --tf-amber-700: #b45309;
+  --tf-red-600: #dc2626;
+}
+
+.dark {
+  /* 暗色:暖灰反转(文字上浮、表面下沉),与 theme.ts darkThemeConfig 对齐 */
+  color-scheme: dark;
+  --tf-stone-50: #201e1c;
+  --tf-stone-100: #242220; /* = antd siderBg */
+  --tf-stone-200: #2e2b28; /* = antd colorBorder */
+  --tf-stone-300: #3b3834;
+  --tf-stone-400: #85807a;
+  --tf-stone-500: #a09a94;
+  --tf-stone-600: #b8b2ac;
+  --tf-stone-700: #d0cbc6;
+  --tf-stone-800: #e4e0dc;
+  --tf-stone-900: #f2efec;
+  --tf-white: #1c1a18; /* = antd colorBgContainer */
+  --tf-blue-50: rgba(59, 130, 246, 0.12); /* 强调底改半透明,任意暗底上都协调 */
+  --tf-blue-600: #60a5fa;
+  --tf-blue-700: #93c5fd;
+  --tf-amber-600: #fbbf24;
+  --tf-amber-700: #f59e0b;
+  --tf-red-600: #f87171;
+}
+
 html,
 body,
 #root {
@@ -111,6 +177,15 @@ body {
     @apply my-3 w-full border-collapse;
   }
 
+  /* 暗色特例:代码块不随 stone-900 反转(浅底深字突兀),固定为深色块 */
+  .dark .md-body pre {
+    background-color: #0f0e0d;
+  }
+
+  .dark .md-body pre code {
+    color: #e7e5e4;
+  }
+
   .md-body th {
     @apply border border-stone-200 bg-stone-50 px-2.5 py-1.5 text-left font-medium text-stone-700;
   }
@@ -137,4 +212,12 @@ body {
 
 *::-webkit-scrollbar-track {
   background: transparent;
+}
+
+.dark *::-webkit-scrollbar-thumb {
+  background: #3b3834;
+}
+
+.dark *::-webkit-scrollbar-thumb:hover {
+  background: #57534e;
 }
