@@ -5,10 +5,11 @@ import zhCN from 'antd/locale/zh_CN'
 import 'antd/dist/reset.css'
 import './index.css'
 import App from './App'
+import { themeConfig } from './styles/theme'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <ConfigProvider locale={zhCN}>
+    <ConfigProvider locale={zhCN} theme={themeConfig}>
       <App />
     </ConfigProvider>
   </StrictMode>,

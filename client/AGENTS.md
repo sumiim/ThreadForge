@@ -28,6 +28,7 @@ V1 不包含完整 Plan 树、Agent 树、Skills 管理或桌面端打包。
 - **Tailwind 负责布局、间距、排版等工具类**。
 - 主题定制通过 antd `ConfigProvider` 的 token 完成；**不要**用 CSS 覆盖 antd 内部 DOM 类名（v6 语义化 DOM 后内部结构可变，v7 会移除旧 API）。
 - Tailwind v4 使用 `@import "tailwindcss"` 引入，与 antd 的 CSS-in-JS 共存，避免样式优先级冲突。
+- **形状系统（全页统一，新增组件遵循）**：控件 10px（antd token，按钮/输入/Select）> 卡片/列表项 12px（`rounded-xl`）> 容器 16px（`rounded-2xl`，Composer/气泡/页面卡片）> 微件全圆（状态点/色条/徽标）。antd 组件圆角走 token，勿单独写死。
 
 ## 常用命令
 
@@ -68,4 +69,10 @@ src/
 
 ## 当前状态
 
-脚手架已初始化：Vite 8 + React 19.2 + antd 6.5 + Tailwind 4.3，`src/` 骨架（api / components / features / hooks / pages / styles）与 Vite 代理已就位，typecheck / lint / build 通过。当前仅有占位 App，尚未实现 V1 页面。下一步：实现 Session 列表与新建会话、任务输入与 SSE 事件流。
+V1 页面骨架已实现（白色调对话工作台）：
+
+- Session 侧边栏（列表 / 新建 / workspace / model 提示）与对话区（消息流、工具调用卡片、危险操作审批、停止按钮、空态欢迎页）。
+- 运行模拟：`useSessions` 内置 mock 序列（发送 → 工具调用 → 审批 → 回答），后端未实现。
+- 数据契约在 `src/api/types.ts`（与 api-server SSE 事件对齐）；`src/api/mock.ts` 为占位数据，接后端后移除。
+
+下一步：接入 api-server 的 REST / SSE（替换 `useSessions` 中的 setTimeout 模拟序列）。
