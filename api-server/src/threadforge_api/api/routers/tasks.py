@@ -1,0 +1,139 @@
+"""Task REST + SSE routes."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+
+from ...application.task_service import TaskService
+from ...infrastructure.event_broker import CLOSED
+from ...infrastructure.id_validators import validate_approval_id, validate_task_id
+from ..dependencies import get_container, get_settings, get_task_service
+from ..models import ApprovalDecisionRequest, CreateTaskRequest, TaskQueuedResponse
+
+router = APIRouter()
+
+_TERMINAL_STATUSES = {"completed", "cancelled", "failed"}
+
+
+@router.post("/api/v1/tasks", status_code=202, response_model=TaskQueuedResponse)
+def create_task(
+    body: CreateTaskRequest,
+    settings=Depends(get_settings),
+    task_service: TaskService = Depends(get_task_service),
+) -> TaskQueuedResponse:
+    max_steps = body.max_steps if body.max_steps is not None else settings.max_steps
+    task = task_service.create_task(body.session_id, body.input, max_steps)
+    return TaskQueuedResponse(
+        task_id=task.task_id,
+        run_id=task.run_id,
+        session_id=task.session_id,
+        status=task.status.value,
+        events_url=f"/api/v1/tasks/{task.task_id}/events",
+    )
+
+
+@router.get("/api/v1/tasks/{task_id}")
+def get_task(task_id: str, task_service: TaskService = Depends(get_task_service)) -> dict:
+    validate_task_id(task_id)
+    return task_service.get_task(task_id)
+
+
+@router.post("/api/v1/tasks/{task_id}/cancel")
+def cancel_task(task_id: str, task_service: TaskService = Depends(get_task_service)) -> JSONResponse:
+    validate_task_id(task_id)
+    snapshot = task_service.cancel_task(task_id)
+    status_code = 200 if snapshot["status"] in _TERMINAL_STATUSES else 202
+    return JSONResponse(status_code=status_code, content=snapshot)
+
+
+@router.post("/api/v1/tasks/{task_id}/approvals/{approval_id}")
+def resolve_approval(
+    task_id: str,
+    approval_id: str,
+    body: ApprovalDecisionRequest,
+    task_service: TaskService = Depends(get_task_service),
+) -> dict:
+    validate_task_id(task_id)
+    validate_approval_id(approval_id)
+    return task_service.resolve_approval(task_id, approval_id, body.decision)
+
+
+@router.get(
+    "/api/v1/tasks/{task_id}/events",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "Server-sent task event stream",
+            "content": {"text/event-stream": {"schema": {"type": "string"}}},
+        }
+    },
+)
+async def task_events(
+    task_id: str,
+    request: Request,
+    settings=Depends(get_settings),
+    container=Depends(get_container),
+):
+    # 404 before entering the stream.
+    validate_task_id(task_id)
+    task_service = container.task_service
+    task_service.get_task(task_id)  # raises TaskNotFoundError
+    snapshot_factory = lambda: task_service.get_task(task_id)
+    queue, snapshot = container.broker.subscribe(task_id, snapshot_factory)
+    snapshot_event = {
+        "event_id": "evt_snapshot",
+        "sequence": 0,
+        "type": "task.snapshot",
+        "task_id": task_id,
+        "run_id": snapshot.get("run_id", ""),
+        "timestamp": _now(),
+        "data": snapshot,
+    }
+
+    _TERMINAL_TYPES = {"task.completed", "task.cancelled", "task.failed"}
+
+    async def event_stream():
+        try:
+            yield _frame(snapshot_event)
+            if snapshot.get("status") in _TERMINAL_STATUSES:
+                # Task already terminal — send snapshot and close.
+                container.broker.unsubscribe(task_id, queue)
+                return
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=settings.sse_heartbeat_seconds)
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+                    continue
+                if item is CLOSED:
+                    break
+                yield _frame(item)
+                if item.get("type") in _TERMINAL_TYPES:
+                    break
+        finally:
+            container.broker.unsubscribe(task_id, queue)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _frame(event: dict) -> str:
+    data = json.dumps(event, ensure_ascii=False)
+    return f"id: {event.get('event_id', '')}\nevent: {event.get('type', '')}\ndata: {data}\n\n"
+
+
+def _now() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

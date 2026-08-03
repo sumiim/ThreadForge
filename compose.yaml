@@ -1,0 +1,27 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: api-server/Dockerfile
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      - THREADFORGE_DOCKER=1
+      - THREADFORGE_HOST=0.0.0.0
+      - THREADFORGE_PORT=8000
+      - THREADFORGE_DATA_DIR=/data
+      - THREADFORGE_WORKSPACES_FILE=/config/workspaces.json
+      - THREADFORGE_WEB_ORIGIN=http://127.0.0.1:5173
+      - THREADFORGE_OPENAPI_ENABLED=false
+      - PICO_OPENAI_API_BASE=${PICO_OPENAI_API_BASE:-https://www.right.codes/codex/v1}
+      - PICO_OPENAI_API_KEY=${PICO_OPENAI_API_KEY:-}
+      - PICO_OPENAI_MODEL=${PICO_OPENAI_MODEL:-gpt-5.4}
+    volumes:
+      - threadforge-data:/data
+      - ./api-server/workspaces.docker.json:/config/workspaces.json:ro
+      - ./:/workspace/threadforge
+    stop_grace_period: 130s
+    user: threadforge:threadforge
+
+volumes:
+  threadforge-data:

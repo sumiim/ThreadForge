@@ -7,7 +7,9 @@ name = "pico"
 version = "0.1.0"
 description = "Small local coding agent for DeepSeek, OpenAI-compatible, Anthropic-compatible, and Ollama models"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+  "pywin32>=306; sys_platform == 'win32'",
+]
 
 [project.scripts]
 pico = "pico.cli:main"
@@ -23,3 +25,8 @@ include = ["pico*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff.lint]
+# Legacy codebase — pre-existing patterns.
+ignore = ["B007", "BLE001", "E501", "FBT", "RUF015", "S101", "S301", "S311", "S324", "S603", "UP031"]
+select = ["E", "F", "W", "I", "B", "S", "UP", "SIM", "RUF"]
