@@ -4,8 +4,26 @@ from __future__ import annotations
 
 import sys
 import time
+import urllib.error
 
 from ..conftest import wait_for_status, wait_for_terminal
+
+
+class _UnauthorizedModelClient:
+    supports_prompt_cache = False
+
+    def __init__(self):
+        self.last_completion_metadata = {}
+
+    def complete(self, *args, **kwargs):
+        cause = urllib.error.HTTPError(
+            "https://provider.example/v1/responses",
+            401,
+            "secret provider response",
+            {},
+            None,
+        )
+        raise RuntimeError("provider body must not be public") from cause
 
 
 def _shell_long_command():
@@ -29,6 +47,21 @@ def test_read_only_task_completes_and_artifacts_queryable(client, session_id, mo
     assert client.get(f"/api/v1/runs/{run_id}/artifacts/report").status_code == 200
 
 
+def test_model_http_error_is_actionable_without_exposing_provider_body(client, session_id):
+    client.app.state.container.runner._model_client_factory = _UnauthorizedModelClient
+
+    task = client.post(
+        "/api/v1/tasks",
+        json={"session_id": session_id, "input": "hello"},
+    ).json()
+    terminal = wait_for_terminal(client, task["task_id"])
+
+    assert terminal["status"] == "failed"
+    assert terminal["stop_reason"] == "model_error"
+    assert terminal["final_answer"] == "agent run failed: model_http_401"
+    assert "secret provider response" not in str(terminal)
+
+
 def test_approve_flow_executes_exactly_the_requested_tool(client, session_id, model_outputs, workspace_env):
     model_outputs[:] = [
         '<tool>{"name":"write_file","args":{"path":"out.txt","content":"hi"}}</tool>',
@@ -40,6 +73,7 @@ def test_approve_flow_executes_exactly_the_requested_tool(client, session_id, mo
     approval = waiting["pending_approval"]
     assert approval["tool_name"] == "write_file"
     assert approval["approval_id"].startswith("apr_")
+    assert approval["tool_call_id"].startswith("call_")
 
     resp = client.post(f"/api/v1/tasks/{tid}/approvals/{approval['approval_id']}", json={"decision": "approved"})
     assert resp.status_code == 200

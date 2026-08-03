@@ -56,8 +56,8 @@ def test_sse_terminal_ends_stream(client, session_id, model_outputs):
     assert events[-1]["event"] == "task.completed"
 
 
-def test_sse_tool_events_have_tool_name(client, session_id, model_outputs):
-    """tool.completed / tool.failed events must include a non-empty tool_name."""
+def test_sse_tool_events_identify_exact_call(client, session_id, model_outputs):
+    """Tool terminal events identify the exact call, not only its tool name."""
     model_outputs[:] = [
         '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":5}}</tool>',
         "<final>done</final>",
@@ -73,6 +73,7 @@ def test_sse_tool_events_have_tool_name(client, session_id, model_outputs):
     for event in events:
         if event["type"] in ("tool.completed", "tool.failed"):
             assert event["data"].get("tool_name"), f"tool event without name: {event}"
+            assert event["data"].get("tool_call_id"), f"tool event without call id: {event}"
 
 
 def test_session_refresh_shows_messages_after_run(client, session_id, model_outputs):

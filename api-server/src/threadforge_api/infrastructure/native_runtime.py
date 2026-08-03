@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import time
+import urllib.error
 
 from pico import Pico
 from pico.event_sink import CompositeSink, EventCollector, JsonlSink
 from pico.run_lifecycle import finalize_failed_run
-from pico.task_state import STATUS_RUNNING
+from pico.task_state import (
+    STATUS_RUNNING,
+    STOP_REASON_MODEL_ERROR,
+    STOP_REASON_RUNTIME_ERROR,
+)
 
 from .public_event_sink import PublicEventSink
 
@@ -93,11 +98,13 @@ class NativeRuntimeAdapter:
             self._pico.ask(user_message, task_id=self._task_id, run_id=self._run_id)
         except Exception as exc:
             if self._pico.current_task_state is not None and self._pico.current_task_state.status == STATUS_RUNNING:
+                error_type, stop_reason = _classify_public_error(exc)
                 finalize_failed_run(
                     self._pico,
                     self._pico.current_task_state,
-                    error_type=type(exc).__name__,
+                    error_type=error_type,
                     duration_ms=int((time.monotonic() - started) * 1000),
+                    stop_reason=stop_reason,
                 )
             raise
         return self._pico.current_task_state
@@ -106,3 +113,21 @@ class NativeRuntimeAdapter:
         if self._pico is not None:
             return bool(self._pico.tool_context().terminate_active_shell(self._settings.shell_cleanup_grace_seconds))
         return True
+
+
+def _classify_public_error(exc: Exception) -> tuple[str, str]:
+    """Expose actionable provider failures without persisting response bodies."""
+    current: BaseException | None = exc
+    while current is not None:
+        if isinstance(current, urllib.error.HTTPError):
+            return f"model_http_{current.code}", STOP_REASON_MODEL_ERROR
+        if isinstance(current, (urllib.error.URLError, ConnectionError, TimeoutError)):
+            return "model_connection_error", STOP_REASON_MODEL_ERROR
+        current = current.__cause__
+
+    message = str(exc).lower()
+    if "openai-compatible" in message:
+        if "non-json" in message or "could not extract text" in message:
+            return "model_invalid_response", STOP_REASON_MODEL_ERROR
+        return "model_provider_error", STOP_REASON_MODEL_ERROR
+    return type(exc).__name__, STOP_REASON_RUNTIME_ERROR

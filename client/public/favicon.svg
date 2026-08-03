@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- ThreadForge mark: 三股线交织（thread + forge），同图形用于 Logo 组件 -->
+  <rect width="64" height="64" rx="20" fill="#172554"/>
+  <path d="M14 46 Q 22 22 32 32 T 52 16" stroke="#93c5fd" stroke-width="6.5" fill="none" stroke-linecap="round"/>
+  <path d="M14 34 Q 22 10 32 20 T 52 4" stroke="#60a5fa" stroke-width="5" fill="none" stroke-linecap="round"/>
+  <path d="M50 46 Q 42 22 32 32 T 12 16" stroke="#2563eb" stroke-width="6.5" fill="none" stroke-linecap="round"/>
+</svg>

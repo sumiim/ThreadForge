@@ -95,11 +95,52 @@ jobs:
       - name: Build wheel
         run: python -m build --wheel ./api-server
 
+  client:
+    name: Client (Node 24)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: client
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        working-directory: client
+        run: pnpm typecheck
+
+      - name: Lint
+        working-directory: client
+        run: pnpm lint
+
+      - name: Test
+        working-directory: client
+        run: pnpm test
+
+      - name: Build
+        working-directory: client
+        run: pnpm build
+
   build:
     name: Build Python packages
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [legacy-runtime, api-server]
+    needs: [legacy-runtime, api-server, client]
 
     steps:
       - name: Checkout repository

@@ -8,7 +8,7 @@ V1 优先复用已经通过测试的 Pico Legacy Runtime，不在第一版同时
 
 ## 必须实现
 
-- React + Vite + TypeScript Web Console。
+- React + Vite + TypeScript Web Console（client/）。
 - Ant Design 控件与 TailwindCSS 布局。
 - FastAPI REST API。
 - SSE 任务生命周期和工具事件。
@@ -40,7 +40,7 @@ V1 优先复用已经通过测试的 Pico Legacy Runtime，不在第一版同时
 - 原生 provider tool calling、四工具重构和 MCP。
 - LangGraph Web 默认化、独立 Planning、多 Worker 和 Agent Swarm。
 - 独立 Docker Sandbox 与网络白名单。
-- Skills API、Skills Registry 和 Skills 自进化。
+- 可执行 Skills API、Skills Registry 和 Skills 自进化；允许只读兼容接口明确返回 `planned/available=false`，但不得把占位能力显示为已启用。
 - Git URL 克隆、ZIP 上传或运行中追加消息。
 
 ## 核心接口

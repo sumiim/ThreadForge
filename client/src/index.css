@@ -1,0 +1,223 @@
+@import 'tailwindcss';
+@import '@fontsource/geist-sans/400.css';
+@import '@fontsource/geist-sans/500.css';
+@import '@fontsource/geist-sans/600.css';
+@import '@fontsource/geist-mono/400.css';
+@import '@fontsource/geist-mono/500.css';
+
+/* 主题色板:组件只写 Tailwind 类,颜色值全部走 CSS 变量。
+   亮色在 :root,暗色在 .dark 覆盖 —— 切换主题时组件零改动。
+   @theme inline:值直接内联为 var(--tf-*),不经过主题变量转发。 */
+@theme inline {
+  --color-stone-50: var(--tf-stone-50);
+  --color-stone-100: var(--tf-stone-100);
+  --color-stone-200: var(--tf-stone-200);
+  --color-stone-300: var(--tf-stone-300);
+  --color-stone-400: var(--tf-stone-400);
+  --color-stone-500: var(--tf-stone-500);
+  --color-stone-600: var(--tf-stone-600);
+  --color-stone-700: var(--tf-stone-700);
+  --color-stone-800: var(--tf-stone-800);
+  --color-stone-900: var(--tf-stone-900);
+  --color-white: var(--tf-white);
+  --color-blue-50: var(--tf-blue-50);
+  --color-blue-600: var(--tf-blue-600);
+  --color-blue-700: var(--tf-blue-700);
+  --color-amber-600: var(--tf-amber-600);
+  --color-amber-700: var(--tf-amber-700);
+  --color-red-600: var(--tf-red-600);
+}
+
+:root {
+  /* 亮色 = Tailwind 默认 stone 系(暖灰) */
+  --tf-stone-50: #fafaf9;
+  --tf-stone-100: #f5f5f4;
+  --tf-stone-200: #e7e5e4;
+  --tf-stone-300: #d6d3d1;
+  --tf-stone-400: #a8a29e;
+  --tf-stone-500: #78716c;
+  --tf-stone-600: #57534e;
+  --tf-stone-700: #44403c;
+  --tf-stone-800: #292524;
+  --tf-stone-900: #1c1917;
+  --tf-white: #ffffff;
+  --tf-blue-50: #eff6ff;
+  --tf-blue-600: #2563eb;
+  --tf-blue-700: #1d4ed8;
+  --tf-amber-600: #d97706;
+  --tf-amber-700: #b45309;
+  --tf-red-600: #dc2626;
+}
+
+.dark {
+  /* 暗色:暖灰反转(文字上浮、表面下沉),与 theme.ts darkThemeConfig 对齐 */
+  color-scheme: dark;
+  --tf-stone-50: #201e1c;
+  --tf-stone-100: #242220; /* = antd siderBg */
+  --tf-stone-200: #2e2b28; /* = antd colorBorder */
+  --tf-stone-300: #3b3834;
+  --tf-stone-400: #85807a;
+  --tf-stone-500: #a09a94;
+  --tf-stone-600: #b8b2ac;
+  --tf-stone-700: #d0cbc6;
+  --tf-stone-800: #e4e0dc;
+  --tf-stone-900: #f2efec;
+  --tf-white: #1c1a18; /* = antd colorBgContainer */
+  --tf-blue-50: rgba(59, 130, 246, 0.12); /* 强调底改半透明,任意暗底上都协调 */
+  --tf-blue-600: #60a5fa;
+  --tf-blue-700: #93c5fd;
+  --tf-amber-600: #fbbf24;
+  --tf-amber-700: #f59e0b;
+  --tf-red-600: #f87171;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  font-family: 'Geist Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+/* 消息进场动效：仅反馈性（新消息出现），prefers-reduced-motion 兜底 */
+@keyframes msg-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.message-enter {
+  animation: msg-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message-enter {
+    animation: none;
+  }
+}
+
+/* Markdown 正文样式（.md-body，与品牌一致：stone 文字 + blue accent 链接） */
+@layer components {
+  .md-body {
+    @apply text-sm leading-relaxed text-stone-800;
+  }
+
+  .md-body > :first-child {
+    @apply mt-0;
+  }
+
+  .md-body > :last-child {
+    @apply mb-0;
+  }
+
+  .md-body p {
+    @apply my-2;
+  }
+
+  .md-body h1,
+  .md-body h2,
+  .md-body h3,
+  .md-body h4 {
+    @apply mb-2 mt-4 font-semibold text-stone-900;
+  }
+
+  .md-body h1 {
+    @apply text-lg;
+  }
+
+  .md-body h2 {
+    @apply text-base;
+  }
+
+  .md-body h3 {
+    @apply text-[15px];
+  }
+
+  .md-body ul {
+    @apply my-2 list-disc pl-5;
+  }
+
+  .md-body ol {
+    @apply my-2 list-decimal pl-5;
+  }
+
+  .md-body li {
+    @apply my-1;
+  }
+
+  .md-body code {
+    @apply rounded bg-stone-100 px-1 py-0.5 font-mono text-[12px] text-stone-800;
+  }
+
+  .md-body pre {
+    @apply my-3 overflow-x-auto rounded-lg bg-stone-900 p-3;
+  }
+
+  .md-body pre code {
+    @apply bg-transparent p-0 text-stone-100;
+  }
+
+  .md-body a {
+    @apply text-blue-700 underline decoration-blue-200 underline-offset-2 hover:decoration-blue-600;
+  }
+
+  .md-body blockquote {
+    @apply my-2 border-l-2 border-blue-300 pl-3 text-stone-500;
+  }
+
+  .md-body table {
+    @apply my-3 w-full border-collapse;
+  }
+
+  /* 暗色特例:代码块不随 stone-900 反转(浅底深字突兀),固定为深色块 */
+  .dark .md-body pre {
+    background-color: #0f0e0d;
+  }
+
+  .dark .md-body pre code {
+    color: #e7e5e4;
+  }
+
+  .md-body th {
+    @apply border border-stone-200 bg-stone-50 px-2.5 py-1.5 text-left font-medium text-stone-700;
+  }
+
+  .md-body td {
+    @apply border border-stone-200 px-2.5 py-1.5;
+  }
+}
+
+/* 细滚动条，贴合白色调 */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #d6d3d1;
+  border-radius: 4px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #a8a29e;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.dark *::-webkit-scrollbar-thumb {
+  background: #3b3834;
+}
+
+.dark *::-webkit-scrollbar-thumb:hover {
+  background: #57534e;
+}

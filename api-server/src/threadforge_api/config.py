@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     data_dir: Path
     workspaces_file: Path
     web_origin: str = "http://127.0.0.1:5173"
+    desktop_origin_enabled: bool = False
     approval_timeout_seconds: int = 1800
     approval_preview_max_chars: int = 4000
     model_timeout_seconds: int = 120

@@ -152,6 +152,7 @@ class ApprovalGate:
                     lambda task: _set_pending_approval(
                         task,
                         approval_id,
+                        tool_call_id,
                         tool_name,
                         approval.args_preview,
                         approval.created_at,
@@ -178,6 +179,7 @@ class ApprovalGate:
                 "approval.required",
                 {
                     "approval_id": approval_id,
+                    "tool_call_id": tool_call_id,
                     "tool_name": tool_name,
                     "args_preview": approval.args_preview,
                     "created_at": approval.created_at,
@@ -369,10 +371,20 @@ class ApprovalGate:
         return approval_ok and task_ok
 
 
-def _set_pending_approval(task, approval_id, tool_name, args_preview, created_at, expires_at, transition_id=None):
+def _set_pending_approval(
+    task,
+    approval_id,
+    tool_call_id,
+    tool_name,
+    args_preview,
+    created_at,
+    expires_at,
+    transition_id=None,
+):
     task.status = TaskStatus.WAITING_FOR_APPROVAL
     task.pending_approval = {
         "approval_id": approval_id,
+        "tool_call_id": tool_call_id,
         "tool_name": tool_name,
         "args_preview": args_preview,
         "created_at": created_at,

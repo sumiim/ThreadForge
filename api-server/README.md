@@ -38,6 +38,24 @@ The default container allowlist exposes the repository as workspace
 `threadforge`; edit `api-server/workspaces.docker.json` and add matching
 read-only or read-write volume mounts when additional workspaces are needed.
 
+## Client metadata
+
+The client reads the effective model and execution boundary from
+`GET /api/v1/config`. `GET /api/v1/skills` and
+`GET /api/v1/mcp/servers` are read-only compatibility endpoints in V1: they
+always mark Skills as planned and MCP servers as not configured.
+
+Packaged Electron pages have the opaque `Origin: null`. Direct desktop access
+is therefore disabled by default. Enable it only for a trusted packaged client:
+
+```powershell
+$env:THREADFORGE_DESKTOP_ORIGIN_ENABLED = "true"
+docker compose up -d --build
+```
+
+The desktop client must still connect through a loopback address, such as an
+SSH tunnel; the API is not exposed publicly.
+
 ## Tests (offline)
 
 All tests use the deterministic `FakeModelClient` — no provider credentials or
