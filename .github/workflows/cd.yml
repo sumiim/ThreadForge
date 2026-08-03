@@ -1,0 +1,64 @@
+name: CD
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: threadforge-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy API server
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+
+    steps:
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.CD_SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: ${{ secrets.CD_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          : "${SSH_PRIVATE_KEY:?CD_SSH_PRIVATE_KEY is not configured}"
+          : "${KNOWN_HOSTS:?CD_KNOWN_HOSTS is not configured}"
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/threadforge_cd"
+          chmod 600 "$HOME/.ssh/threadforge_cd"
+          printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Deploy ThreadForge
+        env:
+          CD_HOST: ${{ secrets.CD_HOST }}
+          CD_PORT: ${{ secrets.CD_PORT }}
+          CD_USER: ${{ secrets.CD_USER }}
+        run: |
+          set -euo pipefail
+          : "${CD_HOST:?CD_HOST is not configured}"
+          : "${CD_PORT:?CD_PORT is not configured}"
+          : "${CD_USER:?CD_USER is not configured}"
+          ssh \
+            -i "$HOME/.ssh/threadforge_cd" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=20 \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -p "$CD_PORT" \
+            "$CD_USER@$CD_HOST"
+
+      - name: Remove deployment key
+        if: always()
+        run: rm -f "$HOME/.ssh/threadforge_cd"
