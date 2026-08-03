@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Button, ConfigProvider, Drawer, Layout, Select } from 'antd'
 import { FileTextOutlined, FolderOpenOutlined } from '@ant-design/icons'
-import { MODEL_OPTIONS } from './api/mock'
+import { MODEL_OPTIONS } from './api/constants'
 import { useSessions } from './hooks/useSessions'
 import { useTheme } from './hooks/useTheme'
 import { themeConfig, darkThemeConfig } from './styles/theme'
@@ -20,6 +20,7 @@ export default function App() {
     sessions,
     activeId,
     active,
+    workspaces,
     running,
     select,
     createSession,
@@ -33,8 +34,11 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [artifactsOpen, setArtifactsOpen] = useState(false)
   const [view, setView] = useState<PanelView>('chat')
-  const hasRun = active.messages.some((m) => (m.toolCalls?.length ?? 0) > 0)
-  const pageTitle = view === 'chat' ? active.title : view === 'skills' ? 'Skills' : 'MCP'
+  const hasRun = active?.lastRunId != null
+  const pageTitle = view === 'chat' ? (active?.title ?? 'ThreadForge') : view === 'skills' ? 'Skills' : 'MCP'
+  const activePath = active
+    ? (workspaces.find((w) => w.workspace_id === active.workspaceId)?.display_path ?? active.workspaceId)
+    : ''
 
   return (
     // 主题 ConfigProvider：antd 组件随亮/暗切换；Tailwind 侧由 .dark 类变量色板接管
@@ -49,6 +53,7 @@ export default function App() {
             sessions={sessions}
             activeId={activeId}
             activeView={view}
+            workspaces={workspaces}
             onSelect={select}
             onCreate={createSession}
             onNavigate={setView}
@@ -72,22 +77,28 @@ export default function App() {
               >
                 运行结果
               </Button>
-              <div className="flex min-w-0 items-center gap-1.5" title={active.workspace}>
+              <div className="flex min-w-0 items-center gap-1.5" title={activePath}>
                 <FolderOpenOutlined className="shrink-0 text-stone-400" />
-                <span className="max-w-[280px] truncate text-stone-500">{active.workspace}</span>
+                <span className="max-w-[280px] truncate text-stone-500">{activePath}</span>
               </div>
             </div>
           </Header>
           <Content className="min-h-0">
             {view === 'chat' ? (
-              <ChatView
-                session={active}
-                running={running}
-                onSend={sendMessage}
-                onStop={stopRun}
-                onApprove={approveTool}
-                onReject={rejectTool}
-              />
+              active ? (
+                <ChatView
+                  session={active}
+                  running={running}
+                  onSend={sendMessage}
+                  onStop={stopRun}
+                  onApprove={approveTool}
+                  onReject={rejectTool}
+                />
+              ) : (
+                <div className="flex h-full items-center justify-center text-sm text-stone-500">
+                  还没有会话，点击左侧「新建会话」开始
+                </div>
+              )
             ) : view === 'skills' ? (
               <SkillsView />
             ) : (
@@ -101,17 +112,18 @@ export default function App() {
             <div>
               <div className="mb-1.5 text-sm font-medium text-stone-800">模型</div>
               <Select
-                value={active.model}
+                value={active?.model ?? MODEL_OPTIONS[0]}
                 onChange={(value) => updateModel(value)}
                 options={MODEL_OPTIONS.map((m) => ({ value: m, label: m }))}
                 style={{ width: '100%' }}
               />
+              <p className="mt-1.5 text-xs text-stone-500">模型由后端统一配置，此处仅为本地展示。</p>
             </div>
             <p className="text-xs text-stone-500">更多设置项随 V1 迭代补充。</p>
           </div>
         </Drawer>
 
-        {/* 运行结果：task_state / trace / report */}
+        {/* 运行结果：task_state / trace / report（GET /api/v1/runs/{run_id}/artifacts） */}
         <RunArtifactsDrawer
           open={artifactsOpen}
           session={active}

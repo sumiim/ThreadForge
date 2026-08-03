@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { CodeOutlined, CompressOutlined, SafetyOutlined, ThunderboltOutlined } from '@ant-design/icons'
-import { SKILL_OPTIONS } from '../../api/mock'
+import { SKILL_OPTIONS } from '../../api/constants'
 
 // 图标映射（数据层不持有 ReactNode，映射留在组件层）
 const skillIcons: Record<string, ReactNode> = {

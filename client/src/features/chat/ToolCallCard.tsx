@@ -34,7 +34,7 @@ export default function ToolCallCard({ toolCall, onApprove, onReject }: ToolCall
         </div>
 
         <pre className="mt-2.5 overflow-x-auto rounded-lg border border-stone-100 bg-white p-2.5 font-mono text-[11px] leading-relaxed text-stone-500">
-          {JSON.stringify(toolCall.args, null, 2)}
+          {JSON.stringify(toolCall.args ?? {}, null, 2)}
         </pre>
 
         {toolCall.result && (

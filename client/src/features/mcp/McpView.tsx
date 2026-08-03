@@ -1,5 +1,5 @@
 import { ApiOutlined } from '@ant-design/icons'
-import { MCP_OPTIONS } from '../../api/mock'
+import { MCP_OPTIONS } from '../../api/constants'
 
 // MCP 子页面：服务器列表（V1 展示连接状态，实际接入规划在后续版本）
 export default function McpView() {

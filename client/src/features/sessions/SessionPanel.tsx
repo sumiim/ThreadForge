@@ -12,8 +12,7 @@ import {
   ThunderboltOutlined,
 } from '@ant-design/icons'
 import Logo from '../../components/Logo'
-import { WORKSPACE_OPTIONS } from '../../api/mock'
-import type { Session } from '../../api/types'
+import type { Session, Workspace } from '../../api/types'
 import type { ThemeMode } from '../../hooks/useTheme'
 import NewSessionModal from './NewSessionModal'
 
@@ -21,10 +20,11 @@ export type PanelView = 'chat' | 'skills' | 'mcp'
 
 interface SessionPanelProps {
   sessions: Session[]
-  activeId: string
+  activeId: string | null
   activeView: PanelView
+  workspaces: Workspace[]
   onSelect: (id: string) => void
-  onCreate: (workspace: string) => void
+  onCreate: (workspaceId: string) => void
   onNavigate: (view: PanelView) => void
   onOpenSettings: () => void
   themeMode: ThemeMode
@@ -36,6 +36,7 @@ export default function SessionPanel({
   sessions,
   activeId,
   activeView,
+  workspaces,
   onSelect,
   onCreate,
   onNavigate,
@@ -45,8 +46,9 @@ export default function SessionPanel({
 }: SessionPanelProps) {
   const [query, setQuery] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
-  const [selectedWorkspace, setSelectedWorkspace] = useState<string>(
-    () => sessions[0]?.workspace ?? WORKSPACE_OPTIONS[0],
+  const available = workspaces.find((w) => w.available)
+  const [selectedWorkspace, setSelectedWorkspace] = useState<string | null>(
+    () => available?.workspace_id ?? null,
   )
 
   const filtered = query.trim()
@@ -54,7 +56,7 @@ export default function SessionPanel({
     : sessions
 
   const handleCreate = () => {
-    onCreate(selectedWorkspace)
+    if (selectedWorkspace) onCreate(selectedWorkspace)
     setModalOpen(false)
   }
 
@@ -116,7 +118,11 @@ export default function SessionPanel({
         <span className="h-px min-w-0 flex-1 bg-stone-200" aria-hidden />
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-4">
-        {filtered.length === 0 ? (
+        {sessions.length === 0 ? (
+          <div className="px-3 py-4 text-center text-xs text-stone-400">
+            暂无会话，点击上方「新建会话」开始
+          </div>
+        ) : filtered.length === 0 ? (
           <div className="px-3 py-4 text-center text-xs text-stone-400">未找到匹配的会话</div>
         ) : (
           filtered.map((session) => {
@@ -174,9 +180,10 @@ export default function SessionPanel({
         </div>
       </div>
 
-      {/* 新建会话：选择工作区（对应 GET /api/v1/workspaces + 路径边界） */}
+      {/* 新建会话：选择工作区（GET /api/v1/workspaces 返回的可用工作区） */}
       <NewSessionModal
         open={modalOpen}
+        workspaces={workspaces}
         selected={selectedWorkspace}
         onSelect={setSelectedWorkspace}
         onCreate={handleCreate}
