@@ -5,7 +5,10 @@ session.json 负责保存“可恢复的会话状态”；RunStore 负责保存�
 """
 
 import json
+import os
+import sys
 import tempfile
+from contextlib import suppress
 from pathlib import Path
 
 
@@ -19,6 +22,24 @@ class RunStore:
     def __init__(self, root):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
+        if sys.platform != "win32":
+            self.root.chmod(0o700)
+
+    @staticmethod
+    def _secure_dir(path):
+        path.mkdir(parents=True, exist_ok=True)
+        if sys.platform != "win32":
+            path.chmod(0o700)
+
+    @staticmethod
+    def _fsync_directory(path):
+        if sys.platform == "win32":
+            return
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
     def run_dir(self, run_id):
         return self.root / _run_id(run_id)
@@ -36,29 +57,34 @@ class RunStore:
         # 每次 ask() 都会生成一个 run 目录。
         # 这样一次用户请求对应一组独立工件，后续排查更容易。
         run_dir = self.run_dir(task_state)
-        run_dir.mkdir(parents=True, exist_ok=True)
+        self._secure_dir(run_dir)
         self.write_task_state(task_state)
         return run_dir
 
     def write_task_state(self, task_state):
         path = self.task_state_path(task_state)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        self._secure_dir(path.parent)
         self._write_json_atomic(path, task_state.to_dict())
         return path
 
     def append_trace(self, task_state, event):
         path = self.trace_path(task_state)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        self._secure_dir(path.parent)
         # trace 采用 jsonl 追加写入，原因是 agent 运行过程是流式事件序列，
         # 逐条落盘比“最后一次性写整份 trace”更稳，也更适合调试。
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, sort_keys=True, ensure_ascii=True))
             handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        if sys.platform != "win32":
+            path.chmod(0o600)
+        self._fsync_directory(path.parent)
         return path
 
     def write_report(self, task_state, report):
         path = self.report_path(task_state)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        self._secure_dir(path.parent)
         self._write_json_atomic(path, report)
         return path
 
@@ -71,15 +97,27 @@ class RunStore:
     def _write_json_atomic(self, path, payload):
         # 原子写：先写临时文件，再 replace。
         # 这样即使中途异常，也不容易留下半截 JSON。
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            delete=False,
-            dir=str(path.parent),
-            prefix=path.name + ".",
-            suffix=".tmp",
-        ) as handle:
-            json.dump(payload, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-            temp_name = handle.name
-        Path(temp_name).replace(path)
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                delete=False,
+                dir=str(path.parent),
+                prefix=path.name + ".",
+                suffix=".tmp",
+            ) as handle:
+                temp_path = Path(handle.name)
+                json.dump(payload, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            temp_path.replace(path)
+            temp_path = None
+        finally:
+            if temp_path is not None:
+                with suppress(OSError):
+                    temp_path.unlink(missing_ok=True)
+        if sys.platform != "win32":
+            path.chmod(0o600)
+        self._fsync_directory(path.parent)

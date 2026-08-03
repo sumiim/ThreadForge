@@ -1,24 +1,40 @@
 """Agent control loop extracted from the runtime facade."""
 
 import time
+import uuid
 
-from .checkpoint import CHECKPOINT_NONE_STATUS, CHECKPOINT_PARTIAL_STALE_STATUS, CHECKPOINT_WORKSPACE_MISMATCH_STATUS
-from .task_state import TaskState
+from .checkpoint import (
+    CHECKPOINT_NONE_STATUS,
+    CHECKPOINT_PARTIAL_STALE_STATUS,
+    CHECKPOINT_WORKSPACE_MISMATCH_STATUS,
+)
+from .execution_hooks import ProcessCleanupFailed, RunCancelled
+from .task_state import STATUS_FAILED, STOP_REASON_PROCESS_CLEANUP_FAILED, TaskState
 from .workspace import clip, now
+
+
+def _new_tool_call_id():
+    return "call_" + uuid.uuid4().hex
 
 
 class AgentLoop:
     def __init__(self, agent):
         self.agent = agent
 
-    def run(self, user_message):
+    def run(self, user_message, *, task_id=None, run_id=None):
         agent = self.agent
+        token = agent.cancellation_token
+        hooks = agent.execution_hooks
         agent.child_task_states = []
         run_started_at = time.monotonic()
         agent.memory.set_task_summary(user_message)
         agent.record({"role": "user", "content": user_message, "created_at": now()})
 
-        task_state = TaskState.create(run_id=agent.new_run_id(), task_id=agent.new_task_id(), user_request=user_message)
+        task_state = TaskState.create(
+            run_id=run_id or agent.new_run_id(),
+            task_id=task_id or agent.new_task_id(),
+            user_request=user_message,
+        )
         task_state.resume_status = agent.resume_state.get("status", CHECKPOINT_NONE_STATUS)
         agent.current_task_state = task_state
         agent.current_run_dir = agent.run_store.start_run(task_state)
@@ -32,17 +48,63 @@ class AgentLoop:
             },
         )
 
+        try:
+            return self._run_loop(
+                task_state,
+                user_message,
+                run_started_at=run_started_at,
+                token=token,
+                hooks=hooks,
+            )
+        except ProcessCleanupFailed:
+            task_state.stop(
+                STOP_REASON_PROCESS_CLEANUP_FAILED,
+                status=STATUS_FAILED,
+                final_answer="agent run failed: shell process cleanup could not be confirmed",
+            )
+            agent.run_store.write_task_state(task_state)
+            agent.emit_trace(
+                task_state,
+                "run_finished",
+                {
+                    "status": task_state.status,
+                    "stop_reason": task_state.stop_reason,
+                    "final_answer": task_state.final_answer,
+                    "run_duration_ms": int((time.monotonic() - run_started_at) * 1000),
+                },
+            )
+            agent.run_store.write_report(task_state, agent.redact_artifact(agent.build_report(task_state)))
+            return task_state.final_answer
+        except RunCancelled:
+            # 取消收敛：不向调用方抛出，最终回答一律以 TaskState.final_answer 为准。
+            task_state.stop_user_cancelled()
+            agent.run_store.write_task_state(task_state)
+            agent.emit_trace(
+                task_state,
+                "run_finished",
+                {
+                    "status": task_state.status,
+                    "stop_reason": task_state.stop_reason,
+                    "final_answer": "",
+                    "run_duration_ms": int((time.monotonic() - run_started_at) * 1000),
+                },
+            )
+            agent.run_store.write_report(task_state, agent.redact_artifact(agent.build_report(task_state)))
+            agent.emit_progress(f"run {task_state.run_id} cancelled")
+            return ""
+
+    def _run_loop(self, task_state, user_message, *, run_started_at, token, hooks):
+        agent = self.agent
         tool_steps = 0
         attempts = 0
         max_attempts = max(agent.max_steps * 3, agent.max_steps + 4)
 
-        # 这是 agent 的主循环，可以按“感知 -> 决策 -> 行动 -> 记录”来理解：
-        # 1. 感知：重新组 prompt，把当前状态整理给模型看
-        # 2. 决策：让模型返回一个工具调用，或一个最终答案
-        # 3. 行动：如果是工具调用，就执行工具
-        # 4. 记录：把结果写回 history / task_state / trace / memory
-        # 然后进入下一轮，直到停机条件满足
+        # 边界 1：进入控制循环前。
+        token.raise_if_cancelled()
+
         while tool_steps < agent.max_steps and attempts < max_attempts:
+            # 边界 2：每轮开始、构建 prompt 前。
+            token.raise_if_cancelled()
             attempts += 1
             task_state.record_attempt()
             agent.run_store.write_task_state(task_state)
@@ -114,6 +176,9 @@ class AgentLoop:
                 prompt_cache_key = prompt_metadata.get("prompt_cache_key")
                 prompt_cache_retention = "in_memory"
             model_started_at = time.monotonic()
+            # 边界 3：模型调用前（hook 在 RunGate 内检查取消并发布 model.started）。
+            token.raise_if_cancelled()
+            hooks.before_model(task_state)
             agent.emit_progress(f"step {attempts}: waiting for model response")
             raw = agent.model_client.complete(
                 prompt,
@@ -128,6 +193,9 @@ class AgentLoop:
                 prompt_metadata.update(completion_metadata)
             agent.last_completion_metadata = completion_metadata
             agent.last_prompt_metadata = prompt_metadata
+            # 边界 4：模型返回后、解析/执行工具前；取消时丢弃迟到响应。
+            token.raise_if_cancelled()
+            hooks.after_model(task_state, completion_metadata)
             kind, payload = agent.parse(raw)
             agent.emit_progress(f"step {attempts}: model returned {kind}")
             agent.emit_trace(
@@ -147,7 +215,8 @@ class AgentLoop:
                 task_state.record_tool(name)
                 tool_started_at = time.monotonic()
                 agent.emit_progress(f"step {attempts}: running tool {name}")
-                tool_result = agent.execute_tool(name, args)
+                tool_call_id = _new_tool_call_id()
+                tool_result = agent.execute_tool(name, args, tool_call_id=tool_call_id)
                 task_state.record_affected_paths(tool_result.metadata.get("affected_paths", []))
                 agent.emit_progress(
                     f"step {attempts}: tool {name} finished "
@@ -186,6 +255,7 @@ class AgentLoop:
                             "trigger": "tool_executed",
                         },
                     )
+                # 边界 7 由下一轮顶部的边界 2 承担。
                 continue
 
             if kind == "retry":
@@ -194,6 +264,8 @@ class AgentLoop:
                 agent.run_store.write_task_state(task_state)
                 continue
 
+            # 边界 8：写最终回答和 durable memory 前。
+            token.raise_if_cancelled()
             final = (payload or raw).strip()
             agent.record({"role": "assistant", "content": final, "created_at": now()})
             task_state.finish_success(final)

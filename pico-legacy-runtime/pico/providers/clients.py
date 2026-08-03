@@ -7,9 +7,9 @@ runtime 只关心一件事：给我一个 prompt，我拿回一段文本。
 
 import json
 import time
-from http.client import RemoteDisconnected
 import urllib.error
 import urllib.request
+from http.client import RemoteDisconnected
 
 OPENAI_COMPATIBLE_USER_AGENT = "pico/0.1"
 
@@ -224,12 +224,15 @@ def _extract_usage_cache_details(data):
 
 
 class OpenAICompatibleModelClient:
-    def __init__(self, model, base_url, api_key, temperature, timeout):
+    def __init__(self, model, base_url, api_key, temperature, timeout, max_attempts=3):
         self.model = model
         self.base_url = _normalize_versioned_base_url(base_url)
         self.api_key = api_key
         self.temperature = temperature
         self.timeout = timeout
+        if not isinstance(max_attempts, int) or max_attempts < 1:
+            raise ValueError("max_attempts must be a positive integer")
+        self.max_attempts = max_attempts
         # 当前只在明确支持 prompt cache 语义的后端上启用这条链路，
         # 避免对不支持的后端传一个“看起来统一、其实没意义”的伪参数。
         self.supports_prompt_cache = any(host in self.base_url for host in ("openai.com", "right.codes"))
@@ -292,8 +295,7 @@ class OpenAICompatibleModelClient:
             headers=headers,
             method="POST",
         )
-        attempts = 3
-        for attempt in range(attempts):
+        for attempt in range(self.max_attempts):
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
                     body_text = response.read().decode("utf-8")
@@ -302,12 +304,12 @@ class OpenAICompatibleModelClient:
                 break
             except urllib.error.HTTPError as exc:
                 body = exc.read().decode("utf-8", errors="replace")
-                if exc.code >= 500 and attempt < attempts - 1:
+                if exc.code >= 500 and attempt < self.max_attempts - 1:
                     time.sleep(0.5 * (attempt + 1))
                     continue
                 raise RuntimeError(f"OpenAI-compatible request failed with HTTP {exc.code}: {body}") from exc
             except (urllib.error.URLError, RemoteDisconnected) as exc:
-                if attempt < attempts - 1:
+                if attempt < self.max_attempts - 1:
                     time.sleep(0.5 * (attempt + 1))
                     continue
                 raise RuntimeError(

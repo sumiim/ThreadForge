@@ -26,6 +26,10 @@ STOP_REASON_REVIEW_RETRY_LIMIT_REACHED = "review_retry_limit_reached"
 STOP_REASON_NO_CHANGES_TO_REVIEW = "no_changes_to_review"
 STOP_REASON_BUDGET_EXHAUSTED = "budget_exhausted"
 STOP_REASON_RUNTIME_ERROR = "runtime_error"
+STOP_REASON_USER_CANCELLED = "user_cancelled"
+STOP_REASON_PROCESS_CLEANUP_FAILED = "process_cleanup_failed"
+STOP_REASON_SERVICE_RESTARTED = "service_restarted"
+STOP_REASON_SERVICE_SHUTDOWN_TIMEOUT = "service_shutdown_timeout"
 
 
 @dataclass
@@ -107,6 +111,9 @@ class TaskState:
 
     def stop_retry_limit(self, final_answer=""):
         return self.stop(STOP_REASON_RETRY_LIMIT_REACHED, final_answer=final_answer)
+
+    def stop_user_cancelled(self, final_answer=""):
+        return self.stop(STOP_REASON_USER_CANCELLED, status=STATUS_STOPPED, final_answer=final_answer)
 
     def stop_model_error(self, final_answer=""):
         return self.stop(STOP_REASON_MODEL_ERROR, status=STATUS_FAILED, final_answer=final_answer)
