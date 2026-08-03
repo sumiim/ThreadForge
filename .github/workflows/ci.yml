@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   legacy-runtime:
-    name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    name: Legacy runtime (${{ matrix.os }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
 
@@ -96,7 +96,7 @@ jobs:
         run: python -m build --wheel ./api-server
 
   build:
-    name: Build wheels
+    name: Build Python packages
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: [legacy-runtime, api-server]
