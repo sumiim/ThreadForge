@@ -126,7 +126,7 @@ jobs:
         run: docker build -f api-server/Dockerfile .
 
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: threadforge-python-wheels
           path: |
