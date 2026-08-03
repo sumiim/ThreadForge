@@ -28,6 +28,68 @@ def test_workspaces_list(client):
     assert entry["container_sandbox_enabled"] is False
 
 
+def test_client_metadata_is_truthful(client):
+    config = client.get("/api/v1/config")
+    assert config.status_code == 200
+    assert config.json() == {
+        "model": "gpt-5.4",
+        "model_configured": True,
+        "execution_environment": "backend_process",
+        "container_sandbox_enabled": False,
+    }
+
+    skills = client.get("/api/v1/skills").json()["items"]
+    assert skills
+    assert all(item["status"] == "planned" and item["available"] is False for item in skills)
+
+    servers = client.get("/api/v1/mcp/servers").json()["items"]
+    assert servers
+    assert all(
+        item["status"] == "not_configured" and item["connected"] is False
+        for item in servers
+    )
+
+
+def test_desktop_null_origin_requires_explicit_opt_in(settings, model_factory):
+    app = create_app(settings, model_client_factory=model_factory)
+    with TestClient(app) as default_client:
+        response = default_client.options(
+            "/api/v1/config",
+            headers={"Origin": "null", "Access-Control-Request-Method": "GET"},
+        )
+        assert response.headers.get("access-control-allow-origin") is None
+
+    desktop_settings = settings.model_copy(update={"desktop_origin_enabled": True})
+    app = create_app(desktop_settings, model_client_factory=model_factory)
+    with TestClient(app) as desktop_client:
+        response = desktop_client.options(
+            "/api/v1/config",
+            headers={"Origin": "null", "Access-Control-Request-Method": "GET"},
+        )
+        assert response.headers["access-control-allow-origin"] == "null"
+
+
+def test_zero_arg_factory_applies_initialization_settings_from_env(
+    monkeypatch, workspace_env
+):
+    monkeypatch.setenv("THREADFORGE_DATA_DIR", str(workspace_env["data_dir"]))
+    monkeypatch.setenv("THREADFORGE_WORKSPACES_FILE", str(workspace_env["ws_file"]))
+    monkeypatch.setenv("THREADFORGE_TRUSTED_HOSTS", '["testserver"]')
+    monkeypatch.setenv("THREADFORGE_WEB_ORIGIN", "http://localhost:4173")
+    monkeypatch.setenv("THREADFORGE_DESKTOP_ORIGIN_ENABLED", "true")
+    monkeypatch.setenv("THREADFORGE_OPENAPI_ENABLED", "false")
+
+    app = create_app()
+    assert app.openapi_url is None
+    assert app.docs_url is None
+    with TestClient(app) as env_client:
+        response = env_client.options(
+            "/api/v1/config",
+            headers={"Origin": "null", "Access-Control-Request-Method": "GET"},
+        )
+        assert response.headers["access-control-allow-origin"] == "null"
+
+
 def test_session_create_list_get(client):
     created = client.post("/api/v1/sessions", json={"workspace_id": "w1", "title": "My work"})
     assert created.status_code == 201

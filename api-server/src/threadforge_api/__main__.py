@@ -76,6 +76,10 @@ def _push_env(settings):
     _os.environ.setdefault("THREADFORGE_HOST", settings.host)
     _os.environ.setdefault("THREADFORGE_PORT", str(settings.port))
     _os.environ.setdefault("THREADFORGE_WEB_ORIGIN", settings.web_origin)
+    _os.environ.setdefault(
+        "THREADFORGE_DESKTOP_ORIGIN_ENABLED",
+        str(settings.desktop_origin_enabled).lower(),
+    )
     _os.environ.setdefault("THREADFORGE_MAX_STEPS", str(settings.max_steps))
     _os.environ.setdefault("THREADFORGE_MAX_NEW_TOKENS", str(settings.max_new_tokens))
     _os.environ.setdefault("THREADFORGE_MODEL_TIMEOUT_SECONDS", str(settings.model_timeout_seconds))

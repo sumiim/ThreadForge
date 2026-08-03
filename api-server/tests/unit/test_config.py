@@ -21,6 +21,7 @@ def test_defaults_are_valid():
     assert settings.host == "127.0.0.1"
     assert settings.max_steps == 6
     assert settings.sse_heartbeat_seconds == 15
+    assert settings.desktop_origin_enabled is False
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.5", "example.com"])

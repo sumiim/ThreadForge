@@ -1,0 +1,11 @@
+# pnpm 11:构建脚本许可(原 package.json 的 pnpm 字段已迁移到此)
+# electron 的 postinstall 需要下载官方二进制,必须放行
+allowBuilds:
+  electron: true
+  electron-builder: true
+  electron-winstaller: true
+
+# electron-builder(app-builder-lib) 声明 @electron/get ^3.0.0 但 3.0.0 缺 ElectronDownloadCacheMode 导出(其代码需要),
+# 3.1.0 才补齐;全局压到 ^3.1.0(与 electron 自身同 major,兼容)
+overrides:
+  "@electron/get": ^3.1.0

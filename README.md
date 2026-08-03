@@ -2,14 +2,14 @@
 
 ThreadForge 是一个面向本地代码仓库的 Web Coding Agent 工作台。项目目标是在保留轻量 Agent Runtime 的基础上，逐步提供 Web 会话与任务管理、实时事件流、工具审批、执行审计、容器级沙盒、多 Agent 编排和可演进 Skills。
 
-当前仓库完成了第一步迁移：原有 Pico Runtime 与评测体系已归档到 `pico-legacy-runtime`，现有 LangGraph 编排后端已提升为独立的 `agent-orchestrator` 模块。Web、API、Sandbox 和 Skills 模块目前是边界清晰的工程脚手架，将按 [V1 需求文档](docs/requirements-v1.md) 逐步实现。
+当前仓库已完成 V1 原生 Runtime 的 FastAPI 封装和 React 工作台接入。Sandbox、可执行 Skills 和 MCP 仍属于后续版本，当前界面只展示后端明确标记为未启用的兼容元数据。
 
 ## 仓库结构
 
 ```text
 ThreadForge
-├── web-console/          React Web 工作台（规划中）
-├── api-server/           FastAPI、REST 与 SSE 服务（规划中）
+├── client/               React/Vite Web 工作台与 Electron 桌面壳
+├── api-server/           FastAPI、REST、SSE、审批与运行恢复
 ├── agent-orchestrator/   LangGraph 编排、意图路由与多角色协作
 ├── sandbox-workers/      Docker 工具执行隔离（后续版本）
 ├── skills-registry/      Skills 注册、版本与演进（后续版本）
@@ -36,8 +36,8 @@ ThreadForge 计划覆盖以下能力：
 | --- | --- | --- |
 | Pico Legacy Runtime | 已迁移 | AgentLoop、Prompt、Context、Memory、Session、Checkpoint、工具、安全策略、CLI、评测和测试 |
 | Agent Orchestrator | 已迁移 | LangGraph wrapper、意图路由、Research/Execute/Review 工作流和 backend adapter |
-| Web Console | 规划中 | V1 使用 React、Vite、TypeScript、Ant Design 和 TailwindCSS |
-| API Server | 规划中 | V1 使用 FastAPI、REST 和 SSE |
+| Web Console | V1 已接入 | Session、任务、SSE、审批、停止、运行制品与后端能力状态 |
+| API Server | V1 已实现 | FastAPI REST/SSE、JSON 持久化、恢复、取消和审批 |
 | Sandbox Workers | 后续版本 | 每个任务或 Worker 的独立 Docker 执行环境 |
 | Skills Registry | 后续版本 | Skill Manifest、版本、评测、发布和回滚 |
 
@@ -57,13 +57,14 @@ ThreadForge 不声称上述项目对本项目提供官方背书。各上游项�
 
 ## 开发者快速开始
 
-当前可运行部分是 Legacy Runtime 与 Agent Orchestrator：
+安装后端和前端依赖：
 
 ```powershell
 python -m pip install -e .\pico-legacy-runtime
+python -m pip install -e ".\api-server[dev]"
 python -m pip install -e .\agent-orchestrator
-Push-Location .\pico-legacy-runtime
-python -m pytest -q
+Push-Location .\client
+pnpm install
 Pop-Location
 ```
 

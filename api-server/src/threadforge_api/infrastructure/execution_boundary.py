@@ -19,6 +19,8 @@ class ExecutionBoundary:
         self._run_id = run_id
         self._gate = gate
         self._token = token
+        self._active_tool_call_id = ""
+        self._active_tool_name = ""
 
     @property
     def gate(self) -> RunGate:
@@ -52,6 +54,8 @@ class ExecutionBoundary:
     def before_tool(self, task_state, tool_call: dict) -> None:
         with self._gate:
             self._check()
+            self._active_tool_call_id = str(tool_call.get("id", ""))
+            self._active_tool_name = str(tool_call.get("name", ""))
             self._publisher.publish(
                 self._task_id,
                 self._run_id,
@@ -63,9 +67,10 @@ class ExecutionBoundary:
         metadata = dict(getattr(result, "metadata", {}) or {})
         tool_status = metadata.get("tool_status", "ok")
         event_type = "tool.completed" if tool_status in {"ok", "partial_success"} else "tool.failed"
-        # tool_name is NOT in ToolExecutionResult.metadata — capture it from the
-        # last tool recorded in task_state so SSE consumers know *which* tool.
-        tool_name = getattr(task_state, "last_tool", "") or ""
+        # ToolExecutionResult does not carry call identity, so retain the call
+        # accepted by before_tool until its matching result is published.
+        tool_name = self._active_tool_name or getattr(task_state, "last_tool", "") or ""
+        tool_call_id = self._active_tool_call_id
         with self._gate:
             self._check()
             self._publisher.publish(
@@ -73,9 +78,12 @@ class ExecutionBoundary:
                 self._run_id,
                 event_type,
                 {
+                    "tool_call_id": tool_call_id,
                     "tool_name": tool_name,
                     "tool_status": tool_status,
                     "tool_error_code": metadata.get("tool_error_code", ""),
                     "affected_paths": metadata.get("affected_paths", []),
                 },
             )
+            self._active_tool_call_id = ""
+            self._active_tool_name = ""

@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from .api.errors import install_error_handlers
-from .api.routers import health, runs, sessions, tasks, workspaces
+from .api.routers import health, metadata, runs, sessions, tasks, workspaces
 from .config import Settings
 from .lifespan import build_lifespan
 
@@ -27,23 +27,28 @@ def create_app(
     *,
     model_client_factory: Callable | None = None,
 ) -> FastAPI:
-    openapi_enabled = bool(settings.openapi_enabled) if settings else True
+    resolved_settings = settings or Settings().freeze_provider_env()
+    openapi_enabled = bool(resolved_settings.openapi_enabled)
     app = FastAPI(
         title="ThreadForge API",
         version="0.1.0",
         openapi_url="/openapi.json" if openapi_enabled else None,
         docs_url="/docs" if openapi_enabled else None,
         redoc_url=None,
-        lifespan=build_lifespan(settings=settings, model_client_factory=model_client_factory),
+        lifespan=build_lifespan(
+            settings=resolved_settings,
+            model_client_factory=model_client_factory,
+        ),
     )
-    app.state.settings = settings
+    app.state.settings = resolved_settings
 
-    trusted_hosts = settings.trusted_hosts if settings else ["127.0.0.1", "::1", "localhost"]
     app.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=trusted_hosts,
+        allowed_hosts=resolved_settings.trusted_hosts,
     )
-    allowed_origins = [settings.web_origin] if settings else ["http://127.0.0.1:5173"]
+    allowed_origins = [resolved_settings.web_origin]
+    if resolved_settings.desktop_origin_enabled:
+        allowed_origins.append("null")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -74,6 +79,7 @@ def create_app(
         return response
 
     app.include_router(health.router)
+    app.include_router(metadata.router)
     app.include_router(workspaces.router)
     app.include_router(sessions.router)
     app.include_router(tasks.router)

@@ -1,10 +1,29 @@
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
+from pico import workspace as workspace_module
 from pico.context_manager import ContextManager
 
 
 def build_workspace(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     return WorkspaceContext.build(tmp_path)
+
+
+def test_workspace_git_output_uses_utf8_with_replacement(tmp_path, monkeypatch):
+    calls = []
+
+    class Result:
+        stdout = "中文提交\n"
+
+    def fake_run(*args, **kwargs):
+        calls.append(kwargs)
+        return Result()
+
+    monkeypatch.setattr(workspace_module.subprocess, "run", fake_run)
+    WorkspaceContext.build(tmp_path)
+
+    assert calls
+    assert all(call["encoding"] == "utf-8" for call in calls)
+    assert all(call["errors"] == "replace" for call in calls)
 
 
 def build_agent(tmp_path, outputs, **kwargs):

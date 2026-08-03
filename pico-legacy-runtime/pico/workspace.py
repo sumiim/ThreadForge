@@ -4,10 +4,10 @@
 这份快照刻意保持小而稳定：主要包含 Git 事实和少量白名单项目文档。
 """
 
-import subprocess
-import textwrap
 import hashlib
 import json
+import subprocess
+import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -62,6 +62,8 @@ class WorkspaceContext:
                     cwd=cwd,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     check=True,
                     timeout=5,
                 )
