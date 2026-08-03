@@ -82,10 +82,12 @@ def test_active_task_conflict_returns_409(client, session_id, model_outputs):
     assert second.json()["error"]["code"] == "active_task_exists"
     assert second.json()["error"]["details"]["task_id"] == first["task_id"]
 
-    # cleanup: approve the shell so it finishes quickly
-    approval = client.get(f"/api/v1/tasks/{first['task_id']}").json()["pending_approval"]
-    client.post(f"/api/v1/tasks/{first['task_id']}/approvals/{approval['approval_id']}", json={"decision": "approved"})
-    wait_for_terminal(client, first["task_id"], timeout=40)
+    # Cleanup without starting the deliberately long-running shell. Shell
+    # timeout and process-tree teardown are covered by dedicated tests.
+    cancel = client.post(f"/api/v1/tasks/{first['task_id']}/cancel")
+    assert cancel.status_code == 202
+    terminal = wait_for_terminal(client, first["task_id"])
+    assert terminal["status"] == "cancelled"
 
 
 def test_cancel_during_shell_terminates_and_reaches_cancelled(client, session_id, model_outputs):
