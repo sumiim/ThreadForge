@@ -204,16 +204,16 @@ def test_run_shell_uses_allowlisted_environment_only(tmp_path, python_shell_comm
 def test_bound_tool_methods_delegate_into_tools_module(tmp_path):
     agent = build_agent(tmp_path, [], approval_policy="auto")
 
-    with patch("pico.tools.subprocess.run") as fake_run:
-        fake_run.return_value = type(
-            "Result",
+    with patch("pico.tools.ShellProcess") as fake_shell_cls:
+        fake_shell_cls.return_value.run.return_value = type(
+            "ShellResult",
             (),
-            {"returncode": 0, "stdout": "toolkit-shell\n", "stderr": ""},
+            {"returncode": 0, "stdout": "toolkit-shell\n", "stderr": "", "timed_out": False, "output_truncated": False, "cancelled": False},
         )()
         shell_result = agent.tool_run_shell({"command": "echo bypass", "timeout": 20})
 
     assert "toolkit-shell" in shell_result
-    fake_run.assert_called_once()
+    fake_shell_cls.assert_called_once()
     assert agent.tool_run_shell.__func__.__module__ == "pico.runtime"
 
     with patch("pico.tools.tool_delegate", return_value="toolkit-delegate") as fake_delegate:

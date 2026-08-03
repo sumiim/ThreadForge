@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .approval import ApprovalOutcome
+from .execution_hooks import ProcessCleanupFailed, RunCancelled
 from .workspace import clip
 
 if TYPE_CHECKING:
@@ -65,8 +67,10 @@ class ToolExecutor:
             },
         )
 
-    def execute(self, name, args):
+    def execute(self, name, args, tool_call_id=""):
         agent = self.agent
+        tool_call = {"id": tool_call_id, "name": name, "args": dict(args or {})}
+
         if agent.allowed_tools is not None and name not in agent.allowed_tools:
             self._record_sandbox_violation("tool_not_allowed", "tool_not_allowed", name)
             return ToolExecutionResult(
@@ -110,6 +114,7 @@ class ToolExecutor:
                     security_event_type=security_event_type,
                     risk_level="high" if tool["risky"] else "low",
                     read_only=not tool["risky"],
+                    affected_paths=None,
                 ),
             )
 
@@ -124,20 +129,46 @@ class ToolExecutor:
                 ),
             )
 
-        if tool["risky"] and not agent.approve(name, args):
-            security_event_type = "read_only_block" if agent.read_only else "approval_denied"
-            if security_event_type == "read_only_block":
-                self._record_sandbox_violation("approval_denied", security_event_type, name)
-            return ToolExecutionResult(
-                content=f"error: approval denied for {name}",
-                metadata=_metadata(
-                    "rejected",
-                    tool_error_code="approval_denied",
-                    security_event_type=security_event_type,
-                    risk_level="high",
-                    read_only=False,
-                ),
-            )
+        # 校验通过：tool_requested 是线性化点，之后才可能发起审批。
+        agent.execution_hooks.tool_requested(agent.current_task_state, tool_call)
+
+        if tool["risky"]:
+            outcome = agent.approve_outcome(name, args, tool_call_id=tool_call_id)
+            if outcome is ApprovalOutcome.CANCELLED:
+                raise RunCancelled()
+            if outcome is ApprovalOutcome.EXPIRED:
+                result = ToolExecutionResult(
+                    content=f"error: approval expired for {name}",
+                    metadata=_metadata(
+                        "rejected",
+                        tool_error_code="approval_expired",
+                        security_event_type="approval_denied",
+                        risk_level="high",
+                        read_only=False,
+                    ),
+                )
+                agent.execution_hooks.after_tool(agent.current_task_state, result)
+                return result
+            if outcome is ApprovalOutcome.REJECTED:
+                security_event_type = "read_only_block" if agent.read_only else "approval_denied"
+                if security_event_type == "read_only_block":
+                    self._record_sandbox_violation("approval_denied", security_event_type, name)
+                result = ToolExecutionResult(
+                    content=f"error: approval denied for {name}",
+                    metadata=_metadata(
+                        "rejected",
+                        tool_error_code="approval_denied",
+                        security_event_type=security_event_type,
+                        risk_level="high",
+                        read_only=False,
+                    ),
+                )
+                agent.execution_hooks.after_tool(agent.current_task_state, result)
+                return result
+
+        # 实际执行前的最后一次取消复检。
+        agent.cancellation_token.raise_if_cancelled()
+        agent.execution_hooks.before_tool(agent.current_task_state, tool_call)
 
         before_snapshot = agent.capture_workspace_snapshot() if tool["risky"] else {}
         after_snapshot = before_snapshot
@@ -151,7 +182,10 @@ class ToolExecutor:
             if name == "run_shell":
                 match = re.search(r"exit_code:\s*(-?\d+)", content)
                 exit_code = int(match.group(1)) if match else 0
-                if exit_code != 0 and workspace_changed:
+                if "[tool timed out" in content:
+                    tool_status = "partial_success" if workspace_changed else "error"
+                    tool_error_code = "tool_timeout"
+                elif exit_code != 0 and workspace_changed:
                     tool_status = "partial_success"
                     tool_error_code = "tool_partial_success"
                 elif exit_code != 0:
@@ -169,7 +203,11 @@ class ToolExecutor:
                 diff_summary=diff_summary,
             )
             agent.record_process_note_for_tool(name, metadata)
-            return ToolExecutionResult(content=content, metadata=metadata)
+            result = ToolExecutionResult(content=content, metadata=metadata)
+            agent.execution_hooks.after_tool(agent.current_task_state, result)
+            return result
+        except (ProcessCleanupFailed, RunCancelled):
+            raise
         except Exception as exc:
             after_snapshot = agent.capture_workspace_snapshot() if tool["risky"] else before_snapshot
             affected_paths, diff_summary = agent.diff_workspace_snapshots(before_snapshot, after_snapshot)
@@ -189,4 +227,6 @@ class ToolExecutor:
                 diff_summary=diff_summary,
             )
             agent.record_process_note_for_tool(name, metadata)
-            return ToolExecutionResult(content=f"error: tool {name} failed: {exc}", metadata=metadata)
+            result = ToolExecutionResult(content=f"error: tool {name} failed: {exc}", metadata=metadata)
+            agent.execution_hooks.after_tool(agent.current_task_state, result)
+            return result

@@ -4,29 +4,31 @@ Pico 就是包在模型外面的控制循环：负责组 prompt、解析模型�
 校验并执行工具、写 trace、更新工作记忆，以及在合适的时候停下来。
 """
 
-import json
 import hashlib
+import json
 import os
 import re
-import uuid
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 
 from . import checkpoint as checkpointlib
-from .features import memory as memorylib
 from . import security as securitylib
-from .context_manager import ContextManager
+from . import tools as toolkit
+from .approval import ApprovalOutcome, ApprovalRequest, strategy_for_policy
 from .checkpoint import CHECKPOINT_NONE_STATUS
+from .context_manager import ContextManager
 from .event_sink import EventSink, JsonlSink
+from .execution_hooks import NeverCancelledToken, NoopExecutionHooks
+from .features import memory as memorylib
 from .prompt_prefix import build_prompt_prefix, tool_signature
-from .run_store import RunStore
 from .run_lifecycle import finalize_failed_run
+from .run_store import RunStore
 from .security import REDACTED_VALUE
 from .session_store import SessionStore
 from .tool_context import ToolContext
 from .tool_executor import ToolExecutor
-from . import tools as toolkit
 from .workspace import IGNORED_PATH_NAMES, MAX_HISTORY, WorkspaceContext, clip, now
 
 DEFAULT_SHELL_ENV_ALLOWLIST = (
@@ -93,12 +95,22 @@ class Pico:
         event_sink=None,
         allow_checkpoint=True,
         allow_durable_memory_write=True,
+        approval_strategy=None,
+        cancellation_token=None,
+        execution_hooks=None,
+        shell_output_max_bytes=1048576,
+        shell_cleanup_grace_seconds=5.0,
     ):
         self.model_client = model_client
         self.workspace = workspace
         self.root = Path(workspace.repo_root)
         self.session_store = session_store
         self.approval_policy = approval_policy
+        self.approval_strategy = approval_strategy if approval_strategy is not None else strategy_for_policy(approval_policy)
+        self.cancellation_token = cancellation_token if cancellation_token is not None else NeverCancelledToken()
+        self.execution_hooks = execution_hooks if execution_hooks is not None else NoopExecutionHooks()
+        self.shell_output_max_bytes = int(shell_output_max_bytes)
+        self.shell_cleanup_grace_seconds = float(shell_cleanup_grace_seconds)
         self.max_steps = max_steps
         self.max_new_tokens = max_new_tokens
         self.depth = depth
@@ -128,6 +140,7 @@ class Pico:
             workspace_root=self.root,
         )
         self.session["memory"] = self.memory.to_dict()
+        self._tool_context = None
         self.tools = self._apply_tool_allowlist(self.build_tools())
         self.tool_executor = ToolExecutor(self)
         self.prefix_state = self.build_prefix()
@@ -539,13 +552,13 @@ class Pico:
         self.last_durable_superseded = superseded
         return promoted, rejections, superseded
 
-    def ask(self, user_message):
+    def ask(self, user_message, *, task_id=None, run_id=None):
         from .agent_loop import AgentLoop
 
-        return AgentLoop(self).run(user_message)
+        return AgentLoop(self).run(user_message, task_id=task_id, run_id=run_id)
 
-    def execute_tool(self, name, args):
-        result = self.tool_executor.execute(name, args)
+    def execute_tool(self, name, args, tool_call_id=""):
+        result = self.tool_executor.execute(name, args, tool_call_id=tool_call_id)
         self._last_tool_result_metadata = dict(result.metadata)
         return result
 
@@ -619,14 +632,19 @@ class Pico:
         toolkit.validate_tool(self.tool_context(), name, args)
 
     def tool_context(self):
-        return ToolContext(
-            root=self.root,
-            path_resolver=self.path,
-            shell_env_provider=self.shell_env,
-            depth=self.depth,
-            max_depth=self.max_depth,
-            spawn_delegate=self.spawn_delegate,
-        )
+        if self._tool_context is None:
+            self._tool_context = ToolContext(
+                root=self.root,
+                path_resolver=self.path,
+                shell_env_provider=self.shell_env,
+                depth=self.depth,
+                max_depth=self.max_depth,
+                spawn_delegate=self.spawn_delegate,
+                cancellation_token=self.cancellation_token,
+                shell_output_max_bytes=self.shell_output_max_bytes,
+                shell_cleanup_grace_seconds=self.shell_cleanup_grace_seconds,
+            )
+        return self._tool_context
 
     def spawn_delegate(self, args):
         task = str(args.get("task", "")).strip()
@@ -738,18 +756,17 @@ class Pico:
     def tool_delegate(self, args):
         return toolkit.tool_delegate(self.tool_context(), args)
 
-    def approve(self, name, args):
+    def approve_outcome(self, name, args, tool_call_id=""):
+        """Typed approval decision; used by ToolExecutor for the Web path."""
         if self.read_only:
-            return False
-        if self.approval_policy == "auto":
-            return True
-        if self.approval_policy == "never":
-            return False
-        try:
-            answer = input(f"approve {name} {json.dumps(args, ensure_ascii=False)}? [y/N] ")
-        except EOFError:
-            return False
-        return answer.strip().lower() in {"y", "yes"}
+            return ApprovalOutcome.REJECTED
+        return self.approval_strategy.decide(
+            ApprovalRequest(name=name, args=args, tool_call_id=tool_call_id)
+        )
+
+    def approve(self, name, args):
+        """Legacy bool approval API; delegates to the injected strategy."""
+        return self.approve_outcome(name, args) is ApprovalOutcome.APPROVED
 
     @staticmethod
     def parse(raw):
