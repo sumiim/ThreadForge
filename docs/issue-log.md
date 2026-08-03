@@ -115,12 +115,39 @@ Git 推送反复出现连接超时或 `connection reset`，但 GitHub API 和部
 
 ### 修复
 
-本次使用可访问的 GitHub API 完成等价的分支和提交创建，没有修改系统 DNS 或持久化网络设置。
+- 应急阶段使用可访问的 GitHub API 完成等价的分支和提交创建，没有修改系统 DNS。
+- 长期方案创建专用 Ed25519 密钥，在 SSH 配置中把 `github.com` 定向到 `ssh.github.com:443`，并将仓库远端切换为 `git@github.com:sumiim/ThreadForge.git`。
 
 ### 验证
 
-远端分支和 PR 创建成功，GitHub Actions 正常启动。
+- 远端分支和 PR 创建成功，GitHub Actions 正常启动。
+- `ssh -T git@github.com` 返回 GitHub 账户认证成功。
+- `git fetch origin main` 和 `git ls-remote` 均通过 SSH 成功。
 
 ### 预防
 
-推送前先区分 DNS、TCP、认证和 Git 对象问题。网络异常时不得反复创建重复提交；采用替代通道后必须核对远端 SHA 和 PR 文件列表。
+推送前先区分 DNS、TCP、认证和 Git 对象问题。网络异常时不得反复创建重复提交；采用替代通道后必须核对远端 SHA 和 PR 文件列表。当前环境统一使用 GitHub SSH 443，不再回退到仓库 HTTPS 远端。
+
+## 2026-08-04：PowerShell 未向 ssh-keygen 传递空口令参数
+
+### 现象
+
+执行 `ssh-keygen ... -N ""` 时，`ssh-keygen` 报告 `option requires an argument -- N`，密钥文件没有创建。
+
+### 根因
+
+Windows PowerShell 5 在调用原生命令时丢弃了空字符串参数，`-N` 因而没有收到必需的空口令值。
+
+### 修复
+
+使用 PowerShell 停止解析标记 `--%`，让 `-N ""` 原样传递给 Windows OpenSSH。随后通过 GitHub 已登录页面添加公钥；现有仓库凭据没有账户 SSH Key 管理权限，不能使用 `/user/keys` API。
+
+### 验证
+
+- 密钥指纹可由 `ssh-keygen -lf` 正常读取。
+- GitHub 账户识别该密钥并通过 SSH 认证。
+- 私钥 ACL 仅允许当前用户、SYSTEM 和 Administrators 访问。
+
+### 预防
+
+在 Windows PowerShell 5 中调用需要空字符串参数的原生命令时，不依赖普通引号转义；使用 `--%` 或经过验证的参数数组，并在后续步骤前确认目标文件确实存在。
