@@ -1,0 +1,9 @@
+{
+  "workspaces": [
+    {
+      "id": "threadforge",
+      "name": "ThreadForge",
+      "path": "/workspace/threadforge"
+    }
+  ]
+}

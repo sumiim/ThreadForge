@@ -9,6 +9,8 @@ import subprocess
 import textwrap
 from functools import partial
 
+from .execution_hooks import ProcessCleanupFailed, RunCancelled
+from .shell_process import ShellProcess
 from .workspace import IGNORED_PATH_NAMES
 
 BASE_TOOL_SPECS = {
@@ -217,17 +219,36 @@ def tool_run_shell(context, args):
     timeout = int(args.get("timeout", 20))
     if timeout < 1 or timeout > 120:
         raise ValueError("timeout must be in [1, 120]")
-    result = subprocess.run(
+    # 受管 Shell：取消/超时时终止整个进程树；stdout/stderr 有界保留。
+    # 这里传入的是过滤后的环境变量，而不是直接继承整个父 shell 环境，
+    # 目的是减少敏感信息被意外带进命令执行环境的风险。
+    shell = ShellProcess(
         command,
         cwd=context.root,
-        shell=True,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        # 这里传入的是过滤后的环境变量，而不是直接继承整个父 shell 环境，
-        # 目的是减少敏感信息被意外带进命令执行环境的风险。
         env=context.shell_env(),
+        timeout=timeout,
+        output_max_bytes=context.shell_output_max_bytes,
+        cancellation_token=context.cancellation_token,
+        cleanup_grace_seconds=context.shell_cleanup_grace_seconds,
     )
+    context.register_shell(shell)
+    try:
+        result = shell.run()
+    except Exception:
+        if not shell.is_running():
+            context.release_shell(shell)
+        raise
+    if getattr(result, "cleanup_succeeded", True):
+        context.release_shell(shell)
+    if not getattr(result, "cleanup_succeeded", True):
+        raise ProcessCleanupFailed()
+    if result.cancelled:
+        raise RunCancelled()
+    suffix = ""
+    if result.timed_out:
+        suffix += f"\n[tool timed out after {timeout}s]"
+    if result.output_truncated:
+        suffix += "\n[output truncated]"
     return textwrap.dedent(
         f"""\
         exit_code: {result.returncode}
@@ -236,7 +257,7 @@ def tool_run_shell(context, args):
         stderr:
         {result.stderr.strip() or "(empty)"}
         """
-    ).strip()
+    ).strip() + suffix
 
 
 def tool_write_file(context, args):
