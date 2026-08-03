@@ -13,6 +13,9 @@ services:
       - THREADFORGE_WORKSPACES_FILE=/config/workspaces.json
       - THREADFORGE_WEB_ORIGIN=http://127.0.0.1:5173
       - THREADFORGE_OPENAPI_ENABLED=false
+      - GIT_CONFIG_COUNT=1
+      - GIT_CONFIG_KEY_0=safe.directory
+      - GIT_CONFIG_VALUE_0=/workspace/threadforge
       - PICO_OPENAI_API_BASE=${PICO_OPENAI_API_BASE:-https://www.right.codes/codex/v1}
       - PICO_OPENAI_API_KEY=${PICO_OPENAI_API_KEY:-}
       - PICO_OPENAI_MODEL=${PICO_OPENAI_MODEL:-gpt-5.4}
