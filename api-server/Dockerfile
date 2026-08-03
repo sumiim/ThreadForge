@@ -11,6 +11,10 @@ RUN python -m pip wheel --no-cache-dir --wheel-dir /wheels \
 
 FROM python:3.12-slim
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN addgroup --system threadforge && adduser --system --no-create-home --ingroup threadforge threadforge
 
 WORKDIR /app
