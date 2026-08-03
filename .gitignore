@@ -27,9 +27,6 @@ coverage/
 artifacts/
 tmp/
 
-# Icon source files
-/icon/绘图1.vsdx
-
 # Editors and OS
 .idea/
 .vscode/
