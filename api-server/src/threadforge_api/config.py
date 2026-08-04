@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal
 from uuid import UUID
 
-from pydantic import field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
@@ -43,6 +44,15 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     trusted_hosts: list[str] = ["127.0.0.1", "::1", "localhost"]
     instance_owner_id: UUID | None = None
+    identity_mode: Literal["single_owner_instance", "github_oauth"] = "single_owner_instance"
+    github_oauth_client_id: str = ""
+    github_oauth_client_secret: str = ""
+    github_oauth_callback_url: str = "http://127.0.0.1:18000/api/v1/auth/github/callback"
+    github_oauth_return_url: str = "http://127.0.0.1:5173/"
+    github_owner_login: str = ""
+    github_allowed_logins: list[str] = Field(default_factory=list)
+    auth_session_ttl_seconds: int = 604800
+    auth_cookie_secure: bool = False
 
     @field_validator("trusted_hosts")
     @classmethod
@@ -79,6 +89,56 @@ class Settings(BaseSettings):
         if not _re.fullmatch(r"https?://(127\.0\.0\.1|\[::1\]|localhost)(:\d+)?", value):
             raise ValueError("V1 only allows loopback CORS origins")
         return value
+
+    @field_validator("github_oauth_callback_url", "github_oauth_return_url")
+    @classmethod
+    def _validate_oauth_loopback_url(cls, value: str) -> str:
+        import re as _re
+
+        if not _re.fullmatch(r"https?://(127\.0\.0\.1|\[::1\]|localhost)(:\d+)?(/[^#]*)?", value):
+            raise ValueError("OAuth callback and return URLs must use loopback hosts")
+        return value
+
+    @field_validator("github_allowed_logins")
+    @classmethod
+    def _normalize_allowed_logins(cls, value: list[str]) -> list[str]:
+        normalized = []
+        for login in value:
+            login = login.strip().lower()
+            if login and login not in normalized:
+                normalized.append(login)
+        return normalized
+
+    @field_validator("github_owner_login")
+    @classmethod
+    def _normalize_owner_login(cls, value: str) -> str:
+        return value.strip().lower()
+
+    @field_validator("auth_session_ttl_seconds")
+    @classmethod
+    def _validate_auth_session_ttl(cls, value: int) -> int:
+        if not 300 <= value <= 31 * 24 * 60 * 60:
+            raise ValueError("auth_session_ttl_seconds must be between 5 minutes and 31 days")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_github_oauth(self) -> Settings:
+        if self.identity_mode != "github_oauth":
+            return self
+        missing = [
+            name
+            for name, value in {
+                "github_oauth_client_id": self.github_oauth_client_id,
+                "github_oauth_client_secret": self.github_oauth_client_secret,
+                "github_owner_login": self.github_owner_login,
+            }.items()
+            if not value.strip()
+        ]
+        if missing:
+            raise ValueError("github_oauth requires: " + ", ".join(missing))
+        if self.github_owner_login not in self.github_allowed_logins:
+            self.github_allowed_logins = [self.github_owner_login, *self.github_allowed_logins]
+        return self
 
     @field_validator("port")
     @classmethod

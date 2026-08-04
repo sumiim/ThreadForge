@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict'
 import { afterEach, describe, it } from 'node:test'
-import { ApiError, getRuntimeConfig, listMcpServers, listSkills } from './client.ts'
+import {
+  ApiError,
+  getAuthStatus,
+  getRuntimeConfig,
+  listMcpServers,
+  listSkills,
+  logout,
+} from './client.ts'
 
 const originalFetch = globalThis.fetch
 
@@ -56,5 +63,24 @@ describe('client metadata API', () => {
       assert.deepEqual(error.details, { reason: 'startup' })
       return true
     })
+  })
+})
+
+describe('client authentication API', () => {
+  it('includes credentials and CSRF protection on writes', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    globalThis.fetch = async (input, init) => {
+      calls.push({ url: String(input), init })
+      return response({ authenticated: true, status: 'signed_out' })
+    }
+
+    await getAuthStatus()
+    await logout()
+
+    assert.equal(calls[0].url, '/api/v1/auth/status')
+    assert.equal(calls[0].init?.credentials, 'include')
+    assert.equal(calls[1].url, '/api/v1/auth/logout')
+    assert.equal(calls[1].init?.credentials, 'include')
+    assert.equal(new Headers(calls[1].init?.headers).get('X-ThreadForge-CSRF'), '1')
   })
 })

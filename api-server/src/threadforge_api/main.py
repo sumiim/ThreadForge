@@ -13,8 +13,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from .api.errors import install_error_handlers
-from .api.routers import health, metadata, runs, sessions, tasks, workspaces
+from .api.routers import auth, health, metadata, runs, sessions, tasks, workspaces
 from .config import Settings
+from .infrastructure.auth import OAuthClient
 from .lifespan import build_lifespan
 
 logger = logging.getLogger("threadforge.access")
@@ -26,6 +27,7 @@ def create_app(
     settings: Settings | None = None,
     *,
     model_client_factory: Callable | None = None,
+    oauth_client: OAuthClient | None = None,
 ) -> FastAPI:
     resolved_settings = settings or Settings().freeze_provider_env()
     openapi_enabled = bool(resolved_settings.openapi_enabled)
@@ -38,6 +40,7 @@ def create_app(
         lifespan=build_lifespan(
             settings=resolved_settings,
             model_client_factory=model_client_factory,
+            oauth_client=oauth_client,
         ),
     )
     app.state.settings = resolved_settings
@@ -52,8 +55,9 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
+        allow_credentials=True,
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type", "X-Request-ID"],
+        allow_headers=["Content-Type", "X-Request-ID", "X-ThreadForge-CSRF"],
     )
 
     @app.middleware("http")
@@ -67,6 +71,8 @@ def create_app(
         started = time.perf_counter()
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
+        if resolved_settings.identity_mode == "github_oauth" and request.url.path.startswith("/api/v1/"):
+            response.headers["Cache-Control"] = "no-store"
         duration_ms = int((time.perf_counter() - started) * 1000)
         logger.info(
             "request method=%s route=%s status=%d duration_ms=%d request_id=%s",
@@ -79,6 +85,7 @@ def create_app(
         return response
 
     app.include_router(health.router)
+    app.include_router(auth.router)
     app.include_router(metadata.router)
     app.include_router(workspaces.router)
     app.include_router(sessions.router)

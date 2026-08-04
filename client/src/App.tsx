@@ -1,6 +1,12 @@
 import { useState } from 'react'
-import { Button, ConfigProvider, Drawer, Input, Layout, Modal, Tag } from 'antd'
-import { FileTextOutlined, FolderOpenOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
+import { Avatar, Button, ConfigProvider, Drawer, Dropdown, Input, Layout, Modal, Tag } from 'antd'
+import {
+  FileTextOutlined,
+  FolderOpenOutlined,
+  LogoutOutlined,
+  SafetyCertificateOutlined,
+} from '@ant-design/icons'
+import type { AuthStatus } from './api/types'
 import { useSessions } from './hooks/useSessions'
 import { useTheme } from './hooks/useTheme'
 import { themeConfig, darkThemeConfig } from './styles/theme'
@@ -14,7 +20,13 @@ const { Header, Sider, Content } = Layout
 
 // 对话工作台：左列表 + 右对话
 // 右上角：dev 标签 + 工作区路径；左下角（侧边栏底部）：设置入口（模型切换）+ 主题切换
-export default function App() {
+interface AppProps {
+  auth: AuthStatus
+  onLogout: () => void
+  signingOut: boolean
+}
+
+export default function App({ auth, onLogout, signingOut }: AppProps) {
   const {
     sessions,
     activeId,
@@ -89,6 +101,24 @@ export default function App() {
                 <FolderOpenOutlined className="shrink-0 text-stone-400" />
                 <span className="max-w-[280px] truncate text-stone-500">{activePath}</span>
               </div>
+              {auth.user ? (
+                <Dropdown
+                  trigger={['click']}
+                  menu={{
+                    items: [{ key: 'logout', icon: <LogoutOutlined />, label: '退出登录' }],
+                    onClick: ({ key }) => {
+                      if (key === 'logout') onLogout()
+                    },
+                  }}
+                >
+                  <Button type="text" size="small" loading={signingOut}>
+                    <Avatar size={20} src={auth.user.avatar_url || undefined}>
+                      {auth.user.login.slice(0, 1).toUpperCase()}
+                    </Avatar>
+                    <span className="max-w-28 truncate">@{auth.user.login}</span>
+                  </Button>
+                </Dropdown>
+              ) : null}
             </div>
           </Header>
           <Content className="min-h-0">

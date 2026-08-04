@@ -36,8 +36,8 @@ ThreadForge 计划覆盖以下能力：
 | --- | --- | --- |
 | Pico Legacy Runtime | 已迁移 | AgentLoop、Prompt、Context、Memory、Session、Checkpoint、工具、安全策略、CLI、评测和测试 |
 | Agent Orchestrator | 已迁移 | LangGraph wrapper、意图路由、Research/Execute/Review 工作流和 backend adapter |
-| Web Console | V1 已接入 | Session、任务、SSE、审批、停止、运行制品与后端能力状态 |
-| API Server | V1 已实现 | FastAPI REST/SSE、JSON 持久化、恢复、取消和审批 |
+| Web Console | V1 已接入 | Session、任务、SSE、审批、停止、GitHub 登录、运行制品与后端能力状态 |
+| API Server | V1 已实现 | FastAPI REST/SSE、JSON 持久化、恢复、取消、审批和可选 GitHub OAuth |
 | Sandbox Workers | 后续版本 | 每个任务或 Worker 的独立 Docker 执行环境 |
 | Skills Registry | 后续版本 | Skill Manifest、版本、评测、发布和回滚 |
 

@@ -5,12 +5,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from ...domain.enums import ExecutionEnvironment
-from ..dependencies import get_container
+from ..dependencies import get_actor, get_container
 
 router = APIRouter()
 
 
-@router.get("/api/v1/workspaces")
+@router.get("/api/v1/workspaces", dependencies=[Depends(get_actor)])
 def list_workspaces(container=Depends(get_container)) -> dict:
     items = []
     for entry in container.workspace_catalog.list():

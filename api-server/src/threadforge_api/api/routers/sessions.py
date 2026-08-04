@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from ...application.session_service import SessionService
 from ...domain.identity import Actor
 from ...infrastructure.id_validators import validate_session_id
-from ..dependencies import get_actor, get_session_service
+from ..dependencies import get_actor, get_session_service, require_csrf
 from ..models import CreateSessionRequest
 
 router = APIRouter()
@@ -15,7 +15,7 @@ router = APIRouter()
 _SESSION_LIST_LIMIT_MAX = 100
 
 
-@router.post("/api/v1/sessions", status_code=201)
+@router.post("/api/v1/sessions", status_code=201, dependencies=[Depends(require_csrf)])
 def create_session(
     body: CreateSessionRequest,
     actor: Actor = Depends(get_actor),
