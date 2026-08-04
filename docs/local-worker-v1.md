@@ -22,6 +22,8 @@ V1 每台 Worker 同时只执行一个根任务。运行期间断线时，服务
 
 多用户不能依赖开发者的 SSH 隧道。生产环境需要一个域名和 HTTPS 反向代理，并把 Web、REST、SSE、OAuth callback 与 Worker WebSocket 放在同一站点。仓库提供 [Caddy 示例](../deploy/Caddyfile.example)。API 和 Web 容器仍只监听宿主机 `127.0.0.1`，公网仅开放 Caddy 的 443。
 
+生产 CD 必须调用仓库内的 [`scripts/deploy-production.sh`](../scripts/deploy-production.sh)。该脚本会同时构建并启动 `api` 与 `web` 服务，并且只有在 API readiness、Web HTTP 200、经 Web 同源代理访问 API 成功以及两个容器均处于 running 状态时才返回成功。服务器上的受限 sudo/forced-command 脚本只应作为固定入口转交给此脚本，避免部署逻辑在服务器和仓库之间漂移。Web Nginx 同时代理 `/api/*` 与 `/health/*` 到 Compose 内的 `api:8000`，因此没有配置公网 Caddy 时，通过 SSH 转发 Web 端口也能使用完整控制台。
+
 生产 `.env` 至少配置：
 
 ```dotenv
