@@ -11,6 +11,8 @@ from ..config import Settings
 from ..domain.errors import AuthorizationDeniedError
 from ..domain.identity import Actor, canonical_owner_id
 from ..infrastructure.auth import AUTH_COOKIE_NAME, AuthManager
+from ..infrastructure.device_store import DeviceStore, PairingCodeStore
+from ..infrastructure.worker_hub import WorkerHub
 from ..lifespan import AppContainer
 
 
@@ -39,6 +41,18 @@ def get_optional_actor(request: Request) -> Actor | None:
 
 def get_auth_manager(request: Request) -> AuthManager | None:
     return request.app.state.container.auth_manager
+
+
+def get_device_store(request: Request) -> DeviceStore:
+    return request.app.state.container.device_store
+
+
+def get_pairing_store(request: Request) -> PairingCodeStore:
+    return request.app.state.container.pairing_store
+
+
+def get_worker_hub(request: Request) -> WorkerHub:
+    return request.app.state.container.worker_hub
 
 
 def require_csrf(request: Request) -> None:

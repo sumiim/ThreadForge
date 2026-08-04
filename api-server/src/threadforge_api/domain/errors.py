@@ -123,3 +123,22 @@ class OAuthStateInvalidError(AppError):
 class OAuthProviderError(AppError):
     http_status = 502
     code = "oauth_provider_error"
+
+
+class DeviceNotFoundError(NotFoundError):
+    code = "device_not_found"
+
+
+class PairingCodeInvalidError(AppError):
+    http_status = 400
+    code = "pairing_code_invalid"
+
+
+class WorkerOfflineError(AppError):
+    http_status = 409
+    code = "worker_offline"
+
+
+class WorkerProtocolError(AppError):
+    http_status = 400
+    code = "worker_protocol_error"

@@ -1,0 +1,286 @@
+"""One-task local Pico runtime with remote approval and public event callbacks."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import secrets
+import threading
+import time
+import urllib.error
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+
+from pico import Pico
+from pico.approval import ApprovalOutcome, ApprovalRequest, ApprovalStrategy
+from pico.event_sink import CompositeSink, EventCollector, JsonlSink
+from pico.execution_hooks import RunCancelled
+from pico.providers.clients import OpenAICompatibleModelClient
+from pico.run_lifecycle import finalize_failed_run
+from pico.run_store import RunStore
+from pico.security import redact_artifact
+from pico.session_store import InMemorySessionStore
+from pico.task_state import (
+    STATUS_COMPLETED,
+    STATUS_RUNNING,
+    STATUS_STOPPED,
+    STOP_REASON_FINAL_ANSWER_RETURNED,
+    STOP_REASON_MODEL_ERROR,
+    STOP_REASON_RUNTIME_ERROR,
+    STOP_REASON_USER_CANCELLED,
+)
+from pico.workspace import WorkspaceContext
+
+ALLOWED_TOOLS = ("list_files", "read_file", "search", "run_shell", "write_file", "patch_file")
+
+
+class CancellationToken:
+    def __init__(self):
+        self._event = threading.Event()
+
+    def cancel(self) -> None:
+        self._event.set()
+
+    def is_cancelled(self) -> bool:
+        return self._event.is_set()
+
+    def raise_if_cancelled(self) -> None:
+        if self.is_cancelled():
+            raise RunCancelled()
+
+
+class RemoteApprovalStrategy(ApprovalStrategy):
+    def __init__(self, send: Callable[[dict], None], task_id: str, token: CancellationToken):
+        self._send = send
+        self._task_id = task_id
+        self._token = token
+        self._condition = threading.Condition()
+        self._decisions: dict[str, str] = {}
+        self._pending_digests: dict[str, str] = {}
+
+    def decide(self, request: ApprovalRequest) -> ApprovalOutcome:
+        args_digest = _args_digest(request.args)
+        with self._condition:
+            self._pending_digests[request.tool_call_id] = args_digest
+        self._send(
+            {
+                "type": "approval.requested",
+                "task_id": self._task_id,
+                "tool_call_id": request.tool_call_id,
+                "tool_name": request.name,
+                "args": request.args,
+                "args_digest": args_digest,
+            }
+        )
+        with self._condition:
+            while request.tool_call_id not in self._decisions:
+                if self._token.is_cancelled():
+                    raise RunCancelled()
+                self._condition.wait(timeout=0.25)
+            decision = self._decisions.pop(request.tool_call_id)
+            self._pending_digests.pop(request.tool_call_id, None)
+        return ApprovalOutcome.APPROVED if decision == "approved" else ApprovalOutcome.REJECTED
+
+    def resolve(self, tool_call_id: str, decision: str, args_digest: str) -> None:
+        with self._condition:
+            expected = self._pending_digests.get(tool_call_id)
+            if expected is None or not secrets.compare_digest(expected, args_digest):
+                raise RuntimeError("approval decision does not match the pending tool arguments")
+            self._decisions[tool_call_id] = decision
+            self._condition.notify_all()
+
+    def wake(self) -> None:
+        with self._condition:
+            self._condition.notify_all()
+
+
+class RemoteExecutionHooks:
+    def __init__(self, send_event: Callable[[str, dict], None], token: CancellationToken):
+        self._send = send_event
+        self._token = token
+        self._active_tool_call_id = ""
+        self._active_tool_name = ""
+
+    def _check(self) -> None:
+        if self._token.is_cancelled():
+            raise RunCancelled()
+
+    def before_model(self, task_state) -> None:
+        self._check()
+        self._send("model.started", {})
+
+    def after_model(self, task_state, metadata: dict) -> None:
+        self._check()
+        usage = {
+            key: value
+            for key, value in (metadata or {}).items()
+            if key in {"input_tokens", "output_tokens", "total_tokens", "cached_tokens"}
+        }
+        self._send("model.completed", {"usage": usage})
+
+    def tool_requested(self, task_state, tool_call: dict) -> None:
+        self._check()
+        self._send(
+            "tool.requested",
+            {"tool_call_id": tool_call.get("id", ""), "tool_name": tool_call.get("name", "")},
+        )
+
+    def before_tool(self, task_state, tool_call: dict) -> None:
+        self._check()
+        self._active_tool_call_id = str(tool_call.get("id", ""))
+        self._active_tool_name = str(tool_call.get("name", ""))
+        self._send(
+            "tool.started",
+            {"tool_call_id": self._active_tool_call_id, "tool_name": self._active_tool_name},
+        )
+
+    def after_tool(self, task_state, result) -> None:
+        self._check()
+        metadata = dict(getattr(result, "metadata", {}) or {})
+        status = metadata.get("tool_status", "ok")
+        event_type = "tool.completed" if status in {"ok", "partial_success"} else "tool.failed"
+        self._send(
+            event_type,
+            {
+                "tool_call_id": self._active_tool_call_id,
+                "tool_name": self._active_tool_name,
+                "tool_status": status,
+                "tool_error_code": metadata.get("tool_error_code", ""),
+                "affected_paths": metadata.get("affected_paths", []),
+            },
+        )
+        self._active_tool_call_id = ""
+        self._active_tool_name = ""
+
+
+@dataclass
+class ActiveRun:
+    task_id: str
+    token: CancellationToken
+    approval: RemoteApprovalStrategy
+    thread: threading.Thread | None = None
+    pico: Pico | None = None
+
+    def cancel(self, cleanup_grace: float) -> None:
+        self.token.cancel()
+        self.approval.wake()
+        if self.pico is not None:
+            self.pico.tool_context().terminate_active_shell(cleanup_grace)
+
+
+def run_task(
+    *,
+    task: dict,
+    workspace_path: Path,
+    data_dir: Path,
+    send: Callable[[dict], None],
+    active: ActiveRun,
+    model_client_factory: Callable[[], object] | None = None,
+) -> None:
+    settings = task.get("settings", {})
+    session = dict(task["session"])
+    session["workspace_root"] = str(workspace_path)
+    session_store = InMemorySessionStore()
+    run_store = RunStore(data_dir / "runs")
+    model_client = (
+        model_client_factory()
+        if model_client_factory is not None
+        else OpenAICompatibleModelClient(
+            model=_required_env("PICO_OPENAI_MODEL", "gpt-5.4"),
+            base_url=_required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
+            api_key=_required_env("PICO_OPENAI_API_KEY"),
+            temperature=0.2,
+            timeout=int(settings.get("model_timeout_seconds", 120)),
+            max_attempts=1,
+        )
+    )
+    hooks = RemoteExecutionHooks(
+        lambda event_type, data: send(
+            {
+                "type": "event",
+                "task_id": task["task_id"],
+                "event_type": event_type,
+                "data": redact_artifact(data),
+            }
+        ),
+        active.token,
+    )
+    pico = Pico(
+        model_client=model_client,
+        workspace=WorkspaceContext.build(workspace_path),
+        session_store=session_store,
+        run_store=run_store,
+        session=session,
+        approval_strategy=active.approval,
+        cancellation_token=active.token,
+        execution_hooks=hooks,
+        allowed_tools=ALLOWED_TOOLS,
+        max_steps=int(task.get("max_steps", 6)),
+        max_new_tokens=int(settings.get("max_new_tokens", 512)),
+        event_sink=CompositeSink(EventCollector(), JsonlSink(run_store)),
+        shell_output_max_bytes=int(settings.get("shell_output_max_bytes", 1048576)),
+        shell_cleanup_grace_seconds=float(settings.get("shell_cleanup_grace_seconds", 5)),
+        allow_durable_memory_write=False,
+    )
+    active.pico = pico
+    started = time.monotonic()
+    try:
+        pico.ask(task["input"], task_id=task["task_id"], run_id=task["run_id"])
+    except Exception as exc:
+        if pico.current_task_state is not None and pico.current_task_state.status == STATUS_RUNNING:
+            error_type, stop_reason = _classify_error(exc)
+            finalize_failed_run(
+                pico,
+                pico.current_task_state,
+                error_type=error_type,
+                duration_ms=int((time.monotonic() - started) * 1000),
+                stop_reason=stop_reason,
+            )
+    state = pico.current_task_state
+    if state is not None and state.status == STATUS_COMPLETED and state.stop_reason == STOP_REASON_FINAL_ANSWER_RETURNED:
+        status = "completed"
+    elif state is not None and state.status == STATUS_STOPPED and state.stop_reason == STOP_REASON_USER_CANCELLED:
+        status = "cancelled"
+    else:
+        status = "failed"
+    send(
+        {
+            "type": "terminal",
+            "task_id": task["task_id"],
+            "status": status,
+            "stop_reason": getattr(state, "stop_reason", "") or STOP_REASON_RUNTIME_ERROR,
+            "final_answer": redact_artifact(getattr(state, "final_answer", "") or ""),
+            "session": pico.session,
+        }
+    )
+
+
+def _required_env(name: str, default: str = "") -> str:
+    import os
+
+    value = os.environ.get(name, default).strip()
+    if not value:
+        raise RuntimeError(f"{name} is not configured on the local Worker")
+    return value
+
+
+def _classify_error(exc: Exception) -> tuple[str, str]:
+    current: BaseException | None = exc
+    while current is not None:
+        if isinstance(current, urllib.error.HTTPError):
+            return f"model_http_{current.code}", STOP_REASON_MODEL_ERROR
+        if isinstance(current, (urllib.error.URLError, ConnectionError, TimeoutError)):
+            return "model_connection_error", STOP_REASON_MODEL_ERROR
+        current = current.__cause__
+    return type(exc).__name__, STOP_REASON_RUNTIME_ERROR
+
+
+def _args_digest(args: dict) -> str:
+    encoded = json.dumps(
+        args,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()

@@ -15,6 +15,7 @@ import ChatView from './features/chat/ChatView'
 import RunArtifactsDrawer from './features/chat/RunArtifactsDrawer'
 import SkillsView from './features/skills/SkillsView'
 import McpView from './features/mcp/McpView'
+import WorkerDevices from './features/devices/WorkerDevices'
 
 const { Header, Sider, Content } = Layout
 
@@ -53,9 +54,14 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
   const activePath = active
     ? (workspaces.find((w) => w.workspace_id === active.workspaceId)?.display_path ?? active.workspaceId)
     : ''
-  const executionLabel = runtimeConfig?.container_sandbox_enabled
-    ? '独立容器沙盒'
-    : '后端进程 · 无独立容器沙盒'
+  const activeWorkspace = active
+    ? workspaces.find((workspace) => workspace.workspace_id === active.workspaceId)
+    : undefined
+  const executionLabel = activeWorkspace?.execution_environment === 'local_worker'
+    ? `${activeWorkspace.device_name ?? '本地设备'} · 本地 Worker`
+    : runtimeConfig?.container_sandbox_enabled
+      ? '独立容器沙盒'
+      : '后端进程 · 无独立容器沙盒'
 
   return (
     // 主题 ConfigProvider：antd 组件随亮/暗切换；Tailwind 侧由 .dark 类变量色板接管
@@ -158,6 +164,7 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
               <div className="mb-1.5 text-sm font-medium text-stone-800">执行边界</div>
               <p className="text-xs text-stone-500">{executionLabel}。工具会直接作用于已授权工作区。</p>
             </div>
+            <WorkerDevices />
           </div>
         </Drawer>
 

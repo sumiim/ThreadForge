@@ -22,6 +22,7 @@ from .domain.errors import ApprovalNotFoundError
 from .domain.identity import canonical_owner_id
 from .infrastructure.approval_gate import ApprovalGate
 from .infrastructure.auth import AuthManager, OAuthClient
+from .infrastructure.device_store import DeviceStore, PairingCodeStore
 from .infrastructure.event_broker import EventBroker
 from .infrastructure.event_publisher import EventPublisher
 from .infrastructure.json_repositories import JsonApprovalRepository, JsonTaskRepository
@@ -36,6 +37,7 @@ from .infrastructure.run_reconciliation import (
 )
 from .infrastructure.run_store_reader import RunStoreReader
 from .infrastructure.task_runner import TaskRunner
+from .infrastructure.worker_hub import WorkerHub
 from .infrastructure.workspace_catalog import WorkspaceCatalog
 
 
@@ -60,6 +62,8 @@ class AppContainer:
         self.session_store = SessionStore(settings.data_dir / "sessions")
         self.task_repo = JsonTaskRepository(settings.data_dir / "tasks")
         self.approval_repo = JsonApprovalRepository(settings.data_dir / "approvals")
+        self.device_store = DeviceStore(settings.data_dir / "devices")
+        self.pairing_store = PairingCodeStore(settings.worker_pairing_ttl_seconds)
         self._assign_legacy_ownership()
         self.runs_dir = settings.data_dir / "runs"
         secure_directory(self.runs_dir)
@@ -67,6 +71,15 @@ class AppContainer:
         self._loop = asyncio.get_running_loop()
         self.broker = EventBroker(self._loop, queue_size=settings.sse_queue_size)
         self.publisher = EventPublisher(self.broker)
+        self.worker_hub = WorkerHub(
+            loop=self._loop,
+            settings=settings,
+            device_store=self.device_store,
+            task_repo=self.task_repo,
+            approval_repo=self.approval_repo,
+            session_store=self.session_store,
+            publisher=self.publisher,
+        )
         self.recovery_journal = RecoveryJournal(settings.data_dir / "recovery.jsonl")
         self.approval_gate = ApprovalGate(
             approval_repo=self.approval_repo,
@@ -89,7 +102,13 @@ class AppContainer:
             model_client_factory=model_client_factory or self._default_model_client_factory,
         )
         self.approval_gate.set_degraded_callback(self.runner.mark_degraded)
-        self.session_service = SessionService(self.session_store, self.workspace_catalog, self.task_repo)
+        self.session_service = SessionService(
+            self.session_store,
+            self.workspace_catalog,
+            self.task_repo,
+            device_store=self.device_store,
+            worker_hub=self.worker_hub,
+        )
         self.task_service = TaskService(
             settings=settings,
             session_service=self.session_service,
@@ -98,6 +117,8 @@ class AppContainer:
             runner=self.runner,
             publisher=self.publisher,
             run_store_reader=self.run_store_reader,
+            worker_hub=self.worker_hub,
+            device_store=self.device_store,
         )
         self.artifact_service = ArtifactService(self.run_store_reader, self.task_repo)
         self.ready = False
@@ -131,6 +152,7 @@ class AppContainer:
                 self.session_store.root,
                 self.task_repo.root,
                 self.approval_repo.root,
+                self.device_store.root,
                 self.runs_dir,
             }:
                 with tempfile.NamedTemporaryFile(dir=directory, prefix=".ready-", delete=True):
@@ -151,6 +173,8 @@ class AppContainer:
                 raise ValueError(f"terminal Task artifacts are inconsistent: {task.task_id}")
         for path in self.approval_repo.root.glob("*.json"):
             self.approval_repo.get(path.stem)
+        for path in self.device_store.root.glob("dev_*.json"):
+            self.device_store.get(path.stem)
 
     def _default_model_client_factory(self):
         return OpenAICompatibleModelClient(

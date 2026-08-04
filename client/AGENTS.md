@@ -71,7 +71,7 @@ Electron 桥接(`electron/preload.ts`)经 `contextBridge` 暴露 `window.threadf
 - 所有请求封装在 `src/api/`，统一错误处理与 antd `message` / `notification` 提示。
 - SSE 事件流（任务状态、工具事件）在 `src/api/` 统一封装，处理断线重连与组件卸载清理。
 - 开发环境通过 Vite `server.proxy` 转发到 api-server；**SSE 端点需在代理配置中关闭缓冲**，否则事件流不实时。
-- 后端地址不写死：Web 开发代理使用 `VITE_API_PROXY_TARGET`；Web 生产构建可使用 `VITE_API_BASE_URL`。**桌面生产模式（页面从 file:// 加载）下没有 dev 代理可用**，由 preload 读取 `THREADFORGE_API_BASE_URL`，且只接受 loopback HTTP origin。后端必须显式启用 `THREADFORGE_DESKTOP_ORIGIN_ENABLED=true` 才允许 `Origin: null`；默认关闭。
+- 后端地址不写死：Web 开发代理使用 `VITE_API_PROXY_TARGET`；Web 生产构建可使用 `VITE_API_BASE_URL`。桌面生产模式可通过 `THREADFORGE_WEB_URL` 加载与 Web 相同的 HTTPS 站点（GitHub OAuth 多用户推荐），或从 `file://` 加载内置页面并由 preload 读取 `THREADFORGE_API_BASE_URL`。远端只接受 HTTPS，HTTP 仅允许 loopback；只有 `file://` 模式才需要后端显式启用 `THREADFORGE_DESKTOP_ORIGIN_ENABLED=true` 允许 `Origin: null`。
 - 审批、停止等关键操作，交互前需用户确认。
 
 ## 代码规范
@@ -93,4 +93,4 @@ V1 页面骨架已实现（白色调对话工作台）：
 
 桌面壳（Electron）已就绪：`pnpm dev:electron` 开发、`pnpm build:electron` 出 Windows 安装包；`pnpm dev` / `pnpm build` 保持纯 web 不变。窗口图标尚未定制（暂用 Electron 默认）。
 
-下一步：补充更多交互测试，并在后续版本接入真实 Skills/MCP 执行能力。
+本地 Worker V1 已接入：Web/Electron 统一经中央 API 管理设备、Session、Task、审批和事件；Worker 通过出站 WebSocket 在用户电脑执行 Pico、模型、文件、Git 与 Shell。下一步是签名安装包、托盘/开机自启和自动更新，并在后续版本接入真实 Skills/MCP 执行能力。

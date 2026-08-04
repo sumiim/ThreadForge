@@ -21,6 +21,7 @@ from ..domain.errors import (
     PersistenceUnavailableError,
     SessionCorruptedError,
     SessionNotFoundError,
+    WorkerOfflineError,
 )
 from ..domain.identity import canonical_owner_id
 from ..infrastructure.json_repositories import JsonTaskRepository
@@ -43,20 +44,42 @@ class SessionService:
         session_store,
         workspace_catalog: WorkspaceCatalog,
         task_repo: JsonTaskRepository | None = None,
+        device_store=None,
+        worker_hub=None,
     ):
         self._session_store = session_store
         self._workspace_catalog = workspace_catalog
         self._task_repo = task_repo
+        self._device_store = device_store
+        self._worker_hub = worker_hub
 
     def create_session(self, workspace_id: str, title: str | None, owner_id: str) -> dict:
         owner_id = canonical_owner_id(owner_id)
-        entry = self._workspace_catalog.recheck(workspace_id)
+        local_workspace = (
+            self._device_store.find_workspace(owner_id, workspace_id)
+            if self._device_store is not None
+            else None
+        )
+        if local_workspace is not None:
+            device, workspace = local_workspace
+            if self._worker_hub is None or not self._worker_hub.is_online(device.device_id):
+                raise WorkerOfflineError("the selected local Worker is offline")
+            workspace_root = f"worker://{device.device_id}/{workspace.workspace_id}"
+            execution_environment = "local_worker"
+            device_id = device.device_id
+        else:
+            entry = self._workspace_catalog.recheck(workspace_id)
+            workspace_root = str(entry.canonical_path)
+            execution_environment = "backend_process"
+            device_id = ""
         session_id = "ses_" + uuid.uuid4().hex
         session = {
             "id": session_id,
             "created_at": utc_now(),
-            "workspace_root": str(entry.canonical_path),
+            "workspace_root": workspace_root,
             "workspace_id": workspace_id,
+            "execution_environment": execution_environment,
+            "device_id": device_id,
             "owner_id": owner_id,
             "title": (title or "").strip() or f"{DEFAULT_SESSION_TITLE_PREFIX} {session_id[-8:]}",
             "history": [],
@@ -72,6 +95,8 @@ class SessionService:
             "workspace_id": session["workspace_id"],
             "title": redact_artifact(session["title"]),
             "created_at": session["created_at"],
+            "execution_environment": execution_environment,
+            "device_id": device_id,
         }
 
     def _load(self, session_id: str, owner_id: str | None = None) -> dict:
@@ -141,6 +166,8 @@ class SessionService:
             "workspace_id": session.get("workspace_id"),
             "title": redact_artifact(session.get("title", "")),
             "created_at": session.get("created_at"),
+            "execution_environment": session.get("execution_environment", "backend_process"),
+            "device_id": session.get("device_id", ""),
             "message_total": len(history),
             "has_more": message_limit is not None and len(history) > message_limit,
             "messages": messages,
@@ -159,4 +186,6 @@ class SessionService:
             "title": redact_artifact(session.get("title", "")),
             "created_at": session.get("created_at"),
             "message_total": len(session.get("history", [])),
+            "execution_environment": session.get("execution_environment", "backend_process"),
+            "device_id": session.get("device_id", ""),
         }

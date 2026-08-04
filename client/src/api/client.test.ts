@@ -2,11 +2,13 @@ import assert from 'node:assert/strict'
 import { afterEach, describe, it } from 'node:test'
 import {
   ApiError,
+  createPairingCode,
   getAuthStatus,
   getRuntimeConfig,
   listMcpServers,
   listSkills,
   logout,
+  revokeDevice,
 } from './client.ts'
 
 const originalFetch = globalThis.fetch
@@ -76,11 +78,19 @@ describe('client authentication API', () => {
 
     await getAuthStatus()
     await logout()
+    await createPairingCode()
+    await revokeDevice('dev_a/b')
 
     assert.equal(calls[0].url, '/api/v1/auth/status')
     assert.equal(calls[0].init?.credentials, 'include')
     assert.equal(calls[1].url, '/api/v1/auth/logout')
     assert.equal(calls[1].init?.credentials, 'include')
     assert.equal(new Headers(calls[1].init?.headers).get('X-ThreadForge-CSRF'), '1')
+    assert.equal(calls[2].url, '/api/v1/devices/pairing-codes')
+    assert.equal(calls[2].init?.method, 'POST')
+    assert.equal(new Headers(calls[2].init?.headers).get('X-ThreadForge-CSRF'), '1')
+    assert.equal(calls[3].url, '/api/v1/devices/dev_a%2Fb')
+    assert.equal(calls[3].init?.method, 'DELETE')
+    assert.equal(new Headers(calls[3].init?.headers).get('X-ThreadForge-CSRF'), '1')
   })
 })

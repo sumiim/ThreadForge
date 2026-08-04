@@ -2,6 +2,7 @@
 // 后端统一经 vite 代理访问（/api -> http://127.0.0.1:8000），无需跨域
 import type {
   AuthStatus,
+  Device,
   McpServerMetadata,
   PendingApproval,
   RunEventEnvelope,
@@ -86,6 +87,10 @@ const errorText: Record<string, string> = {
   authorization_denied: '当前 GitHub 账户没有访问权限',
   oauth_state_invalid: '登录请求已失效，请重新登录',
   oauth_provider_error: 'GitHub 登录服务暂时不可用，请稍后重试',
+  device_not_found: '本地 Worker 设备不存在',
+  pairing_code_invalid: '配对码无效或已过期，请重新生成',
+  worker_offline: '所选本地 Worker 已离线',
+  worker_protocol_error: '本地 Worker 协议错误，请检查版本',
 }
 
 export function friendlyMessage(error: unknown): string {
@@ -113,6 +118,18 @@ export function logout(): Promise<{ status: string }> {
   return request('/api/v1/auth/logout', { method: 'POST' })
 }
 
+export function listDevices(): Promise<{ items: Device[] }> {
+  return request('/api/v1/devices')
+}
+
+export function createPairingCode(): Promise<{ code: string; expires_in_seconds: number }> {
+  return request('/api/v1/devices/pairing-codes', { method: 'POST' })
+}
+
+export function revokeDevice(deviceId: string): Promise<{ status: string; device_id: string }> {
+  return request(`/api/v1/devices/${encodeURIComponent(deviceId)}`, { method: 'DELETE' })
+}
+
 export function getRuntimeConfig(): Promise<RuntimeConfig> {
   return request('/api/v1/config')
 }
@@ -130,6 +147,8 @@ export interface CreateSessionResult {
   workspace_id: string
   title: string
   created_at: string
+  execution_environment: string
+  device_id: string
 }
 
 export function createSession(workspaceId: string, title?: string): Promise<CreateSessionResult> {

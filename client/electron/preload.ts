@@ -6,8 +6,9 @@ function resolveApiBaseUrl(): string {
   const candidate = process.env.THREADFORGE_API_BASE_URL ?? DEFAULT_API_BASE_URL
   try {
     const url = new URL(candidate)
-    const loopback = ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname)
-    if (url.protocol !== 'http:' || !loopback || url.pathname !== '/' || url.search || url.hash) {
+    const loopback = ['127.0.0.1', '::1', 'localhost'].includes(url.hostname)
+    const safeTransport = url.protocol === 'https:' || (url.protocol === 'http:' && loopback)
+    if (!safeTransport || url.pathname !== '/' || url.search || url.hash || url.username || url.password) {
       return DEFAULT_API_BASE_URL
     }
     return url.origin

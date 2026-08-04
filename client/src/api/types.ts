@@ -10,6 +10,27 @@ export interface Workspace {
   is_git: boolean
   execution_environment: string
   container_sandbox_enabled: boolean
+  device_id?: string
+  device_name?: string
+  model?: string
+  model_configured?: boolean
+}
+
+export interface WorkerWorkspace {
+  workspace_id: string
+  name: string
+  is_git: boolean
+}
+
+export interface Device {
+  device_id: string
+  name: string
+  online: boolean
+  model: string
+  model_configured: boolean
+  created_at: string
+  last_seen_at: string
+  workspaces: WorkerWorkspace[]
 }
 
 export interface RuntimeConfig {
@@ -60,6 +81,8 @@ export interface SessionSummary {
   title: string
   created_at: string
   message_total: number
+  execution_environment: string
+  device_id: string
 }
 
 export interface SessionMessage {
@@ -91,6 +114,8 @@ export interface SessionDetail {
   messages: SessionMessage[]
   task_total: number
   tasks: SessionTask[]
+  execution_environment: string
+  device_id: string
 }
 
 // 审批请求（task.pending_approval / approval.required）
@@ -120,6 +145,7 @@ export interface TaskSnapshot {
   updated_at: string
   execution_environment: string
   container_sandbox_enabled: boolean
+  device_id: string
 }
 
 // POST /api/v1/tasks 响应（202）
@@ -196,6 +222,8 @@ export interface Session {
   createdAt: string
   /** 后端 workspace_id，显示路径由 Workspace.display_path 映射 */
   workspaceId: string
+  executionEnvironment?: string
+  deviceId?: string
   model: string
   messages: Message[]
   lastTaskId?: string

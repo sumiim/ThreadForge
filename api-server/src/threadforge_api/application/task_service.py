@@ -7,13 +7,14 @@ import uuid
 from pico.security import redact_artifact
 
 from ..domain.entities import Task, utc_now
-from ..domain.enums import ExecutionEnvironment, TaskStatus
+from ..domain.enums import TaskStatus
 from ..domain.errors import (
     ActiveTaskExistsError,
     ApprovalNotFoundError,
     InputTooLongError,
     ModelNotConfiguredError,
     TaskRunnerUnavailableError,
+    WorkerOfflineError,
 )
 from ..domain.identity import canonical_owner_id
 from ..infrastructure.id_validators import validate_session_id
@@ -24,6 +25,7 @@ from ..infrastructure.json_repositories import (
 from ..infrastructure.run_reconciliation import converge_run_artifacts
 from ..infrastructure.run_store_reader import RunStoreReader
 from ..infrastructure.task_runner import RunRequest, TaskRunner
+from ..infrastructure.workspace_catalog import WorkspaceNotFoundError
 from .session_service import SessionService
 
 
@@ -38,6 +40,8 @@ class TaskService:
         runner: TaskRunner,
         publisher,
         run_store_reader: RunStoreReader,
+        worker_hub=None,
+        device_store=None,
     ):
         self._settings = settings
         self._session_service = session_service
@@ -46,18 +50,31 @@ class TaskService:
         self._runner = runner
         self._publisher = publisher
         self._run_store_reader = run_store_reader
+        self._worker_hub = worker_hub
+        self._device_store = device_store
 
     def create_task(self, session_id: str, input_text: str, max_steps: int, owner_id: str) -> Task:
         owner_id = canonical_owner_id(owner_id)
         validate_session_id(session_id)
-        if not self._runner.is_available():
-            raise TaskRunnerUnavailableError("runner is unavailable")
-        if not self._settings.model_configured():
-            raise ModelNotConfiguredError("model configuration is incomplete")
         if len(input_text) > self._settings.task_input_max_chars:
             raise InputTooLongError(self._settings.task_input_max_chars)
         session = self._session_service.load_raw(session_id, owner_id)  # 404 session_not_found
         workspace_id = session.get("workspace_id", "")
+        execution_environment = session.get("execution_environment", "backend_process")
+        device_id = session.get("device_id", "")
+        if execution_environment == "local_worker":
+            if self._worker_hub is None or not self._worker_hub.is_online(device_id):
+                raise WorkerOfflineError("the selected local Worker is offline")
+            device = self._device_store.get_for_owner(device_id, owner_id)
+            if not any(workspace.workspace_id == workspace_id for workspace in device.workspaces):
+                raise WorkspaceNotFoundError(workspace_id)
+            if not device.model_configured:
+                raise ModelNotConfiguredError("the selected local Worker has no model configuration")
+        else:
+            if not self._runner.is_available():
+                raise TaskRunnerUnavailableError("runner is unavailable")
+            if not self._settings.model_configured():
+                raise ModelNotConfiguredError("model configuration is incomplete")
         input_text = input_text.strip()
         task_id = "task_" + uuid.uuid4().hex
         run_id = "run_" + uuid.uuid4().hex
@@ -69,7 +86,34 @@ class TaskService:
             run_id=run_id,
             input=input_text,
             max_steps=max_steps,
+            execution_environment=execution_environment,
+            device_id=device_id,
         )
+        if execution_environment == "local_worker":
+            self._task_repo.create(task)
+            self._publisher.publish(task_id, run_id, "task.queued", {"status": "queued"})
+            try:
+                self._worker_hub.dispatch(task, session)
+            except Exception:
+                converge_run_artifacts(
+                    self._settings.data_dir,
+                    task,
+                    status=TaskStatus.FAILED,
+                    stop_reason="worker_unavailable",
+                    final_answer="",
+                )
+                self._task_repo.update(
+                    task_id,
+                    lambda item: _terminal(item, TaskStatus.FAILED, "worker_unavailable", None),
+                )
+                self._publisher.publish(
+                    task_id,
+                    run_id,
+                    "task.failed",
+                    {"stop_reason": "worker_unavailable"},
+                )
+                raise
+            return task
         with self._runner.active_lock:
             if not self._runner.is_available():
                 raise TaskRunnerUnavailableError("runner is unavailable")
@@ -131,7 +175,10 @@ class TaskService:
         task = self._task_repo.get_for_owner(task_id, owner_id)
         if task.status.terminal:
             return self._snapshot(task)
-        self._runner.cancel(task_id)
+        if task.execution_environment == "local_worker":
+            self._worker_hub.cancel(task_id)
+        else:
+            self._runner.cancel(task_id)
         return self._snapshot(self._task_repo.get_for_owner(task_id, owner_id))
 
     def resolve_approval(self, task_id: str, approval_id: str, decision: str, owner_id: str) -> dict:
@@ -140,7 +187,11 @@ class TaskService:
         approval = self._approval_repo.get_for_owner(approval_id, owner_id)
         if approval.task_id != task_id:
             raise ApprovalNotFoundError(approval_id)
-        resolved = self._runner.resolve_approval(approval_id, decision)
+        task = self._task_repo.get_for_owner(task_id, owner_id)
+        if task.execution_environment == "local_worker":
+            resolved = self._worker_hub.resolve_approval(approval_id, decision)
+        else:
+            resolved = self._runner.resolve_approval(approval_id, decision)
         return {
             "approval_id": resolved.approval_id,
             "task_id": resolved.task_id,
@@ -174,7 +225,8 @@ class TaskService:
             "pending_approval": pending,
             "created_at": task.created_at,
             "updated_at": task.updated_at,
-            "execution_environment": ExecutionEnvironment.BACKEND_PROCESS.value,
+            "execution_environment": task.execution_environment,
+            "device_id": task.device_id,
             "container_sandbox_enabled": False,
         }
 
