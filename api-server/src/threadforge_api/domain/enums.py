@@ -29,3 +29,4 @@ class ApprovalStatus(str, Enum):
 
 class ExecutionEnvironment(str, Enum):
     BACKEND_PROCESS = "backend_process"
+    LOCAL_WORKER = "local_worker"

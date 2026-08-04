@@ -4,6 +4,25 @@ import path from 'node:path'
 // vite-plugin-electron 开发模式下注入;生产模式加载打包产物
 const devServerUrl = process.env.VITE_DEV_SERVER_URL
 
+function resolveWebUrl(): string | undefined {
+  const candidate = process.env.THREADFORGE_WEB_URL
+  if (!candidate) return undefined
+  try {
+    const url = new URL(candidate)
+    const loopback = ['127.0.0.1', '::1', 'localhost'].includes(url.hostname)
+    const safeTransport = url.protocol === 'https:' || (url.protocol === 'http:' && loopback)
+    if (!safeTransport || url.username || url.password || url.search || url.hash) return undefined
+    return url.toString()
+  } catch {
+    return undefined
+  }
+}
+
+const configuredWebUrl = resolveWebUrl()
+if (configuredWebUrl && !process.env.THREADFORGE_API_BASE_URL) {
+  process.env.THREADFORGE_API_BASE_URL = new URL(configuredWebUrl).origin
+}
+
 function openExternalUrl(url: string) {
   if (url.startsWith('https://') || url.startsWith('mailto:')) {
     void shell.openExternal(url)
@@ -37,12 +56,24 @@ function createMainWindow() {
   // ThreadForge 页面，避免远程内容继续运行在桌面应用的 webContents 中。
   win.webContents.on('will-navigate', (event, url) => {
     if (url === win.webContents.getURL()) return
+    if (configuredWebUrl) {
+      const target = new URL(url)
+      const appOrigin = new URL(configuredWebUrl).origin
+      const current = new URL(win.webContents.getURL())
+      const githubOAuth =
+        target.origin === 'https://github.com' &&
+        (current.origin === 'https://github.com' ||
+          (current.origin === appOrigin && current.pathname === '/api/v1/auth/github/start'))
+      if (target.origin === appOrigin || githubOAuth) return
+    }
     event.preventDefault()
     openExternalUrl(url)
   })
 
   if (devServerUrl) {
     void win.loadURL(devServerUrl)
+  } else if (configuredWebUrl) {
+    void win.loadURL(configuredWebUrl)
   } else {
     void win.loadFile(path.join(import.meta.dirname, '../dist/index.html'))
   }

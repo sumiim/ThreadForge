@@ -13,7 +13,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from .api.errors import install_error_handlers
-from .api.routers import auth, health, metadata, runs, sessions, tasks, workspaces
+from .api.routers import (
+    auth,
+    devices,
+    health,
+    metadata,
+    runs,
+    sessions,
+    tasks,
+    workspaces,
+)
 from .config import Settings
 from .infrastructure.auth import OAuthClient
 from .lifespan import build_lifespan
@@ -86,6 +95,7 @@ def create_app(
 
     app.include_router(health.router)
     app.include_router(auth.router)
+    app.include_router(devices.router)
     app.include_router(metadata.router)
     app.include_router(workspaces.router)
     app.include_router(sessions.router)

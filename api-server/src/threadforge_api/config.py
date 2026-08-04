@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import Field, field_validator, model_validator
@@ -53,6 +54,8 @@ class Settings(BaseSettings):
     github_allowed_logins: list[str] = Field(default_factory=list)
     auth_session_ttl_seconds: int = 604800
     auth_cookie_secure: bool = False
+    worker_pairing_ttl_seconds: int = 600
+    worker_message_max_bytes: int = 2 * 1024 * 1024
 
     @field_validator("trusted_hosts")
     @classmethod
@@ -82,22 +85,14 @@ class Settings(BaseSettings):
     @field_validator("web_origin")
     @classmethod
     def _validate_origin(cls, value: str) -> str:
-        import re as _re
-
         if value == "*":
             raise ValueError("V1 does not allow wildcard CORS origin")
-        if not _re.fullmatch(r"https?://(127\.0\.0\.1|\[::1\]|localhost)(:\d+)?", value):
-            raise ValueError("V1 only allows loopback CORS origins")
-        return value
+        return _validated_web_url(value, allow_path=False, label="web_origin")
 
     @field_validator("github_oauth_callback_url", "github_oauth_return_url")
     @classmethod
-    def _validate_oauth_loopback_url(cls, value: str) -> str:
-        import re as _re
-
-        if not _re.fullmatch(r"https?://(127\.0\.0\.1|\[::1\]|localhost)(:\d+)?(/[^#]*)?", value):
-            raise ValueError("OAuth callback and return URLs must use loopback hosts")
-        return value
+    def _validate_oauth_url(cls, value: str) -> str:
+        return _validated_web_url(value, allow_path=True, label="OAuth URL")
 
     @field_validator("github_allowed_logins")
     @classmethod
@@ -121,6 +116,20 @@ class Settings(BaseSettings):
             raise ValueError("auth_session_ttl_seconds must be between 5 minutes and 31 days")
         return value
 
+    @field_validator("worker_pairing_ttl_seconds")
+    @classmethod
+    def _validate_worker_pairing_ttl(cls, value: int) -> int:
+        if not 60 <= value <= 3600:
+            raise ValueError("worker_pairing_ttl_seconds must be between 1 minute and 1 hour")
+        return value
+
+    @field_validator("worker_message_max_bytes")
+    @classmethod
+    def _validate_worker_message_max_bytes(cls, value: int) -> int:
+        if not 64 * 1024 <= value <= 16 * 1024 * 1024:
+            raise ValueError("worker_message_max_bytes must be in 64 KiB - 16 MiB")
+        return value
+
     @model_validator(mode="after")
     def _validate_github_oauth(self) -> Settings:
         if self.identity_mode != "github_oauth":
@@ -138,6 +147,11 @@ class Settings(BaseSettings):
             raise ValueError("github_oauth requires: " + ", ".join(missing))
         if self.github_owner_login not in self.github_allowed_logins:
             self.github_allowed_logins = [self.github_owner_login, *self.github_allowed_logins]
+        if (
+            self.github_oauth_callback_url.startswith("https://")
+            or self.github_oauth_return_url.startswith("https://")
+        ) and not self.auth_cookie_secure:
+            raise ValueError("HTTPS GitHub OAuth requires THREADFORGE_AUTH_COOKIE_SECURE=true")
         return self
 
     @field_validator("port")
@@ -248,3 +262,16 @@ class Settings(BaseSettings):
 
     def model_configured(self) -> bool:
         return bool(self.pico_openai_api_key)
+
+
+def _validated_web_url(value: str, *, allow_path: bool, label: str) -> str:
+    parsed = urlsplit(value)
+    if parsed.username or parsed.password or parsed.fragment or not parsed.hostname:
+        raise ValueError(f"{label} is invalid")
+    if not allow_path and (parsed.path not in {"", "/"} or parsed.query):
+        raise ValueError(f"{label} must be an origin without path or query")
+    if parsed.scheme == "http" and parsed.hostname not in LOOPBACK_HOSTS:
+        raise ValueError(f"{label} must use HTTPS unless it is loopback")
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError(f"{label} must use HTTP or HTTPS")
+    return value.rstrip("/") if not allow_path else value

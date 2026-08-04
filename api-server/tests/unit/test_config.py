@@ -93,9 +93,36 @@ def test_github_oauth_normalizes_allowlist_and_includes_owner():
     assert settings.github_allowed_logins == ["sumiim", "guest"]
 
 
-def test_github_oauth_urls_must_be_loopback():
-    with pytest.raises(ValidationError, match="loopback"):
-        Settings(**_base(github_oauth_return_url="https://example.com/"))
+def test_github_oauth_urls_allow_https_and_reject_remote_http():
+    settings = Settings(
+        **_base(
+            identity_mode="github_oauth",
+            github_oauth_client_id="client-id",
+            github_oauth_client_secret="client-secret",
+            github_owner_login="sumiim",
+            github_oauth_callback_url="https://threadforge.example/api/v1/auth/github/callback",
+            github_oauth_return_url="https://threadforge.example/",
+            web_origin="https://threadforge.example",
+            auth_cookie_secure=True,
+        )
+    )
+    assert settings.web_origin == "https://threadforge.example"
+    with pytest.raises(ValidationError, match="must use HTTPS"):
+        Settings(**_base(github_oauth_return_url="http://example.com/"))
+
+
+def test_https_github_oauth_requires_secure_cookie():
+    with pytest.raises(ValidationError, match="AUTH_COOKIE_SECURE"):
+        Settings(
+            **_base(
+                identity_mode="github_oauth",
+                github_oauth_client_id="client-id",
+                github_oauth_client_secret="client-secret",
+                github_owner_login="sumiim",
+                github_oauth_callback_url="https://threadforge.example/api/v1/auth/github/callback",
+                github_oauth_return_url="https://threadforge.example/",
+            )
+        )
 
 
 def test_github_allowlist_loads_from_json_environment(monkeypatch):

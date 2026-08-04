@@ -10,6 +10,7 @@ ThreadForge 是一个面向本地代码仓库的 Web Coding Agent 工作台。�
 ThreadForge
 ├── client/               React/Vite Web 工作台与 Electron 桌面壳
 ├── api-server/           FastAPI、REST、SSE、审批与运行恢复
+├── local-worker/         用户电脑上的 Pico、模型、文件、Git 与 Shell 执行端
 ├── agent-orchestrator/   LangGraph 编排、意图路由与多角色协作
 ├── sandbox-workers/      Docker 工具执行隔离（后续版本）
 ├── skills-registry/      Skills 注册、版本与演进（后续版本）
@@ -36,8 +37,9 @@ ThreadForge 计划覆盖以下能力：
 | --- | --- | --- |
 | Pico Legacy Runtime | 已迁移 | AgentLoop、Prompt、Context、Memory、Session、Checkpoint、工具、安全策略、CLI、评测和测试 |
 | Agent Orchestrator | 已迁移 | LangGraph wrapper、意图路由、Research/Execute/Review 工作流和 backend adapter |
-| Web Console | V1 已接入 | Session、任务、SSE、审批、停止、GitHub 登录、运行制品与后端能力状态 |
-| API Server | V1 已实现 | FastAPI REST/SSE、JSON 持久化、恢复、取消、审批和可选 GitHub OAuth |
+| Web Console | V1 已接入 | Session、任务、SSE、审批、停止、GitHub 登录、本地 Worker 设备管理与后端能力状态 |
+| API Server | V1 已实现 | FastAPI REST/SSE/Worker WebSocket、JSON 持久化、恢复、取消、审批和 GitHub OAuth |
+| Local Worker | V1 已实现 | 出站连接中央服务，在用户授权目录执行 Pico、模型、文件、Git 与 Shell |
 | Sandbox Workers | 后续版本 | 每个任务或 Worker 的独立 Docker 执行环境 |
 | Skills Registry | 后续版本 | Skill Manifest、版本、评测、发布和回滚 |
 
@@ -62,6 +64,7 @@ ThreadForge 不声称上述项目对本项目提供官方背书。各上游项�
 ```powershell
 python -m pip install -e .\pico-legacy-runtime
 python -m pip install -e ".\api-server[dev]"
+python -m pip install -e ".\local-worker[dev]"
 python -m pip install -e .\agent-orchestrator
 Push-Location .\client
 pnpm install
@@ -80,6 +83,7 @@ python -m pico run --backend langgraph --task-mode auto --provider openai
 ## 文档
 
 - [V1 需求文档](docs/requirements-v1.md)
+- [本地 Worker V1 架构、安装与协议](docs/local-worker-v1.md)
 - [Legacy Runtime README](pico-legacy-runtime/README.md)
 - [Agent Harness v1 架构](pico-legacy-runtime/docs/architecture/agent-harness-v1-overview.md)
 - [LangGraph 意图路由需求](pico-legacy-runtime/docs/recreation-2/REQUIREMENTS.md)

@@ -12,6 +12,19 @@ class CreateSessionRequest(BaseModel):
     title: str | None = Field(default=None, max_length=200)
 
 
+class PairWorkerRequest(BaseModel):
+    code: str = Field(min_length=8, max_length=64)
+    name: str = Field(min_length=1, max_length=100)
+
+    @field_validator("name")
+    @classmethod
+    def _device_name_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("device name must not be blank")
+        return value
+
+
 class CreateTaskRequest(BaseModel):
     session_id: str
     input: str = Field(min_length=1, max_length=100000)

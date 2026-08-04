@@ -45,12 +45,21 @@ export default function NewSessionModal({
         >
           {selectable.map((w) => (
             <Radio key={w.workspace_id} value={w.workspace_id} className="w-full rounded-lg border border-stone-200 px-3 py-2">
-              <span className="font-mono text-xs text-stone-700">{w.display_path}</span>
+              <span className="flex min-w-0 flex-col">
+                <span className="truncate font-mono text-xs text-stone-700">{w.display_path}</span>
+                <span className="text-[11px] text-stone-400">
+                  {w.execution_environment === 'local_worker'
+                    ? `本地 Worker${w.model_configured ? '' : ' · 模型未配置'}`
+                    : '服务器工作区'}
+                </span>
+              </span>
             </Radio>
           ))}
         </Radio.Group>
       )}
-      <p className="mt-3 text-xs text-stone-500">Agent 的工具调用仅限所选工作区内的路径。</p>
+      <p className="mt-3 text-xs text-stone-500">
+        本地 Worker 工作区的真实路径只保存在对应设备；Agent 工具调用仅限所选目录。
+      </p>
     </Modal>
   )
 }

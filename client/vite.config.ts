@@ -33,6 +33,7 @@ export default defineConfig(({ mode }) => {
         '/api': {
           target: apiProxyTarget,
           changeOrigin: true,
+          ws: true,
           configure(proxy) {
             // 后端若经 nginx 等反向代理,SSE 事件流需关闭缓冲;本地直连 uvicorn 无此问题
             proxy.on('proxyReq', (proxyReq) => {

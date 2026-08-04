@@ -13,7 +13,7 @@ from typing import Any
 from .enums import ApprovalStatus, TaskStatus
 from .identity import canonical_owner_id
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def utc_now() -> str:
@@ -30,6 +30,8 @@ class Task:
     owner_id: str
     run_id: str
     input: str
+    execution_environment: str = "backend_process"
+    device_id: str = ""
     status: TaskStatus = TaskStatus.QUEUED
     max_steps: int = 6
     final_answer: str | None = None
@@ -65,6 +67,7 @@ class Approval:
     tool_name: str
     args_digest: str
     args_preview: dict
+    request_digest: str = ""
     status: ApprovalStatus = ApprovalStatus.PENDING
     decision: str | None = None
     created_at: str = field(default_factory=utc_now)

@@ -134,12 +134,19 @@ def test_two_github_users_cannot_see_each_others_sessions(settings, model_factor
         client.headers["X-ThreadForge-CSRF"] = "1"
         assert _complete(client, _start(client)).status_code == 303
         owner_session = client.post("/api/v1/sessions", json={"workspace_id": "w1"}).json()
+        pairing_code = client.post("/api/v1/devices/pairing-codes", json={}).json()["code"]
+        owner_device = client.post(
+            "/api/v1/workers/pair",
+            json={"code": pairing_code, "name": "Owner laptop"},
+        ).json()
         client.post("/api/v1/auth/logout")
 
         oauth.identity = GitHubIdentity(456, "guest")
         assert _complete(client, _start(client)).status_code == 303
         assert client.get("/api/v1/sessions").json()["items"] == []
         assert client.get(f"/api/v1/sessions/{owner_session['session_id']}").status_code == 404
+        assert client.get("/api/v1/devices").json()["items"] == []
+        assert client.delete(f"/api/v1/devices/{owner_device['device_id']}").status_code == 404
 
 
 def test_login_session_survives_app_restart(settings, model_factory):
