@@ -17,6 +17,8 @@ export interface RuntimeConfig {
   model_configured: boolean
   execution_environment: string
   container_sandbox_enabled: boolean
+  identity_mode: 'single_owner_instance'
+  multi_user_enabled: boolean
 }
 
 export interface SkillMetadata {

@@ -8,6 +8,7 @@ from ..application.artifact_service import ArtifactService
 from ..application.session_service import SessionService
 from ..application.task_service import TaskService
 from ..config import Settings
+from ..domain.identity import Actor, canonical_owner_id
 from ..lifespan import AppContainer
 
 
@@ -17,6 +18,11 @@ def get_container(request: Request) -> AppContainer:
 
 def get_settings(request: Request) -> Settings:
     return request.app.state.container.settings
+
+
+def get_actor(request: Request) -> Actor:
+    """Return the server-configured actor; request identity headers are ignored."""
+    return Actor(canonical_owner_id(request.app.state.container.owner_id))
 
 
 def get_session_service(request: Request) -> SessionService:

@@ -22,6 +22,7 @@ from ..domain.errors import (
     SessionCorruptedError,
     SessionNotFoundError,
 )
+from ..domain.identity import canonical_owner_id
 from ..infrastructure.json_repositories import JsonTaskRepository
 from ..infrastructure.workspace_catalog import WorkspaceCatalog
 
@@ -47,7 +48,8 @@ class SessionService:
         self._workspace_catalog = workspace_catalog
         self._task_repo = task_repo
 
-    def create_session(self, workspace_id: str, title: str | None) -> dict:
+    def create_session(self, workspace_id: str, title: str | None, owner_id: str) -> dict:
+        owner_id = canonical_owner_id(owner_id)
         entry = self._workspace_catalog.recheck(workspace_id)
         session_id = "ses_" + uuid.uuid4().hex
         session = {
@@ -55,6 +57,7 @@ class SessionService:
             "created_at": utc_now(),
             "workspace_root": str(entry.canonical_path),
             "workspace_id": workspace_id,
+            "owner_id": owner_id,
             "title": (title or "").strip() or f"{DEFAULT_SESSION_TITLE_PREFIX} {session_id[-8:]}",
             "history": [],
             "memory": default_memory_state(),
@@ -71,32 +74,39 @@ class SessionService:
             "created_at": session["created_at"],
         }
 
-    def _load(self, session_id: str) -> dict:
+    def _load(self, session_id: str, owner_id: str | None = None) -> dict:
         try:
-            return self._session_store.load(session_id)
+            session = self._session_store.load(session_id)
         except LegacySessionNotFoundError:
             raise SessionNotFoundError(session_id) from None
         except LegacySessionCorruptedError:
             raise SessionCorruptedError(session_id) from None
         except LegacySessionStoreUnavailableError:
             raise PersistenceUnavailableError("session storage unavailable") from None
+        if owner_id is not None and session.get("owner_id") != canonical_owner_id(owner_id):
+            raise SessionNotFoundError(session_id)
+        return session
 
-    def list_sessions(self, limit: int, offset: int) -> tuple[list[dict], int]:
+    def list_sessions(self, limit: int, offset: int, owner_id: str) -> tuple[list[dict], int]:
+        owner_id = canonical_owner_id(owner_id)
         try:
             ids = self._session_store.list_ids()
         except LegacySessionStoreUnavailableError:
             raise PersistenceUnavailableError("session storage unavailable") from None
-        total = len(ids)
-        sessions = []
-        for session_id in ids[offset : offset + limit]:
+        owned = []
+        for session_id in ids:
             try:
-                sessions.append(self._summary(self._load(session_id)))
+                session = self._load(session_id)
             except SessionNotFoundError:
                 continue
-        return sessions, total
+            if session.get("owner_id") == owner_id:
+                owned.append(session)
+        total = len(owned)
+        return [self._summary(session) for session in owned[offset : offset + limit]], total
 
-    def get_session(self, session_id: str, message_limit: int) -> dict:
-        session = self._load(session_id)
+    def get_session(self, session_id: str, message_limit: int, owner_id: str) -> dict:
+        owner_id = canonical_owner_id(owner_id)
+        session = self._load(session_id, owner_id)
         history = session.get("history", [])
         recent = history[-message_limit:] if message_limit else []
         messages = []
@@ -112,7 +122,7 @@ class SessionService:
         task_items = []
         task_total = 0
         if self._task_repo is not None:
-            tasks, task_total = self._task_repo.list_for_session(session_id)
+            tasks, task_total = self._task_repo.list_for_session(session_id, owner_id)
             task_items = [
                 {
                     "task_id": task.task_id,
@@ -138,8 +148,8 @@ class SessionService:
             "tasks": task_items,
         }
 
-    def load_raw(self, session_id: str) -> dict:
-        return self._load(session_id)
+    def load_raw(self, session_id: str, owner_id: str) -> dict:
+        return self._load(session_id, owner_id)
 
     @staticmethod
     def _summary(session: dict) -> dict:

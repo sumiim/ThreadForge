@@ -11,8 +11,9 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from .enums import ApprovalStatus, TaskStatus
+from .identity import canonical_owner_id
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def utc_now() -> str:
@@ -26,6 +27,7 @@ class Task:
     task_id: str
     session_id: str
     workspace_id: str
+    owner_id: str
     run_id: str
     input: str
     status: TaskStatus = TaskStatus.QUEUED
@@ -48,6 +50,7 @@ class Task:
     def from_dict(cls, data: dict) -> Task:
         data = dict(data)
         data["status"] = TaskStatus(data.get("status", TaskStatus.QUEUED.value))
+        data["owner_id"] = canonical_owner_id(data["owner_id"])
         known = {field.name for field in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
         return cls(**{key: value for key, value in data.items() if key in known})
 
@@ -57,6 +60,7 @@ class Approval:
     approval_id: str
     task_id: str
     run_id: str
+    owner_id: str
     tool_call_id: str
     tool_name: str
     args_digest: str
@@ -78,6 +82,7 @@ class Approval:
     def from_dict(cls, data: dict) -> Approval:
         data = dict(data)
         data["status"] = ApprovalStatus(data.get("status", ApprovalStatus.PENDING.value))
+        data["owner_id"] = canonical_owner_id(data["owner_id"])
         known = {field.name for field in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
         return cls(**{key: value for key, value in data.items() if key in known})
 

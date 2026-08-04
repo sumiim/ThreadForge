@@ -41,6 +41,7 @@ class RunRequest:
     run_id: str
     session_id: str
     workspace_id: str
+    owner_id: str
     input: str
     max_steps: int
     session_data: dict
@@ -120,7 +121,13 @@ class TaskRunner:
                 raise ActiveTaskExistsError(self._active_task_id)
             gate = RunGate()
             token = CancellationToken()
-            run = RunContext(task_id=request.task_id, run_id=request.run_id, gate=gate, token=token)
+            run = RunContext(
+                task_id=request.task_id,
+                run_id=request.run_id,
+                owner_id=request.owner_id,
+                gate=gate,
+                token=token,
+            )
             self._contexts[request.task_id] = run
             self._active_task_id = request.task_id
             try:

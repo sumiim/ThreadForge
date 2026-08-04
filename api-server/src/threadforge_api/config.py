@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from uuid import UUID
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -41,6 +42,7 @@ class Settings(BaseSettings):
     openapi_enabled: bool = True
     log_level: str = "INFO"
     trusted_hosts: list[str] = ["127.0.0.1", "::1", "localhost"]
+    instance_owner_id: UUID | None = None
 
     @field_validator("trusted_hosts")
     @classmethod

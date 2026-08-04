@@ -9,9 +9,10 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ...application.task_service import TaskService
+from ...domain.identity import Actor
 from ...infrastructure.event_broker import CLOSED
 from ...infrastructure.id_validators import validate_approval_id, validate_task_id
-from ..dependencies import get_container, get_settings, get_task_service
+from ..dependencies import get_actor, get_container, get_settings, get_task_service
 from ..models import ApprovalDecisionRequest, CreateTaskRequest, TaskQueuedResponse
 
 router = APIRouter()
@@ -22,11 +23,12 @@ _TERMINAL_STATUSES = {"completed", "cancelled", "failed"}
 @router.post("/api/v1/tasks", status_code=202, response_model=TaskQueuedResponse)
 def create_task(
     body: CreateTaskRequest,
+    actor: Actor = Depends(get_actor),
     settings=Depends(get_settings),
     task_service: TaskService = Depends(get_task_service),
 ) -> TaskQueuedResponse:
     max_steps = body.max_steps if body.max_steps is not None else settings.max_steps
-    task = task_service.create_task(body.session_id, body.input, max_steps)
+    task = task_service.create_task(body.session_id, body.input, max_steps, actor.owner_id)
     return TaskQueuedResponse(
         task_id=task.task_id,
         run_id=task.run_id,
@@ -37,15 +39,23 @@ def create_task(
 
 
 @router.get("/api/v1/tasks/{task_id}")
-def get_task(task_id: str, task_service: TaskService = Depends(get_task_service)) -> dict:
+def get_task(
+    task_id: str,
+    actor: Actor = Depends(get_actor),
+    task_service: TaskService = Depends(get_task_service),
+) -> dict:
     validate_task_id(task_id)
-    return task_service.get_task(task_id)
+    return task_service.get_task(task_id, actor.owner_id)
 
 
 @router.post("/api/v1/tasks/{task_id}/cancel")
-def cancel_task(task_id: str, task_service: TaskService = Depends(get_task_service)) -> JSONResponse:
+def cancel_task(
+    task_id: str,
+    actor: Actor = Depends(get_actor),
+    task_service: TaskService = Depends(get_task_service),
+) -> JSONResponse:
     validate_task_id(task_id)
-    snapshot = task_service.cancel_task(task_id)
+    snapshot = task_service.cancel_task(task_id, actor.owner_id)
     status_code = 200 if snapshot["status"] in _TERMINAL_STATUSES else 202
     return JSONResponse(status_code=status_code, content=snapshot)
 
@@ -55,11 +65,12 @@ def resolve_approval(
     task_id: str,
     approval_id: str,
     body: ApprovalDecisionRequest,
+    actor: Actor = Depends(get_actor),
     task_service: TaskService = Depends(get_task_service),
 ) -> dict:
     validate_task_id(task_id)
     validate_approval_id(approval_id)
-    return task_service.resolve_approval(task_id, approval_id, body.decision)
+    return task_service.resolve_approval(task_id, approval_id, body.decision, actor.owner_id)
 
 
 @router.get(
@@ -75,14 +86,15 @@ def resolve_approval(
 async def task_events(
     task_id: str,
     request: Request,
+    actor: Actor = Depends(get_actor),
     settings=Depends(get_settings),
     container=Depends(get_container),
 ):
     # 404 before entering the stream.
     validate_task_id(task_id)
     task_service = container.task_service
-    task_service.get_task(task_id)  # raises TaskNotFoundError
-    snapshot_factory = lambda: task_service.get_task(task_id)
+    task_service.get_task(task_id, actor.owner_id)  # raises TaskNotFoundError
+    snapshot_factory = lambda: task_service.get_task(task_id, actor.owner_id)
     queue, snapshot = container.broker.subscribe(task_id, snapshot_factory)
     snapshot_event = {
         "event_id": "evt_snapshot",

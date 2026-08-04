@@ -15,6 +15,7 @@ from ..domain.errors import (
     ModelNotConfiguredError,
     TaskRunnerUnavailableError,
 )
+from ..domain.identity import canonical_owner_id
 from ..infrastructure.id_validators import validate_session_id
 from ..infrastructure.json_repositories import (
     JsonApprovalRepository,
@@ -46,7 +47,8 @@ class TaskService:
         self._publisher = publisher
         self._run_store_reader = run_store_reader
 
-    def create_task(self, session_id: str, input_text: str, max_steps: int) -> Task:
+    def create_task(self, session_id: str, input_text: str, max_steps: int, owner_id: str) -> Task:
+        owner_id = canonical_owner_id(owner_id)
         validate_session_id(session_id)
         if not self._runner.is_available():
             raise TaskRunnerUnavailableError("runner is unavailable")
@@ -54,7 +56,7 @@ class TaskService:
             raise ModelNotConfiguredError("model configuration is incomplete")
         if len(input_text) > self._settings.task_input_max_chars:
             raise InputTooLongError(self._settings.task_input_max_chars)
-        session = self._session_service.load_raw(session_id)  # 404 session_not_found
+        session = self._session_service.load_raw(session_id, owner_id)  # 404 session_not_found
         workspace_id = session.get("workspace_id", "")
         input_text = input_text.strip()
         task_id = "task_" + uuid.uuid4().hex
@@ -63,6 +65,7 @@ class TaskService:
             task_id=task_id,
             session_id=session_id,
             workspace_id=workspace_id,
+            owner_id=owner_id,
             run_id=run_id,
             input=input_text,
             max_steps=max_steps,
@@ -81,6 +84,7 @@ class TaskService:
                         run_id=run_id,
                         session_id=session_id,
                         workspace_id=workspace_id,
+                        owner_id=owner_id,
                         input=input_text,
                         max_steps=max_steps,
                         session_data=session,
@@ -118,19 +122,22 @@ class TaskService:
         # Return the Task entity as-persisted (queued) — the Runner will update it to running.
         return task
 
-    def get_task(self, task_id: str) -> dict:
-        task = self._task_repo.get(task_id)
+    def get_task(self, task_id: str, owner_id: str) -> dict:
+        task = self._task_repo.get_for_owner(task_id, owner_id)
         return self._snapshot(task)
 
-    def cancel_task(self, task_id: str) -> dict:
-        task = self._task_repo.get(task_id)
+    def cancel_task(self, task_id: str, owner_id: str) -> dict:
+        owner_id = canonical_owner_id(owner_id)
+        task = self._task_repo.get_for_owner(task_id, owner_id)
         if task.status.terminal:
             return self._snapshot(task)
         self._runner.cancel(task_id)
-        return self._snapshot(self._task_repo.get(task_id))
+        return self._snapshot(self._task_repo.get_for_owner(task_id, owner_id))
 
-    def resolve_approval(self, task_id: str, approval_id: str, decision: str) -> dict:
-        approval = self._approval_repo.get(approval_id)
+    def resolve_approval(self, task_id: str, approval_id: str, decision: str, owner_id: str) -> dict:
+        owner_id = canonical_owner_id(owner_id)
+        self._task_repo.get_for_owner(task_id, owner_id)
+        approval = self._approval_repo.get_for_owner(approval_id, owner_id)
         if approval.task_id != task_id:
             raise ApprovalNotFoundError(approval_id)
         resolved = self._runner.resolve_approval(approval_id, decision)

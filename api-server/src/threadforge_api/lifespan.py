@@ -19,11 +19,13 @@ from .application.task_service import TaskService
 from .config import Settings
 from .domain.enums import ApprovalStatus, TaskStatus
 from .domain.errors import ApprovalNotFoundError
+from .domain.identity import canonical_owner_id
 from .infrastructure.approval_gate import ApprovalGate
 from .infrastructure.event_broker import EventBroker
 from .infrastructure.event_publisher import EventPublisher
 from .infrastructure.json_repositories import JsonApprovalRepository, JsonTaskRepository
 from .infrastructure.jsonutil import secure_directory
+from .infrastructure.owner_store import resolve_instance_owner
 from .infrastructure.recovery_journal import RecoveryJournal
 from .infrastructure.run_reconciliation import (
     converge_run_artifacts,
@@ -42,9 +44,11 @@ class AppContainer:
         self.workspace_catalog = WorkspaceCatalog(settings.workspaces_file, settings.data_dir)
         # Workspace/data disjointness is validated before this creates data_dir.
         secure_directory(settings.data_dir)
+        self.owner_id = resolve_instance_owner(settings.data_dir, settings.instance_owner_id)
         self.session_store = SessionStore(settings.data_dir / "sessions")
         self.task_repo = JsonTaskRepository(settings.data_dir / "tasks")
         self.approval_repo = JsonApprovalRepository(settings.data_dir / "approvals")
+        self._assign_legacy_ownership()
         self.runs_dir = settings.data_dir / "runs"
         secure_directory(self.runs_dir)
         self.run_store_reader = RunStoreReader(settings.data_dir, settings.artifact_max_bytes)
@@ -83,8 +87,24 @@ class AppContainer:
             publisher=self.publisher,
             run_store_reader=self.run_store_reader,
         )
-        self.artifact_service = ArtifactService(self.run_store_reader)
+        self.artifact_service = ArtifactService(self.run_store_reader, self.task_repo)
         self.ready = False
+
+    def _assign_legacy_ownership(self) -> None:
+        """Claim records created by the pre-ownership V1 instance."""
+        for session_id in self.session_store.list_ids():
+            try:
+                session = self.session_store.load(session_id)
+            except Exception:
+                # Reconciliation owns corruption handling and will keep the
+                # service not-ready without preventing diagnostic startup.
+                continue
+            if session.get("owner_id"):
+                continue
+            session["owner_id"] = self.owner_id
+            self.session_store.save(session)
+        self.task_repo.assign_legacy_owner(self.owner_id)
+        self.approval_repo.assign_legacy_owner(self.owner_id)
 
     def is_ready(self) -> bool:
         if not self.ready or self.runner.is_degraded():
@@ -109,7 +129,8 @@ class AppContainer:
 
     def _validate_sessions(self) -> None:
         for session_id in self.session_store.list_ids():
-            self.session_store.load(session_id)
+            session = self.session_store.load(session_id)
+            canonical_owner_id(session["owner_id"])
 
     def _validate_control_repositories(self) -> None:
         for path in self.task_repo.root.glob("*.json"):
