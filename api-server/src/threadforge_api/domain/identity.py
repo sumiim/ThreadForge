@@ -15,6 +15,19 @@ class Actor:
     """
 
     owner_id: str
+    subject: str = ""
+    login: str = ""
+    name: str = ""
+    avatar_url: str = ""
+
+    def public_dict(self) -> dict[str, str]:
+        return {
+            "owner_id": self.owner_id,
+            "subject": self.subject,
+            "login": self.login,
+            "name": self.name,
+            "avatar_url": self.avatar_url,
+        }
 
 
 def canonical_owner_id(value: str | UUID) -> str:

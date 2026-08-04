@@ -17,8 +17,24 @@ export interface RuntimeConfig {
   model_configured: boolean
   execution_environment: string
   container_sandbox_enabled: boolean
-  identity_mode: 'single_owner_instance'
+  identity_mode: 'single_owner_instance' | 'github_oauth'
   multi_user_enabled: boolean
+}
+
+export interface AuthUser {
+  owner_id: string
+  subject: string
+  login: string
+  name: string
+  avatar_url: string
+}
+
+export interface AuthStatus {
+  identity_mode: 'single_owner_instance' | 'github_oauth'
+  multi_user_enabled: boolean
+  authentication_required: boolean
+  authenticated: boolean
+  user: AuthUser | null
 }
 
 export interface SkillMetadata {

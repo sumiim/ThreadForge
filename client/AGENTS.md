@@ -10,7 +10,7 @@ ThreadForge 的 React Web 工作台：面向本地代码仓库的 Web Coding Age
 - 危险工具的逐次批准和拒绝。
 - Agent 停止按钮。
 - Workspace、模型和开发模式提示。
-- 单用户、本机访问、单个活动任务。
+- 默认单用户；可选 GitHub OAuth 白名单多用户；本机访问、全局单个活动任务。
 - Windows 桌面壳(Electron):开发与打包链路可用,窗口/外链/桥接骨架就绪。
 
 V1 不包含完整 Plan 树、Agent 树、Skills 管理。
@@ -89,6 +89,7 @@ V1 页面骨架已实现（白色调对话工作台）：
 - 亮/暗主题切换（侧边栏底部设置右侧）：`useTheme`（localStorage `threadforge-theme` 持久化，缺省跟随系统）。antd 走 `darkThemeConfig`（darkAlgorithm），Tailwind 色板经 `@theme inline` 映射为 `--tf-*` CSS 变量、`.dark` 下覆盖 —— **组件新增颜色必须从现有类名选**，自定义色值需同步进变量色板。
 - `useSessions` 已接入 api-server 的 Session、Task、Approval、Artifact REST 接口和 SSE 事件流。
 - 模型、执行边界、Skills 计划状态和 MCP 未连接状态均从后端只读接口获取；界面不得把占位能力显示为已启用。
+- GitHub OAuth 启用时，工作台在认证状态确认后挂载；写请求统一携带 CSRF 标记，Cookie 由浏览器管理，不在前端存储令牌。
 
 桌面壳（Electron）已就绪：`pnpm dev:electron` 开发、`pnpm build:electron` 出 Windows 安装包；`pnpm dev` / `pnpm build` 保持纯 web 不变。窗口图标尚未定制（暂用 Electron 默认）。
 

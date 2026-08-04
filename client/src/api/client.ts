@@ -1,6 +1,7 @@
 // api-server 客户端：REST 调用 + SSE 事件流
 // 后端统一经 vite 代理访问（/api -> http://127.0.0.1:8000），无需跨域
 import type {
+  AuthStatus,
   McpServerMetadata,
   PendingApproval,
   RunEventEnvelope,
@@ -35,9 +36,14 @@ interface ErrorBody {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response
   try {
+    const method = (init?.method ?? 'GET').toUpperCase()
+    const headers = new Headers(init?.headers)
+    if (init?.body) headers.set('Content-Type', 'application/json')
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) headers.set('X-ThreadForge-CSRF', '1')
     response = await fetch(apiUrl(path), {
       ...init,
-      headers: init?.body ? { 'Content-Type': 'application/json' } : undefined,
+      credentials: 'include',
+      headers,
     })
   } catch {
     throw new ApiError('无法连接 api-server，请确认后端已启动', 'network_error', 0)
@@ -76,6 +82,10 @@ const errorText: Record<string, string> = {
   approval_stale: '审批已失效（任务状态已变化）',
   persistence_unavailable: '后端存储不可用，请检查数据目录权限',
   not_ready: '后端尚未就绪，请稍后重试',
+  authentication_required: '登录状态已失效，请重新使用 GitHub 登录',
+  authorization_denied: '当前 GitHub 账户没有访问权限',
+  oauth_state_invalid: '登录请求已失效，请重新登录',
+  oauth_provider_error: 'GitHub 登录服务暂时不可用，请稍后重试',
 }
 
 export function friendlyMessage(error: unknown): string {
@@ -89,6 +99,18 @@ export function friendlyMessage(error: unknown): string {
 
 export function listWorkspaces(): Promise<{ items: Workspace[] }> {
   return request('/api/v1/workspaces')
+}
+
+export function getAuthStatus(): Promise<AuthStatus> {
+  return request('/api/v1/auth/status')
+}
+
+export function githubLoginUrl(): string {
+  return apiUrl('/api/v1/auth/github/start')
+}
+
+export function logout(): Promise<{ status: string }> {
+  return request('/api/v1/auth/logout', { method: 'POST' })
 }
 
 export function getRuntimeConfig(): Promise<RuntimeConfig> {
@@ -169,7 +191,10 @@ export function listArtifacts(runId: string): Promise<{ run_id: string; items: A
 export async function getArtifactText(runId: string, name: string): Promise<string> {
   let response: Response
   try {
-    response = await fetch(apiUrl(`/api/v1/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(name)}`))
+    response = await fetch(
+      apiUrl(`/api/v1/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(name)}`),
+      { credentials: 'include' },
+    )
   } catch {
     throw new ApiError('无法连接 api-server，请确认后端已启动', 'network_error', 0)
   }
@@ -191,7 +216,9 @@ export async function getArtifactText(runId: string, name: string): Promise<stri
 // 事件流帧头自带 event 名（task.snapshot / tool.started / ...），
 // 用 EventSource 的命名事件监听；断开时浏览器自动重连，重连后后端先补发 task.snapshot
 export function openTaskEventStream(taskId: string): EventSource {
-  return new EventSource(apiUrl(`/api/v1/tasks/${encodeURIComponent(taskId)}/events`))
+  return new EventSource(apiUrl(`/api/v1/tasks/${encodeURIComponent(taskId)}/events`), {
+    withCredentials: true,
+  })
 }
 
 export function parseEventFrame(raw: string): RunEventEnvelope | null {

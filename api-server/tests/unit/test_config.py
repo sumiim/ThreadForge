@@ -72,3 +72,37 @@ def test_model_not_configured_when_key_missing(monkeypatch):
     monkeypatch.delenv("PICO_OPENAI_API_KEY", raising=False)
     settings = Settings(**_base(pico_openai_api_key="")).freeze_provider_env()
     assert settings.model_configured() is False
+
+
+def test_github_oauth_requires_server_credentials():
+    with pytest.raises(ValidationError, match="github_oauth requires"):
+        Settings(**_base(identity_mode="github_oauth"))
+
+
+def test_github_oauth_normalizes_allowlist_and_includes_owner():
+    settings = Settings(
+        **_base(
+            identity_mode="github_oauth",
+            github_oauth_client_id="client-id",
+            github_oauth_client_secret="client-secret",
+            github_owner_login=" Sumiim ",
+            github_allowed_logins=["Guest", "guest"],
+        )
+    )
+    assert settings.github_owner_login == "sumiim"
+    assert settings.github_allowed_logins == ["sumiim", "guest"]
+
+
+def test_github_oauth_urls_must_be_loopback():
+    with pytest.raises(ValidationError, match="loopback"):
+        Settings(**_base(github_oauth_return_url="https://example.com/"))
+
+
+def test_github_allowlist_loads_from_json_environment(monkeypatch):
+    monkeypatch.setenv("THREADFORGE_IDENTITY_MODE", "github_oauth")
+    monkeypatch.setenv("THREADFORGE_GITHUB_OAUTH_CLIENT_ID", "client-id")
+    monkeypatch.setenv("THREADFORGE_GITHUB_OAUTH_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("THREADFORGE_GITHUB_OWNER_LOGIN", "sumiim")
+    monkeypatch.setenv("THREADFORGE_GITHUB_ALLOWED_LOGINS", '["sumiim","guest"]')
+    settings = Settings(**_base())
+    assert settings.github_allowed_logins == ["sumiim", "guest"]

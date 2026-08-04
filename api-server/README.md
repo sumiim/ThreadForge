@@ -66,6 +66,12 @@ owner, and client-supplied identity headers are ignored. This remains a
 single-owner compatibility boundary, not public multi-user authentication; see
 [`../docs/multi-user-v15-roadmap.md`](../docs/multi-user-v15-roadmap.md).
 
+GitHub OAuth can replace the single-owner actor while preserving the existing
+object ownership checks. It uses PKCE, one-use state, an HttpOnly opaque session
+cookie, a server-side login allowlist, and never persists the GitHub access
+token. Setup is documented in
+[`../docs/github-oauth-setup.md`](../docs/github-oauth-setup.md).
+
 On Windows, `scripts\\dev.cmd` starts the configured `threadforge-server` SSH
 tunnel and the Vite client, waits for both endpoints, and opens the browser.
 
@@ -88,6 +94,8 @@ Pop-Location
 - Tools run in the backend process with `policy_boundary` enforcement; there is
   **no** independent container sandbox in V1. UI/API snapshots always report
   `execution_environment: backend_process` and `container_sandbox_enabled: false`.
-- Single user, loopback only. No login, no public deployment.
+- Loopback-only and not a public deployment. Single-owner mode is the default;
+  optional GitHub OAuth supports a small allowlisted group while retaining the
+  single-process, globally single-active-task execution limit.
 - The Windows shell runner uses a Job Object with `KILL_ON_JOB_CLOSE` so a
   cancelled run terminates the whole process tree.

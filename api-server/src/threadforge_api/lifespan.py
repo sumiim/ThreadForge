@@ -21,6 +21,7 @@ from .domain.enums import ApprovalStatus, TaskStatus
 from .domain.errors import ApprovalNotFoundError
 from .domain.identity import canonical_owner_id
 from .infrastructure.approval_gate import ApprovalGate
+from .infrastructure.auth import AuthManager, OAuthClient
 from .infrastructure.event_broker import EventBroker
 from .infrastructure.event_publisher import EventPublisher
 from .infrastructure.json_repositories import JsonApprovalRepository, JsonTaskRepository
@@ -39,12 +40,23 @@ from .infrastructure.workspace_catalog import WorkspaceCatalog
 
 
 class AppContainer:
-    def __init__(self, settings: Settings, *, model_client_factory: Callable | None = None):
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        model_client_factory: Callable | None = None,
+        oauth_client: OAuthClient | None = None,
+    ):
         self.settings = settings
         self.workspace_catalog = WorkspaceCatalog(settings.workspaces_file, settings.data_dir)
         # Workspace/data disjointness is validated before this creates data_dir.
         secure_directory(settings.data_dir)
         self.owner_id = resolve_instance_owner(settings.data_dir, settings.instance_owner_id)
+        self.auth_manager = (
+            AuthManager(settings, self.owner_id, oauth_client)
+            if settings.identity_mode == "github_oauth"
+            else None
+        )
         self.session_store = SessionStore(settings.data_dir / "sessions")
         self.task_repo = JsonTaskRepository(settings.data_dir / "tasks")
         self.approval_repo = JsonApprovalRepository(settings.data_dir / "approvals")
@@ -280,12 +292,21 @@ def _set_approval_status(approval, status: ApprovalStatus, decision: str):
     return approval
 
 
-def build_lifespan(*, settings: Settings | None, model_client_factory: Callable | None = None):
+def build_lifespan(
+    *,
+    settings: Settings | None,
+    model_client_factory: Callable | None = None,
+    oauth_client: OAuthClient | None = None,
+):
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         resolved_settings = settings or Settings().freeze_provider_env()
         app.state.settings = resolved_settings
-        container = AppContainer(resolved_settings, model_client_factory=model_client_factory)
+        container = AppContainer(
+            resolved_settings,
+            model_client_factory=model_client_factory,
+            oauth_client=oauth_client,
+        )
         app.state.container = container
         if container.reconcile():
             container.ready = True

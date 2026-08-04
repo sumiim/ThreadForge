@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from ...domain.enums import ExecutionEnvironment
-from ..dependencies import get_settings
+from ..dependencies import get_actor, get_settings
 
 router = APIRouter()
 
@@ -29,12 +29,12 @@ def get_runtime_config(settings=Depends(get_settings)) -> dict:
         "model_configured": settings.model_configured(),
         "execution_environment": ExecutionEnvironment.BACKEND_PROCESS.value,
         "container_sandbox_enabled": False,
-        "identity_mode": "single_owner_instance",
-        "multi_user_enabled": False,
+        "identity_mode": settings.identity_mode,
+        "multi_user_enabled": settings.identity_mode == "github_oauth",
     }
 
 
-@router.get("/api/v1/skills")
+@router.get("/api/v1/skills", dependencies=[Depends(get_actor)])
 def list_skills() -> dict:
     return {
         "items": [
@@ -44,7 +44,7 @@ def list_skills() -> dict:
     }
 
 
-@router.get("/api/v1/mcp/servers")
+@router.get("/api/v1/mcp/servers", dependencies=[Depends(get_actor)])
 def list_mcp_servers() -> dict:
     return {
         "items": [

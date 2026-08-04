@@ -8,7 +8,9 @@ from ..application.artifact_service import ArtifactService
 from ..application.session_service import SessionService
 from ..application.task_service import TaskService
 from ..config import Settings
+from ..domain.errors import AuthorizationDeniedError
 from ..domain.identity import Actor, canonical_owner_id
+from ..infrastructure.auth import AUTH_COOKIE_NAME, AuthManager
 from ..lifespan import AppContainer
 
 
@@ -21,8 +23,31 @@ def get_settings(request: Request) -> Settings:
 
 
 def get_actor(request: Request) -> Actor:
-    """Return the server-configured actor; request identity headers are ignored."""
-    return Actor(canonical_owner_id(request.app.state.container.owner_id))
+    """Resolve identity from the configured trusted server-side mechanism."""
+    container = request.app.state.container
+    if container.auth_manager is not None:
+        return container.auth_manager.authenticate(request.cookies.get(AUTH_COOKIE_NAME))
+    return Actor(canonical_owner_id(container.owner_id))
+
+
+def get_optional_actor(request: Request) -> Actor | None:
+    container = request.app.state.container
+    if container.auth_manager is None:
+        return Actor(canonical_owner_id(container.owner_id))
+    return container.auth_manager.optional_actor(request.cookies.get(AUTH_COOKIE_NAME))
+
+
+def get_auth_manager(request: Request) -> AuthManager | None:
+    return request.app.state.container.auth_manager
+
+
+def require_csrf(request: Request) -> None:
+    settings = request.app.state.container.settings
+    if (
+        settings.identity_mode == "github_oauth"
+        and request.headers.get("X-ThreadForge-CSRF") != "1"
+    ):
+        raise AuthorizationDeniedError("CSRF validation failed")
 
 
 def get_session_service(request: Request) -> SessionService:

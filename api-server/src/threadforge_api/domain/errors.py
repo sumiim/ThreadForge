@@ -103,3 +103,23 @@ class InputTooLongError(AppError):
 class NotReadyError(AppError):
     http_status = 503
     code = "not_ready"
+
+
+class AuthenticationRequiredError(AppError):
+    http_status = 401
+    code = "authentication_required"
+
+
+class AuthorizationDeniedError(AppError):
+    http_status = 403
+    code = "authorization_denied"
+
+
+class OAuthStateInvalidError(AppError):
+    http_status = 400
+    code = "oauth_state_invalid"
+
+
+class OAuthProviderError(AppError):
+    http_status = 502
+    code = "oauth_provider_error"

@@ -12,7 +12,13 @@ from ...application.task_service import TaskService
 from ...domain.identity import Actor
 from ...infrastructure.event_broker import CLOSED
 from ...infrastructure.id_validators import validate_approval_id, validate_task_id
-from ..dependencies import get_actor, get_container, get_settings, get_task_service
+from ..dependencies import (
+    get_actor,
+    get_container,
+    get_settings,
+    get_task_service,
+    require_csrf,
+)
 from ..models import ApprovalDecisionRequest, CreateTaskRequest, TaskQueuedResponse
 
 router = APIRouter()
@@ -20,7 +26,12 @@ router = APIRouter()
 _TERMINAL_STATUSES = {"completed", "cancelled", "failed"}
 
 
-@router.post("/api/v1/tasks", status_code=202, response_model=TaskQueuedResponse)
+@router.post(
+    "/api/v1/tasks",
+    status_code=202,
+    response_model=TaskQueuedResponse,
+    dependencies=[Depends(require_csrf)],
+)
 def create_task(
     body: CreateTaskRequest,
     actor: Actor = Depends(get_actor),
@@ -48,7 +59,7 @@ def get_task(
     return task_service.get_task(task_id, actor.owner_id)
 
 
-@router.post("/api/v1/tasks/{task_id}/cancel")
+@router.post("/api/v1/tasks/{task_id}/cancel", dependencies=[Depends(require_csrf)])
 def cancel_task(
     task_id: str,
     actor: Actor = Depends(get_actor),
@@ -60,7 +71,10 @@ def cancel_task(
     return JSONResponse(status_code=status_code, content=snapshot)
 
 
-@router.post("/api/v1/tasks/{task_id}/approvals/{approval_id}")
+@router.post(
+    "/api/v1/tasks/{task_id}/approvals/{approval_id}",
+    dependencies=[Depends(require_csrf)],
+)
 def resolve_approval(
     task_id: str,
     approval_id: str,
