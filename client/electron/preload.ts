@@ -1,4 +1,4 @@
-import { contextBridge } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron'
 
 const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8000'
 
@@ -25,6 +25,22 @@ const threadforge = {
   versions: {
     electron: process.versions.electron ?? '',
     chrome: process.versions.chrome ?? '',
+  },
+  desktop: {
+    selectDirectory: (): Promise<string | null> => ipcRenderer.invoke('threadforge:select-directory'),
+    workerStatus: (): Promise<{
+      installed: boolean
+      paired: boolean
+      running: boolean
+      workspaceCount: number
+      error: string | null
+    }> => ipcRenderer.invoke('threadforge:worker-status'),
+    pairWorker: (args: { server: string; code: string; name: string }): Promise<void> =>
+      ipcRenderer.invoke('threadforge:worker-pair', args),
+    addWorkspace: (args: { path: string; name?: string }): Promise<void> =>
+      ipcRenderer.invoke('threadforge:worker-add-workspace', args),
+    startWorker: (): Promise<void> => ipcRenderer.invoke('threadforge:worker-start'),
+    stopWorker: (): Promise<void> => ipcRenderer.invoke('threadforge:worker-stop'),
   },
 } as const
 

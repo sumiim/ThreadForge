@@ -90,6 +90,21 @@ pnpm build:electron
 
 桌面壳只允许 HTTPS 远端站点，或 HTTP loopback 开发地址。未配置 `THREADFORGE_WEB_URL` 时会加载内置静态页面；该模式适合本机开发，不是线上 GitHub OAuth 多用户的推荐方式。
 
+桌面端同时提供本机 Worker 管理能力：
+
+- “设置 → 本地 Worker → 绑定新设备”生成配对码后，Electron 可直接完成配对并启动 Worker；纯 Web 页面仍显示 CLI 命令。
+- “选择本地目录”调用 Electron 原生目录选择器，再通过受限 IPC 执行 `threadforge-worker workspace add`，不会把任意 Shell 交给渲染进程。
+- Electron 启动时会检测当前用户已安装且已配对的 Worker，并自动拉起 `threadforge-worker run`；退出应用时终止由本应用启动的 Worker。
+- 添加新工作区后桌面端会重启 Worker，使最新工作区清单通过 hello 消息同步到中央服务。
+
+当前桌面安装包仍要求本机先安装 Worker CLI：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-worker.ps1
+```
+
+后续可将 Python Worker 打包为签名的随桌面端分发的可执行文件；在此之前，Electron 会明确提示 Worker 尚未安装，不会静默失败。
+
 ## 6. 协议与安全约束
 
 - `POST /api/v1/devices/pairing-codes`：登录用户创建 10 分钟、一次性、64 bit 配对码。
@@ -106,6 +121,6 @@ pnpm build:electron
 ## 7. 当前限制
 
 - Windows Worker 目前通过脚本和 CLI 安装，尚无签名安装包、托盘程序或自动更新。
-- Electron 尚不负责自动安装/升级 Worker；它与 Web 一样只使用中央 API。
+- Electron 目前负责已安装 Worker 的配对、启动、停止和工作区管理；自动下载安装和升级仍待后续版本。
 - Worker 运行时必须保持命令进程存在；系统服务/开机自启将在后续版本实现。
 - 服务器只同步 Agent 会话和受限事件，不提供任意本地文件上传通道。
