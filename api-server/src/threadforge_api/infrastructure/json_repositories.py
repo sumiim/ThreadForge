@@ -11,8 +11,10 @@ from ..domain.errors import (
     AppError,
     ApprovalNotFoundError,
     PersistenceUnavailableError,
+    RunNotFoundError,
     TaskNotFoundError,
 )
+from ..domain.identity import canonical_owner_id
 from .jsonutil import JsonCorruptedError, read_json, secure_directory, write_json_atomic
 
 
@@ -69,6 +71,24 @@ class _JsonRepoBase:
         items.sort(key=lambda item: (item[0], item[1]), reverse=True)
         return [stem for _, stem in items]
 
+    def assign_legacy_owner(self, owner_id: str) -> int:
+        """Claim pre-V1.5 records that do not yet contain an owner UUID."""
+        owner_id = canonical_owner_id(owner_id)
+        migrated = 0
+        with self._lock:
+            for record_id in self.list_stable():
+                try:
+                    payload = self._read_record(record_id)
+                except (RecordNotFoundError, RecordCorruptedError):
+                    continue
+                if payload.get("owner_id"):
+                    continue
+                payload["owner_id"] = owner_id
+                payload["schema_version"] = 2
+                self._write_record(record_id, payload)
+                migrated += 1
+        return migrated
+
 
 class JsonTaskRepository(_JsonRepoBase):
     def create(self, task: Task) -> Task:
@@ -87,6 +107,24 @@ class JsonTaskRepository(_JsonRepoBase):
             except RecordCorruptedError:
                 raise
 
+    def get_for_owner(self, task_id: str, owner_id: str) -> Task:
+        task = self.get(task_id)
+        if task.owner_id != canonical_owner_id(owner_id):
+            raise TaskNotFoundError(task_id)
+        return task
+
+    def get_by_run_for_owner(self, run_id: str, owner_id: str) -> Task:
+        owner_id = canonical_owner_id(owner_id)
+        with self._lock:
+            for record_id in self.list_stable():
+                try:
+                    task = _task_from_dict(self._read_record(record_id), record_id)
+                except RecordNotFoundError:
+                    continue
+                if task.run_id == run_id and task.owner_id == owner_id:
+                    return task
+        raise RunNotFoundError(run_id)
+
     def list(self, limit: int, offset: int) -> tuple[list[Task], int]:
         with self._lock:
             ids = self.list_stable()
@@ -99,7 +137,8 @@ class JsonTaskRepository(_JsonRepoBase):
                     continue
             return tasks, total
 
-    def list_for_session(self, session_id: str, limit: int = 100) -> tuple[list[Task], int]:
+    def list_for_session(self, session_id: str, owner_id: str, limit: int = 100) -> tuple[list[Task], int]:
+        owner_id = canonical_owner_id(owner_id)
         with self._lock:
             tasks: list[Task] = []
             total = 0
@@ -108,7 +147,7 @@ class JsonTaskRepository(_JsonRepoBase):
                     task = _task_from_dict(self._read_record(record_id), record_id)
                 except RecordNotFoundError:
                     continue
-                if task.session_id != session_id:
+                if task.session_id != session_id or task.owner_id != owner_id:
                     continue
                 total += 1
                 if len(tasks) < limit:
@@ -151,6 +190,12 @@ class JsonApprovalRepository(_JsonRepoBase):
                 raise ApprovalNotFoundError(approval_id) from None
             except RecordCorruptedError:
                 raise
+
+    def get_for_owner(self, approval_id: str, owner_id: str) -> Approval:
+        approval = self.get(approval_id)
+        if approval.owner_id != canonical_owner_id(owner_id):
+            raise ApprovalNotFoundError(approval_id)
+        return approval
 
     def update(self, approval_id: str, fn: Callable[[Approval], Approval]) -> Approval:
         with self._lock:

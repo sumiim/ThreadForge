@@ -29,6 +29,8 @@ def get_runtime_config(settings=Depends(get_settings)) -> dict:
         "model_configured": settings.model_configured(),
         "execution_environment": ExecutionEnvironment.BACKEND_PROCESS.value,
         "container_sandbox_enabled": False,
+        "identity_mode": "single_owner_instance",
+        "multi_user_enabled": False,
     }
 
 

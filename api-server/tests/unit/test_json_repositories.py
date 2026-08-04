@@ -6,6 +6,11 @@ import pytest
 
 from threadforge_api.domain.entities import Approval, Task
 from threadforge_api.domain.enums import ApprovalStatus, TaskStatus
+from threadforge_api.domain.errors import (
+    ApprovalNotFoundError,
+    RunNotFoundError,
+    TaskNotFoundError,
+)
 from threadforge_api.infrastructure.json_repositories import (
     JsonApprovalRepository,
     JsonTaskRepository,
@@ -14,12 +19,15 @@ from threadforge_api.infrastructure.json_repositories import (
 )
 from threadforge_api.infrastructure.jsonutil import write_json_atomic
 
+OWNER_ID = "11111111-1111-4111-8111-111111111111"
+
 
 def _task(task_id="task_1", status=TaskStatus.QUEUED):
     return Task(
         task_id=task_id,
         session_id="ses_1",
         workspace_id="w1",
+        owner_id=OWNER_ID,
         run_id="run_1",
         input="hello",
         status=status,
@@ -32,6 +40,28 @@ def test_create_get_roundtrip(tmp_path):
     loaded = repo.get("task_1")
     assert loaded.input == "hello"
     assert loaded.status is TaskStatus.QUEUED
+    assert loaded.owner_id == OWNER_ID
+
+
+def test_task_owner_scoping_hides_foreign_records(tmp_path):
+    repo = JsonTaskRepository(tmp_path)
+    repo.create(_task())
+    other_owner = "22222222-2222-4222-8222-222222222222"
+    with pytest.raises(TaskNotFoundError):
+        repo.get_for_owner("task_1", other_owner)
+    with pytest.raises(RunNotFoundError):
+        repo.get_by_run_for_owner("run_1", other_owner)
+
+
+def test_legacy_task_is_claimed_once(tmp_path):
+    repo = JsonTaskRepository(tmp_path)
+    payload = _task().to_dict()
+    payload.pop("owner_id")
+    payload["schema_version"] = 1
+    write_json_atomic(tmp_path / "task_1.json", payload)
+    assert repo.assign_legacy_owner(OWNER_ID) == 1
+    assert repo.assign_legacy_owner("22222222-2222-4222-8222-222222222222") == 0
+    assert repo.get("task_1").owner_id == OWNER_ID
 
 
 def test_list_stable_order(tmp_path):
@@ -110,6 +140,7 @@ def test_approval_repository_roundtrip_and_pending_list(tmp_path):
         approval_id="apr_1",
         task_id="task_1",
         run_id="run_1",
+        owner_id=OWNER_ID,
         tool_call_id="call_1",
         tool_name="write_file",
         args_digest="abc",
@@ -122,6 +153,8 @@ def test_approval_repository_roundtrip_and_pending_list(tmp_path):
     repo.update("apr_1", lambda a: _approve(a))
     assert repo.get("apr_1").status is ApprovalStatus.APPROVED
     assert repo.list_pending_for_task("task_1") == []
+    with pytest.raises(ApprovalNotFoundError):
+        repo.get_for_owner("apr_1", "22222222-2222-4222-8222-222222222222")
 
 
 def _set_status(task, status):

@@ -6,7 +6,9 @@ import json
 
 from fastapi.testclient import TestClient
 
+from threadforge_api.api.dependencies import get_actor
 from threadforge_api.config import Settings
+from threadforge_api.domain.identity import Actor
 from threadforge_api.main import create_app
 
 from ..conftest import wait_for_terminal
@@ -36,6 +38,8 @@ def test_client_metadata_is_truthful(client):
         "model_configured": True,
         "execution_environment": "backend_process",
         "container_sandbox_enabled": False,
+        "identity_mode": "single_owner_instance",
+        "multi_user_enabled": False,
     }
 
     skills = client.get("/api/v1/skills").json()["items"]
@@ -106,6 +110,61 @@ def test_session_create_list_get(client):
     assert detail.json()["session_id"] == body["session_id"]
     assert detail.json()["task_total"] == 0
     assert detail.json()["tasks"] == []
+
+
+def test_identity_header_cannot_override_instance_owner(client, settings):
+    foreign_owner = "22222222-2222-4222-8222-222222222222"
+    response = client.post(
+        "/api/v1/sessions",
+        headers={"X-User-Id": foreign_owner},
+        json={"workspace_id": "w1"},
+    )
+    assert response.status_code == 201
+    session_id = response.json()["session_id"]
+    path = settings.data_dir / "sessions" / f"{session_id}.json"
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    assert stored["owner_id"] == str(settings.instance_owner_id)
+    assert stored["owner_id"] != foreign_owner
+
+
+def test_startup_claims_legacy_session(settings, model_factory):
+    from pico.features.memory import default_memory_state
+    from pico.session_store import SessionStore
+
+    session_id = "ses_" + "a" * 32
+    store = SessionStore(settings.data_dir / "sessions")
+    store.save(
+        {
+            "id": session_id,
+            "workspace_id": "w1",
+            "workspace_root": "legacy",
+            "title": "Legacy",
+            "created_at": "2026-08-04T00:00:00Z",
+            "history": [],
+            "memory": default_memory_state(),
+        }
+    )
+
+    app = create_app(settings, model_client_factory=model_factory)
+    with TestClient(app) as test_client:
+        assert test_client.get(f"/api/v1/sessions/{session_id}").status_code == 200
+    assert store.load(session_id)["owner_id"] == str(settings.instance_owner_id)
+
+
+def test_foreign_actor_cannot_access_owned_objects(client, app, session_id, model_outputs):
+    model_outputs[:] = ["<final>private answer</final>"]
+    created = client.post("/api/v1/tasks", json={"session_id": session_id, "input": "private"}).json()
+    terminal = wait_for_terminal(client, created["task_id"])
+    foreign = Actor("22222222-2222-4222-8222-222222222222")
+    app.dependency_overrides[get_actor] = lambda: foreign
+    try:
+        assert client.get(f"/api/v1/sessions/{session_id}").status_code == 404
+        assert client.get(f"/api/v1/tasks/{created['task_id']}").status_code == 404
+        assert client.post(f"/api/v1/tasks/{created['task_id']}/cancel").status_code == 404
+        assert client.get(f"/api/v1/tasks/{created['task_id']}/events").status_code == 404
+        assert client.get(f"/api/v1/runs/{terminal['run_id']}/artifacts").status_code == 404
+    finally:
+        app.dependency_overrides.pop(get_actor, None)
 
 
 def test_session_detail_contains_task_summaries(client, session_id, model_outputs):

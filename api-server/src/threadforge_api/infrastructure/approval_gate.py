@@ -34,9 +34,10 @@ from .recovery_journal import RecoveryJournal
 class RunContext:
     """Everything the TaskRunner owns for one active Run."""
 
-    def __init__(self, task_id: str, run_id: str, gate, token):
+    def __init__(self, task_id: str, run_id: str, owner_id: str, gate, token):
         self.task_id = task_id
         self.run_id = run_id
+        self.owner_id = owner_id
         self.gate = gate
         self.token = token
         self.adapter = None  # set by the worker once the Runtime is built
@@ -129,6 +130,7 @@ class ApprovalGate:
             approval_id=approval_id,
             task_id=run.task_id,
             run_id=run.run_id,
+            owner_id=run.owner_id,
             tool_call_id=tool_call_id,
             tool_name=tool_name,
             args_digest=self._digest(args),
@@ -286,7 +288,13 @@ class ApprovalGate:
         if gate is None:
             raise ApprovalStaleError()
         status = ApprovalStatus.APPROVED if decision == "approved" else ApprovalStatus.REJECTED
-        run = RunContext(task_id=approval.task_id, run_id=approval.run_id, gate=gate, token=None)
+        run = RunContext(
+            task_id=approval.task_id,
+            run_id=approval.run_id,
+            owner_id=approval.owner_id,
+            gate=gate,
+            token=None,
+        )
         with gate:
             # Re-read under gate: prevent two concurrent decisions from both succeeding.
             current_approval = self._approval_repo.get(approval_id)

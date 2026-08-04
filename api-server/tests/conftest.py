@@ -32,6 +32,7 @@ def settings(workspace_env):
         pico_openai_api_key="test-key",
         trusted_hosts=["127.0.0.1", "::1", "localhost", "testserver"],
         model_timeout_seconds=30,
+        instance_owner_id="11111111-1111-4111-8111-111111111111",
     )
 
 

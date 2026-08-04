@@ -56,6 +56,19 @@ docker compose up -d --build
 The desktop client must still connect through a loopback address, such as an
 SSH tunnel; the API is not exposed publicly.
 
+## Ownership foundation (V1.5)
+
+The server creates one stable owner UUID in its data directory; deployments may
+also pin it with `THREADFORGE_INSTANCE_OWNER_ID`. Existing V1 records without
+ownership are claimed by that UUID at startup. The REST,
+SSE, approval, cancellation, and artifact paths all enforce the configured
+owner, and client-supplied identity headers are ignored. This remains a
+single-owner compatibility boundary, not public multi-user authentication; see
+[`../docs/multi-user-v15-roadmap.md`](../docs/multi-user-v15-roadmap.md).
+
+On Windows, `scripts\\dev.cmd` starts the configured `threadforge-server` SSH
+tunnel and the Vite client, waits for both endpoints, and opens the browser.
+
 ## Tests (offline)
 
 All tests use the deterministic `FakeModelClient` — no provider credentials or
