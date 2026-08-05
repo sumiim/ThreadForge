@@ -3,11 +3,13 @@ import { Alert, Button, Modal } from 'antd'
 import { FolderOpenOutlined, ReloadOutlined } from '@ant-design/icons'
 import {
   friendlyMessage,
+  getLatestWorkerRelease,
   getWorkspaceSelection,
   listDevices,
   requestWorkspaceSelection,
 } from '../../api/client'
-import type { Device, WorkspaceSelectionRequest } from '../../api/types'
+import type { Device, WorkspaceSelectionRequest, WorkerReleaseManifest } from '../../api/types'
+import { workerIsReady } from './worker-version'
 
 const WAKE_TIMEOUT_MS = 8_000
 const delay = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds))
@@ -38,13 +40,16 @@ const selectionErrors: Record<string, string> = {
 export default function CompanionGate({ onWorkspacesChanged }: CompanionGateProps) {
   const [state, setState] = useState<GateState>('checking')
   const [workspaceDevice, setWorkspaceDevice] = useState<Device | null>(null)
+  const [release, setRelease] = useState<WorkerReleaseManifest | null>(null)
   const [selecting, setSelecting] = useState(false)
   const [error, setError] = useState('')
   const operationVersion = useRef(0)
 
   const probe = useCallback(async (expectedVersion = operationVersion.current): Promise<ProbeResult> => {
     const items = (await listDevices()).items
-    const device = items.find((item) => item.online && item.compatible) ?? null
+    const manifest = release ?? (await getLatestWorkerRelease())
+    if (!release) setRelease(manifest)
+    const device = items.find((item) => workerIsReady(item, manifest)) ?? null
     if (operationVersion.current !== expectedVersion) return { items, device: null }
 
     setWorkspaceDevice(device)
@@ -53,7 +58,7 @@ export default function CompanionGate({ onWorkspacesChanged }: CompanionGateProp
       setError('')
     }
     return { items, device }
-  }, [])
+  }, [release])
 
   const waitForConnection = useCallback(
     async (operation: number): Promise<Device | null> => {
@@ -133,10 +138,12 @@ export default function CompanionGate({ onWorkspacesChanged }: CompanionGateProp
     void probe(operation)
       .then(async ({ items, device }) => {
         if (operationVersion.current !== operation || device) return
-        if (items.length === 0 || items.some((item) => item.online && !item.compatible)) {
-          setState('idle')
-        } else {
+        if (items.length === 0 || !items.some((item) => item.online)) {
           await wakeAndWait()
+        } else {
+          // An online but outdated/incompatible Worker must not be asked to
+          // open a directory. The New Session flow owns the update prompt.
+          setState('idle')
         }
       })
       .catch((cause: unknown) => {

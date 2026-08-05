@@ -18,6 +18,7 @@ import {
   requestWorkspaceSelection,
 } from '../../api/client'
 import type { Device, Workspace, WorkspaceSelectionRequest, WorkerReleaseManifest } from '../../api/types'
+import { workerIsReady, workerNeedsUpdate } from '../devices/worker-version'
 
 const delay = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 
@@ -67,7 +68,11 @@ export default function NewSessionModal({
   const [connecting, setConnecting] = useState(false)
   const operationVersion = useRef(0)
   const noWorkspace = selectable.length === 0
-  const compatibleDevices = (devices ?? []).filter((device) => device.online && device.compatible)
+  const releaseLoading = devices !== null && release === null && !error
+  const compatibleDevices = (devices ?? []).filter((device) => workerIsReady(device, release))
+  const outdatedDevices = release
+    ? (devices ?? []).filter((device) => workerNeedsUpdate(device, release))
+    : []
   const selectedDevice =
     compatibleDevices.find((device) => device.device_id === selectedDeviceId) ?? compatibleDevices[0] ?? null
 
@@ -76,21 +81,17 @@ export default function NewSessionModal({
     let active = true
     void listDevices()
       .then(({ items }) => {
-        if (!active) return
-        const compatible = items.filter((device) => device.online && device.compatible)
-        setDevices(items)
-        setSelectedDeviceId((current) =>
-          compatible.some((device) => device.device_id === current) ? current : (compatible[0]?.device_id ?? null),
-        )
-        if (compatible.length === 0 && !release) {
-          void getLatestWorkerRelease()
-            .then((manifest) => {
-              if (active) setRelease(manifest)
-            })
-            .catch((cause: unknown) => {
-              if (active) setError(friendlyMessage(cause))
-            })
+        if (active) setDevices(items)
+      })
+      .catch((cause: unknown) => {
+        if (active) {
+          setDevices([])
+          setError(friendlyMessage(cause))
         }
+      })
+    void getLatestWorkerRelease()
+      .then((manifest) => {
+        if (active) setRelease(manifest)
       })
       .catch((cause: unknown) => {
         if (active) setError(friendlyMessage(cause))
@@ -98,7 +99,7 @@ export default function NewSessionModal({
     return () => {
       active = false
     }
-  }, [devices, noWorkspace, open, release])
+  }, [devices, noWorkspace, open])
 
   const resetState = () => {
     operationVersion.current += 1
@@ -120,6 +121,7 @@ export default function NewSessionModal({
   const refreshDevices = () => {
     setDevices(null)
     setSelectedDeviceId(null)
+    setRelease(null)
     setError('')
   }
 
@@ -150,15 +152,23 @@ export default function NewSessionModal({
     try {
       setConnecting(true)
       setError('')
-      const pairing = await createPairingCode()
-      const server = window.threadforge?.apiBaseUrl ?? window.location.origin
-      const query = new URLSearchParams({ server, code: pairing.code })
-      window.location.href = `threadforge://worker/pair?${query.toString()}`
-      for (let attempt = 0; attempt < 10; attempt += 1) {
+      const hasExistingDevice = (devices ?? []).length > 0
+      if (hasExistingDevice) {
+        // An older paired Worker should keep its identity and workspaces. Ask
+        // the installed service to restart after the installer replaces it;
+        // do not create a second device or force a new pairing.
+        window.location.href = 'threadforge://worker/start'
+      } else {
+        const pairing = await createPairingCode()
+        const server = window.threadforge?.apiBaseUrl ?? window.location.origin
+        const query = new URLSearchParams({ server, code: pairing.code })
+        window.location.href = `threadforge://worker/pair?${query.toString()}`
+      }
+      for (let attempt = 0; attempt < 30; attempt += 1) {
         await delay(1_000)
         if (operationVersion.current !== operation) return
         const items = (await listDevices()).items
-        const device = items.find((item) => item.online && item.compatible)
+        const device = items.find((item) => workerIsReady(item, release))
         if (device) {
           setDevices(items)
           setSelectedDeviceId(device.device_id)
@@ -211,12 +221,17 @@ export default function NewSessionModal({
       <Alert
         type="info"
         showIcon
-        message="没有可用的兼容 Worker"
+        message={outdatedDevices.length > 0 ? '检测到需要更新的 Worker' : '没有可用的兼容 Worker'}
         description="请安装或更新本机 Worker。安装程序自带运行环境，不需要单独安装 Python。"
       />
       {error ? <Alert type="error" showIcon message={error} /> : null}
-      {devices?.some((device) => device.online && !device.compatible) ? (
-        <Alert type="warning" showIcon message="检测到旧版 Worker，请下载最新版本后重新运行安装程序。" />
+      {outdatedDevices.length > 0 && release ? (
+        <Alert
+          type="warning"
+          showIcon
+          message={`检测到旧版 Worker ${outdatedDevices.map((device) => device.version || '版本未知').join('、')}，当前稳定版为 ${release.version}`}
+          description="旧版 Worker 不会调用目录选择器，请下载并运行最新安装程序；更新后会保留现有配对和工作区。"
+        />
       ) : null}
       <div className="flex items-center justify-between gap-3 border-b border-stone-200 pb-3">
         <div>
@@ -225,7 +240,9 @@ export default function NewSessionModal({
             {release ? `稳定版 ${release.version}` : error ? '暂时无法读取版本' : '正在读取最新版本'}
           </div>
         </div>
-        <Tag color={release ? 'green' : 'default'}>{release ? '清单签名已验证' : '等待清单'}</Tag>
+        <Tag color={release ? 'green' : 'default'}>
+          {release ? '清单签名已验证' : releaseLoading ? '正在读取清单' : '等待清单'}
+        </Tag>
       </div>
       {downloadProgress !== null ? (
         <Progress percent={downloadProgress} status={downloadProgress === 100 ? 'success' : 'active'} />
@@ -234,7 +251,7 @@ export default function NewSessionModal({
         type="primary"
         block
         icon={downloaded ? <CheckCircleOutlined /> : <DownloadOutlined />}
-        disabled={!release || downloaded || connecting}
+        disabled={!release || releaseLoading || downloaded || connecting}
         loading={Boolean(downloadProgress !== null && downloadProgress < 100)}
         onClick={() => void download()}
       >
@@ -246,7 +263,11 @@ export default function NewSessionModal({
             type="success"
             showIcon
             message="请先运行刚下载的安装程序"
-            description="安装完成后点击下方按钮，网页会生成一次性配对码并连接本机 Worker。"
+            description={
+              (devices ?? []).length > 0
+                ? '安装完成后点击下方按钮，网页会等待原有 Worker 重新上线，不会重复创建设备。'
+                : '安装完成后点击下方按钮，网页会生成一次性配对码并连接本机 Worker。'
+            }
           />
           <Button type="primary" block icon={<PoweroffOutlined />} loading={connecting} onClick={() => void connectWorker()}>
             安装完成，连接本机
