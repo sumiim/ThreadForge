@@ -117,7 +117,7 @@ describe('client authentication API', () => {
       return new Response(new Uint8Array([1, 2, 3, 4]), {
         headers: {
           'Content-Length': '4',
-          'Content-Disposition': 'attachment; filename="worker.zip"',
+          'Content-Disposition': 'attachment; filename="worker.exe"',
         },
       })
     }
@@ -126,7 +126,7 @@ describe('client authentication API', () => {
       progress.push([received, total])
     })
 
-    assert.equal(result.filename, 'worker.zip')
+    assert.equal(result.filename, 'worker.exe')
     assert.equal(result.blob.size, 4)
     assert.deepEqual(progress.at(-1), [4, 4])
   })

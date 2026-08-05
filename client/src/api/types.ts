@@ -12,6 +12,7 @@ export interface Workspace {
   container_sandbox_enabled: boolean
   device_id?: string
   device_name?: string
+  device_platform?: string
   model?: string
   model_configured?: boolean
 }
@@ -30,6 +31,8 @@ export interface Device {
   model_configured: boolean
   version: string
   protocol_version: number
+  platform: string
+  architecture: string
   compatible: boolean
   capabilities: string[]
   created_at: string

@@ -154,6 +154,7 @@ class WorkerClient:
                     "version": __version__,
                     "protocol_version": WORKER_PROTOCOL_VERSION,
                     "platform": platform.system().lower(),
+                    "architecture": platform.machine().lower(),
                     "model": os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4"),
                     "model_configured": bool(os.environ.get("PICO_OPENAI_API_KEY", "").strip()),
                     "capabilities": [

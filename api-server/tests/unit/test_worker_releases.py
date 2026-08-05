@@ -31,8 +31,8 @@ def _signed_manifest(private_key, artifact: bytes) -> dict:
         "published_at": "2026-08-05T00:00:00Z",
         "platforms": {
             "windows-x86_64": {
-                "filename": "threadforge-worker-windows-x86_64.zip",
-                "url": "https://github.com/sumiim/ThreadForge/releases/download/worker-v0.2.0/threadforge-worker-windows-x86_64.zip",
+                "filename": "threadforge-worker-windows-x86_64.exe",
+                "url": "https://github.com/sumiim/ThreadForge/releases/download/worker-v0.2.0/threadforge-worker-windows-x86_64.exe",
                 "size": len(artifact),
                 "sha256": hashlib.sha256(artifact).hexdigest(),
             }

@@ -197,9 +197,17 @@ export default function WorkerDevices() {
                   </Popconfirm>
                 </div>
                 <div className="mt-2 text-[11px] text-stone-500">
-                  Worker {device.version || '旧版'} · {device.workspaces.length} 个工作区 ·{' '}
+                  {device.platform || 'unknown'} / {device.architecture || 'unknown'} · Worker{' '}
+                  {device.version || '旧版'} · {device.workspaces.length} 个工作区 ·{' '}
                   {device.model_configured ? device.model : '模型未配置'}
                 </div>
+                {device.workspaces.length > 0 ? (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {device.workspaces.map((workspace) => (
+                      <Tag key={workspace.workspace_id}>{workspace.name}</Tag>
+                    ))}
+                  </div>
+                ) : null}
                 <div className="mt-3 flex flex-wrap gap-2">
                   {device.online && (device.capabilities ?? []).includes('model_configuration') ? (
                     <Tooltip title="配置模型接口">

@@ -10,9 +10,9 @@ permissions:
 
 jobs:
   release:
-    name: Build and sign Worker release
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    name: Build, verify and sign Windows Worker
+    runs-on: windows-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
@@ -25,62 +25,76 @@ jobs:
 
       - name: Validate tag and package version
         id: version
-        shell: bash
+        shell: pwsh
         run: |
-          set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          version="${tag#worker-v}"
-          package_version="$(python -c "import tomllib; print(tomllib.load(open('local-worker/pyproject.toml','rb'))['project']['version'])")"
-          [[ "${tag}" == "worker-v${version}" && "${version}" == "${package_version}" ]]
-          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          $ErrorActionPreference = "Stop"
+          $tag = $env:GITHUB_REF_NAME
+          $version = $tag -replace '^worker-v', ''
+          $packageVersion = python -c "import tomllib; print(tomllib.load(open('local-worker/pyproject.toml','rb'))['project']['version'])"
+          if ($tag -ne "worker-v$version" -or $version -ne $packageVersion) {
+            throw "Tag $tag does not match Worker version $packageVersion"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
 
-      - name: Build Worker wheels
+      - name: Install build tooling
+        shell: pwsh
         run: |
-          python -m pip install --upgrade pip build cryptography
+          python -m pip install --upgrade pip build cryptography pyinstaller
           python -m pip install -e ./pico-legacy-runtime -e "./local-worker[dev]"
+          choco install nsis --no-progress -y
+
+      - name: Test Worker
+        shell: pwsh
+        run: |
           python -m ruff check local-worker/src local-worker/tests
           python -m pytest -q local-worker/tests
           python -m build --wheel ./pico-legacy-runtime
           python -m build --wheel ./local-worker
 
-      - name: Assemble offline installer bundle
-        shell: bash
+      - name: Build self-contained Worker executable
+        shell: pwsh
         run: |
-          set -euo pipefail
-          mkdir -p release-worker/packages
-          cp scripts/install-worker.ps1 release-worker/
-          python -m pip download \
-            --dest release-worker/packages \
-            --only-binary=:all: \
-            --platform win_amd64 \
-            --python-version 312 \
-            --implementation cp \
-            --abi cp312 \
-            --abi abi3 \
-            --abi none \
-            --find-links pico-legacy-runtime/dist \
-            --find-links local-worker/dist \
-            local-worker/dist/threadforge_worker-*.whl
-          (cd release-worker && zip -r ../threadforge-worker-windows-x86_64.zip .)
+          ./scripts/build-worker-installer.ps1 -Version "${{ steps.version.outputs.version }}"
+
+      - name: Smoke test standalone installer
+        shell: pwsh
+        run: |
+          $installer = (Resolve-Path "threadforge-worker-windows-x86_64.exe").Path
+          $process = Start-Process -FilePath $installer -ArgumentList "/S" -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Worker installer exited with $($process.ExitCode)"
+          }
+          $worker = Join-Path $env:LOCALAPPDATA "ThreadForge\WorkerApp\threadforge-worker.exe"
+          if (-not (Test-Path -LiteralPath $worker)) {
+            throw "Worker executable was not installed"
+          }
+          & $worker --help
+          if ($LASTEXITCODE -ne 0) { throw "Installed Worker CLI failed" }
+          & $worker status
+          if ($LASTEXITCODE -ne 0) { throw "Installed Worker status failed" }
 
       - name: Sign release manifest
+        shell: pwsh
         env:
           WORKER_RELEASE_SIGNING_KEY_B64: ${{ secrets.WORKER_RELEASE_SIGNING_KEY_B64 }}
         run: |
-          test -n "${WORKER_RELEASE_SIGNING_KEY_B64}"
-          python scripts/build-worker-release.py \
-            --version "${{ steps.version.outputs.version }}" \
-            --tag "${GITHUB_REF_NAME}" \
-            --repository "${GITHUB_REPOSITORY}" \
-            --artifact threadforge-worker-windows-x86_64.zip \
+          if (-not $env:WORKER_RELEASE_SIGNING_KEY_B64) {
+            throw "WORKER_RELEASE_SIGNING_KEY_B64 is not configured"
+          }
+          python scripts/build-worker-release.py `
+            --version "${{ steps.version.outputs.version }}" `
+            --tag "$env:GITHUB_REF_NAME" `
+            --repository "$env:GITHUB_REPOSITORY" `
+            --artifact threadforge-worker-windows-x86_64.exe `
             --output worker-manifest.json
 
       - name: Publish GitHub release
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "ThreadForge Worker ${{ steps.version.outputs.version }}" \
-            --generate-notes \
-            threadforge-worker-windows-x86_64.zip \
+          gh release create "$env:GITHUB_REF_NAME" `
+            --title "ThreadForge Worker ${{ steps.version.outputs.version }}" `
+            --generate-notes `
+            threadforge-worker-windows-x86_64.exe `
             worker-manifest.json

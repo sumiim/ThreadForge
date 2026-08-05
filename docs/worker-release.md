@@ -4,9 +4,9 @@
 
 Worker 发布使用独立 Ed25519 密钥：私钥只保存在 GitHub Actions Secret `WORKER_RELEASE_SIGNING_KEY_B64`，公钥固定在 API 与 Worker 代码中。发布清单签名后绑定版本、协议版本、平台、下载 URL、文件名、大小和 SHA-256。
 
-下载流程会执行两次验证：中央 API 验证清单签名并完整下载、校验制品后才向浏览器或 Worker 返回；Worker 自动更新时再次验证清单签名、文件大小和 SHA-256。ZIP 解压还限制成员路径、数量、总大小和文件类型。
+下载流程会执行两次验证：中央 API 验证清单签名并完整下载、校验制品后才向浏览器或 Worker 返回；Worker 自动更新时再次验证清单签名、固定文件名、文件大小和 SHA-256，再静默启动用户级安装器。
 
-这套签名保护 ThreadForge 自动更新信任链，但不等于 Windows Authenticode。当前 PowerShell 安装脚本仍可能显示未知发布者；面向非开发者正式发行前，还应使用代码签名证书签署 MSIX/NSIS 安装器。
+这套签名保护 ThreadForge 应用内下载和自动更新信任链，但不等于 Windows Authenticode。当前 NSIS 安装器仍可能显示未知发布者；面向非开发者正式发行前，还应使用代码签名证书签署安装器和内含的 Worker EXE。
 
 ## 一次性 Secret 配置
 
@@ -26,11 +26,11 @@ Worker 发布使用独立 Ed25519 密钥：私钥只保存在 GitHub Actions Sec
 3. 在该提交创建严格匹配版本的标签：
 
 ```bash
-git tag worker-v0.2.0
-git push origin worker-v0.2.0
+git tag worker-v0.2.1
+git push origin worker-v0.2.1
 ```
 
-`Worker Release` 工作流会重新执行 Worker Lint/测试，构建 Pico 与 Worker wheels，解析 Windows Python 3.12 的第三方 wheels，生成可离线安装的 ZIP，签署 `worker-manifest.json`，最后创建 GitHub Release。
+`Worker Release` 工作流在 Windows Runner 上重新执行 Worker Lint/测试，使用 PyInstaller 封装 Python 与全部运行依赖，再用 NSIS 生成每用户安装器。流水线会静默安装最终 EXE、实际执行 `--help` 和 `status`，通过后才签署 `worker-manifest.json` 并创建 GitHub Release。这条目标系统冒烟测试是发布门禁，不能用“依赖下载成功”代替。
 
 发布后验证：
 
@@ -39,4 +39,6 @@ curl -fsS https://github.com/sumiim/ThreadForge/releases/latest/download/worker-
 curl -fsS https://threadforge.example.com/api/v1/worker/releases/latest
 ```
 
-第二个接口需要已登录浏览器 Cookie或有效 Worker 设备令牌。现有 Companion 在连接成功后空闲检查更新；发现更高版本时验证并安装本地 wheels，然后自动重启。协议不兼容的旧 Worker 会在前端被标记为必须更新。
+第二个接口需要已登录浏览器 Cookie 或有效 Worker 设备令牌。现有 Companion 在连接成功后空闲检查更新；发现更高版本时验证并启动静默安装，新安装器停止旧进程、替换程序并启动新服务。协议不兼容的旧 Worker 会在前端被标记为必须更新。
+
+当前稳定清单只发布 `windows-x86_64`。控制面和设备协议允许同一账号绑定任意数量、不同平台的 Worker，并记录每台设备的系统、架构和独立工作区；新增 Linux/macOS 自包含制品时必须分别在对应 Runner 构建和安装验收。macOS 对外发布还必须补 Developer ID 签名与公证，不能把未公证二进制标成稳定版。

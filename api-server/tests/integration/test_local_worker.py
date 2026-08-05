@@ -28,6 +28,8 @@ def _hello(socket, workspace_id="ws_" + "a" * 32, capabilities=None):
             "type": "hello",
             "version": "0.1.0",
             "protocol_version": 1,
+            "platform": "linux",
+            "architecture": "x86_64",
             "model": "fake-local-model",
             "model_configured": True,
             "capabilities": capabilities or [],
@@ -47,6 +49,8 @@ def test_companion_workspace_selection_roundtrip(client):
         existing_workspace_id = _hello(socket, capabilities=["workspace_selection"])
         device = client.get("/api/v1/devices").json()["items"][0]
         assert device["capabilities"] == ["workspace_selection"]
+        assert device["platform"] == "linux"
+        assert device["architecture"] == "x86_64"
 
         requested = client.post(
             f"/api/v1/devices/{paired['device_id']}/workspace-selection-requests"

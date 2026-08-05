@@ -14,6 +14,7 @@ from pico.features.memory import default_memory_state
 from pico.providers.clients import FakeModelClient
 from pico.session_store import SessionStore
 
+from threadforge_worker.cli import _parse_protocol_uri
 from threadforge_worker.client import (
     WorkerClient,
     _stable_failure_reason,
@@ -28,6 +29,29 @@ from threadforge_worker.runtime import (
     run_task,
 )
 from threadforge_worker.service import ServiceAlreadyRunningError, ServiceLock
+
+
+def test_protocol_links_are_strict_and_support_automatic_pairing():
+    action, parameters = _parse_protocol_uri(
+        "threadforge://worker/pair?server=https%3A%2F%2Fthreadforge.example&code=ABCD-1234-EF56-7890"
+    )
+    assert action == "pair"
+    assert parameters == {
+        "server": "https://threadforge.example",
+        "code": "ABCD-1234-EF56-7890",
+    }
+    assert _parse_protocol_uri("threadforge://worker/start") == ("start", {})
+
+    invalid_links = [
+        "threadforge://worker/run?command=whoami",
+        "threadforge://worker/start?path=C%3A%5CUsers",
+        "threadforge://worker/pair?server=https%3A%2F%2Fthreadforge.example&code=bad",
+        "threadforge://worker/pair?server=https%3A%2F%2Fthreadforge.example&server=https%3A%2F%2Fevil.example&code=ABCD-1234-EF56-7890",
+        "threadforge://other/start",
+    ]
+    for link in invalid_links:
+        with pytest.raises(ValueError):
+            _parse_protocol_uri(link)
 
 
 def test_config_roundtrip_does_not_store_plaintext_token(tmp_path):

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-import threading
 from pathlib import Path
 
 from .client import WorkerClient
@@ -92,7 +91,6 @@ def run_service(data_dir: str | None = None) -> int:
         raise RuntimeError("Worker is not paired; run `threadforge-worker pair` first")
     try:
         with ServiceLock(store.root):
-            restart_after_update = threading.Event()
             client: WorkerClient | None = None
 
             def auto_update() -> None:
@@ -105,7 +103,6 @@ def run_service(data_dir: str | None = None) -> int:
                             from .updater import apply_update
 
                             if apply_update(store):
-                                restart_after_update.set()
                                 client.stop()
                                 return
                         except Exception as exc:
@@ -125,8 +122,6 @@ def run_service(data_dir: str | None = None) -> int:
                 ready_callback=auto_update,
             )
             client.run_forever()
-            if restart_after_update.is_set():
-                return 75
     except ServiceAlreadyRunningError:
         return 0
     return 0
@@ -134,11 +129,14 @@ def run_service(data_dir: str | None = None) -> int:
 
 def start_service_background(data_dir: str | None = None) -> None:
     executable = Path(sys.executable)
-    if sys.platform == "win32":
+    frozen = bool(getattr(sys, "frozen", False))
+    if sys.platform == "win32" and not frozen:
         pythonw = executable.with_name("pythonw.exe")
         if pythonw.is_file():
             executable = pythonw
-    command = [str(executable), "-m", "threadforge_worker"]
+    command = [str(executable)]
+    if not frozen:
+        command.extend(["-m", "threadforge_worker"])
     if data_dir:
         command.extend(["--data-dir", data_dir])
     command.append("service")

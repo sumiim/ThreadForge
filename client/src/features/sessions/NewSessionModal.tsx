@@ -49,7 +49,7 @@ export default function NewSessionModal({
                 <span className="truncate font-mono text-xs text-stone-700">{w.display_path}</span>
                 <span className="text-[11px] text-stone-400">
                   {w.execution_environment === 'local_worker'
-                    ? `本地 Worker${w.model_configured ? '' : ' · 模型未配置'}`
+                    ? `${w.device_name ?? '本地 Worker'}${w.device_platform ? ` · ${w.device_platform}` : ''}${w.model_configured ? '' : ' · 模型未配置'}`
                     : '服务器工作区'}
                 </span>
               </span>
