@@ -65,7 +65,10 @@ jobs:
           if ($process.ExitCode -ne 0) {
             throw "Worker installer exited with $($process.ExitCode)"
           }
+          ${env:_PYI_APPLICATION_HOME_DIR} = Join-Path $env:TEMP "deleted-threadforge-mei"
+          Remove-Item Env:\PYINSTALLER_RESET_ENVIRONMENT -ErrorAction SilentlyContinue
           $upgrade = Start-Process -FilePath $installer -ArgumentList "/S" -Wait -PassThru
+          Remove-Item Env:\_PYI_APPLICATION_HOME_DIR
           if ($upgrade.ExitCode -ne 0) {
             throw "Worker upgrade exited with $($upgrade.ExitCode)"
           }
@@ -81,11 +84,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Installed Worker CLI failed" }
           & $worker status
           if ($LASTEXITCODE -ne 0) { throw "Installed Worker status failed" }
-          ${env:_PYI_APPLICATION_HOME_DIR} = Join-Path $env:TEMP "deleted-threadforge-mei"
-          $env:PYINSTALLER_RESET_ENVIRONMENT = "1"
-          & $worker --help
-          if ($LASTEXITCODE -ne 0) { throw "Installed Worker failed to reset inherited PyInstaller state" }
-          Remove-Item Env:\_PYI_APPLICATION_HOME_DIR, Env:\PYINSTALLER_RESET_ENVIRONMENT
+          Start-Sleep -Seconds 5
+          $staleService = Get-Process -Name "threadforge-worker-service" -ErrorAction SilentlyContinue
+          if ($staleService) {
+            $staleService | Stop-Process -Force
+            throw "Installer-started Worker remained blocked after resetting inherited PyInstaller state"
+          }
           $serviceProcess = Start-Process -FilePath $service -ArgumentList "service" -PassThru
           if (-not $serviceProcess.WaitForExit(10000)) {
             Stop-Process -Id $serviceProcess.Id -Force
