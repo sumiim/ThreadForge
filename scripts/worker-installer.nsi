@@ -61,6 +61,10 @@ install_files:
   CreateShortCut "$SMPROGRAMS\ThreadForge\Worker status.lnk" "$INSTDIR\threadforge-worker.exe" "status"
   CreateShortCut "$SMPROGRAMS\ThreadForge\Uninstall Worker.lnk" "$INSTDIR\uninstall.exe"
 
+  ; An installer launched by a PyInstaller onefile Worker inherits the old
+  ; _MEI runtime. Force the replacement service to start as a new top-level
+  ; frozen process even when the old updater did not sanitize its environment.
+  System::Call 'Kernel32::SetEnvironmentVariable(t "PYINSTALLER_RESET_ENVIRONMENT", t "1") i .r0'
   ExecShell "open" "$INSTDIR\threadforge-worker-service.exe" "service"
 SectionEnd
 
