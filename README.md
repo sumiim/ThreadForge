@@ -84,6 +84,8 @@ python -m pico run --backend langgraph --task-mode auto --provider openai
 
 - [V1 需求文档](docs/requirements-v1.md)
 - [本地 Worker V1 架构、安装与协议](docs/local-worker-v1.md)
+- [公网 Web、Caddy HTTPS 与 OAuth 部署](docs/public-web-deployment.md)
+- [Worker 签名发布与自动更新](docs/worker-release.md)
 - [Legacy Runtime README](pico-legacy-runtime/README.md)
 - [Agent Harness v1 架构](pico-legacy-runtime/docs/architecture/agent-harness-v1-overview.md)
 - [LangGraph 意图路由需求](pico-legacy-runtime/docs/recreation-2/REQUIREMENTS.md)

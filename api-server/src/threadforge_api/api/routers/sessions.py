@@ -37,11 +37,11 @@ def list_sessions(
 
 
 @router.get("/api/v1/sessions/{session_id}")
-def get_session(
+async def get_session(
     session_id: str,
     message_limit: int = Query(default=100, ge=1, le=500),
     actor: Actor = Depends(get_actor),
     session_service: SessionService = Depends(get_session_service),
 ) -> dict:
     validate_session_id(session_id)
-    return session_service.get_session(session_id, message_limit, actor.owner_id)
+    return await session_service.get_session(session_id, message_limit, actor.owner_id)

@@ -16,6 +16,7 @@ import RunArtifactsDrawer from './features/chat/RunArtifactsDrawer'
 import SkillsView from './features/skills/SkillsView'
 import McpView from './features/mcp/McpView'
 import WorkerDevices from './features/devices/WorkerDevices'
+import CompanionGate from './features/devices/CompanionGate'
 
 const { Header, Sider, Content } = Layout
 
@@ -67,6 +68,7 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
     // 主题 ConfigProvider：antd 组件随亮/暗切换；Tailwind 侧由 .dark 类变量色板接管
     <ConfigProvider theme={mode === 'dark' ? darkThemeConfig : themeConfig}>
       <Layout className="h-screen">
+        {auth.identity_mode === 'github_oauth' ? <CompanionGate /> : null}
         <Sider
           width={280}
           theme={mode === 'dark' ? 'dark' : 'light'}

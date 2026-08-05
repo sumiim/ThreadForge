@@ -21,6 +21,7 @@ from .api.routers import (
     runs,
     sessions,
     tasks,
+    worker_releases,
     workspaces,
 )
 from .config import Settings
@@ -96,6 +97,7 @@ def create_app(
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(devices.router)
+    app.include_router(worker_releases.router)
     app.include_router(metadata.router)
     app.include_router(workspaces.router)
     app.include_router(sessions.router)

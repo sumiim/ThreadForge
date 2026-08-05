@@ -84,11 +84,36 @@ def test_github_login_logout_and_owner_continuity(settings, model_factory):
         assert status["authenticated"] is True
         assert status["user"]["login"] == "sumiim"
         assert status["user"]["owner_id"] == str(settings.instance_owner_id)
+        runtime = client.get("/api/v1/config").json()
+        assert runtime["execution_environment"] == "local_worker"
+        assert runtime["model_configured"] is False
+        assert client.get("/api/v1/workspaces").json()["items"] == []
 
         assert client.post("/api/v1/sessions", json={"workspace_id": "w1"}).status_code == 403
         client.headers["X-ThreadForge-CSRF"] = "1"
         created = client.post("/api/v1/sessions", json={"workspace_id": "w1"})
-        assert created.status_code == 201
+        assert created.status_code == 404
+        legacy_session_id = "ses_" + "f" * 32
+        app.state.container.session_store.save(
+            {
+                "id": legacy_session_id,
+                "created_at": "2026-08-05T00:00:00Z",
+                "workspace_root": str(app.state.container.workspace_catalog.get("w1").canonical_path),
+                "workspace_id": "w1",
+                "execution_environment": "backend_process",
+                "device_id": "",
+                "owner_id": status["user"]["owner_id"],
+                "title": "Legacy server session",
+                "history": [],
+            }
+        )
+        assert client.get("/api/v1/sessions").json()["items"] == []
+        assert client.get(f"/api/v1/sessions/{legacy_session_id}").status_code == 404
+        blocked_task = client.post(
+            "/api/v1/tasks",
+            json={"session_id": legacy_session_id, "input": "must not run on server"},
+        )
+        assert blocked_task.status_code == 403
         assert client.post("/api/v1/auth/logout").json() == {"status": "signed_out"}
         assert client.get("/api/v1/sessions").status_code == 401
 
@@ -133,12 +158,27 @@ def test_two_github_users_cannot_see_each_others_sessions(settings, model_factor
     with TestClient(app) as client:
         client.headers["X-ThreadForge-CSRF"] = "1"
         assert _complete(client, _start(client)).status_code == 303
-        owner_session = client.post("/api/v1/sessions", json={"workspace_id": "w1"}).json()
+        owner_id = client.get("/api/v1/auth/status").json()["user"]["owner_id"]
         pairing_code = client.post("/api/v1/devices/pairing-codes", json={}).json()["code"]
         owner_device = client.post(
             "/api/v1/workers/pair",
             json={"code": pairing_code, "name": "Owner laptop"},
         ).json()
+        owner_session = {"session_id": "ses_" + "a" * 32}
+        app.state.container.session_store.save(
+            {
+                "id": owner_session["session_id"],
+                "created_at": "2026-08-05T00:00:00Z",
+                "workspace_root": "worker://owner/ws_local",
+                "workspace_id": "ws_" + "b" * 32,
+                "execution_environment": "local_worker",
+                "device_id": owner_device["device_id"],
+                "owner_id": owner_id,
+                "title": "Owner local session",
+                "history": [],
+                "local_message_total": 0,
+            }
+        )
         client.post("/api/v1/auth/logout")
 
         oauth.identity = GitHubIdentity(456, "guest")

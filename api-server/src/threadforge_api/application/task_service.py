@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 
 from pico.security import redact_artifact
 
@@ -11,6 +12,7 @@ from ..domain.enums import TaskStatus
 from ..domain.errors import (
     ActiveTaskExistsError,
     ApprovalNotFoundError,
+    AuthorizationDeniedError,
     InputTooLongError,
     ModelNotConfiguredError,
     TaskRunnerUnavailableError,
@@ -71,6 +73,10 @@ class TaskService:
             if not device.model_configured:
                 raise ModelNotConfiguredError("the selected local Worker has no model configuration")
         else:
+            if self._settings.identity_mode == "github_oauth":
+                raise AuthorizationDeniedError(
+                    "server-side workspaces are disabled in multi-user mode"
+                )
             if not self._runner.is_available():
                 raise TaskRunnerUnavailableError("runner is unavailable")
             if not self._settings.model_configured():
@@ -90,18 +96,13 @@ class TaskService:
             device_id=device_id,
         )
         if execution_environment == "local_worker":
-            self._task_repo.create(task)
+            # The plaintext prompt is dispatched from memory. Persist only
+            # control state; local Worker sessions own all conversation text.
+            self._task_repo.create(replace(task, input=""))
             self._publisher.publish(task_id, run_id, "task.queued", {"status": "queued"})
             try:
                 self._worker_hub.dispatch(task, session)
             except Exception:
-                converge_run_artifacts(
-                    self._settings.data_dir,
-                    task,
-                    status=TaskStatus.FAILED,
-                    stop_reason="worker_unavailable",
-                    final_answer="",
-                )
                 self._task_repo.update(
                     task_id,
                     lambda item: _terminal(item, TaskStatus.FAILED, "worker_unavailable", None),
@@ -211,14 +212,25 @@ class TaskService:
                 self._approval_repo.get(pending["approval_id"])
             except Exception:
                 pending = None
+        local_answer = (
+            self._worker_hub.ephemeral_final_answer(task.task_id)
+            if task.execution_environment == "local_worker" and self._worker_hub is not None
+            else None
+        )
         return {
             "task_id": task.task_id,
             "run_id": task.run_id,
             "session_id": task.session_id,
             "workspace_id": task.workspace_id,
             "status": task.status.value,
-            "input": redact_artifact(task.input),
-            "final_answer": redact_artifact(task.final_answer),
+            "input": (
+                "" if task.execution_environment == "local_worker" else redact_artifact(task.input)
+            ),
+            "final_answer": (
+                local_answer
+                if task.execution_environment == "local_worker"
+                else redact_artifact(task.final_answer)
+            ),
             "stop_reason": task.stop_reason,
             "attempts": progress.get("attempts"),
             "tool_steps": progress.get("tool_steps"),

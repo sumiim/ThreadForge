@@ -25,7 +25,7 @@ from ..domain.errors import (
 )
 from ..domain.identity import canonical_owner_id
 from ..infrastructure.json_repositories import JsonTaskRepository
-from ..infrastructure.workspace_catalog import WorkspaceCatalog
+from ..infrastructure.workspace_catalog import WorkspaceCatalog, WorkspaceNotFoundError
 
 DEFAULT_SESSION_TITLE_PREFIX = "Session"
 MESSAGE_CONTENT_MAX = 4000
@@ -46,12 +46,14 @@ class SessionService:
         task_repo: JsonTaskRepository | None = None,
         device_store=None,
         worker_hub=None,
+        allow_backend_workspaces: bool = True,
     ):
         self._session_store = session_store
         self._workspace_catalog = workspace_catalog
         self._task_repo = task_repo
         self._device_store = device_store
         self._worker_hub = worker_hub
+        self._allow_backend_workspaces = allow_backend_workspaces
 
     def create_session(self, workspace_id: str, title: str | None, owner_id: str) -> dict:
         owner_id = canonical_owner_id(owner_id)
@@ -68,6 +70,8 @@ class SessionService:
             execution_environment = "local_worker"
             device_id = device.device_id
         else:
+            if not self._allow_backend_workspaces:
+                raise WorkspaceNotFoundError(workspace_id)
             entry = self._workspace_catalog.recheck(workspace_id)
             workspace_root = str(entry.canonical_path)
             execution_environment = "backend_process"
@@ -85,6 +89,8 @@ class SessionService:
             "history": [],
             "memory": default_memory_state(),
         }
+        if execution_environment == "local_worker":
+            session["local_message_total"] = 0
         try:
             self._session_store.save(session)
         except OSError as exc:
@@ -124,26 +130,26 @@ class SessionService:
                 session = self._load(session_id)
             except SessionNotFoundError:
                 continue
-            if session.get("owner_id") == owner_id:
+            if (
+                session.get("owner_id") == owner_id
+                and (
+                    self._allow_backend_workspaces
+                    or session.get("execution_environment") == "local_worker"
+                )
+            ):
                 owned.append(session)
         total = len(owned)
         return [self._summary(session) for session in owned[offset : offset + limit]], total
 
-    def get_session(self, session_id: str, message_limit: int, owner_id: str) -> dict:
+    async def get_session(self, session_id: str, message_limit: int, owner_id: str) -> dict:
         owner_id = canonical_owner_id(owner_id)
         session = self._load(session_id, owner_id)
+        if (
+            not self._allow_backend_workspaces
+            and session.get("execution_environment") != "local_worker"
+        ):
+            raise SessionNotFoundError(session_id)
         history = session.get("history", [])
-        recent = history[-message_limit:] if message_limit else []
-        messages = []
-        for item in recent:
-            messages.append(
-                {
-                    "role": item.get("role", ""),
-                    "name": item.get("name", ""),
-                    "content": _clip(redact_artifact(item.get("content", "")), MESSAGE_CONTENT_MAX),
-                    "created_at": item.get("created_at", ""),
-                }
-            )
         task_items = []
         task_total = 0
         if self._task_repo is not None:
@@ -153,14 +159,50 @@ class SessionService:
                     "task_id": task.task_id,
                     "run_id": task.run_id,
                     "status": task.status.value,
-                    "input": _clip(redact_artifact(task.input), MESSAGE_CONTENT_MAX),
-                    "final_answer": _clip(redact_artifact(task.final_answer), MESSAGE_CONTENT_MAX),
+                    "input": (
+                        ""
+                        if session.get("execution_environment") == "local_worker"
+                        else _clip(redact_artifact(task.input), MESSAGE_CONTENT_MAX)
+                    ),
+                    "final_answer": (
+                        None
+                        if session.get("execution_environment") == "local_worker"
+                        else _clip(redact_artifact(task.final_answer), MESSAGE_CONTENT_MAX)
+                    ),
                     "stop_reason": task.stop_reason,
                     "created_at": task.created_at,
                     "updated_at": task.updated_at,
                 }
                 for task in tasks
             ]
+        if session.get("execution_environment") == "local_worker":
+            message_total = int(session.get("local_message_total", 0) or 0)
+            messages = []
+            if message_total > 0 or task_total > 0:
+                if self._worker_hub is None:
+                    raise WorkerOfflineError("local Worker history is unavailable")
+                result = await self._worker_hub.request_session_history(
+                    device_id=str(session.get("device_id", "")),
+                    session_id=session_id,
+                    message_limit=message_limit,
+                    owner_id=owner_id,
+                )
+                messages = result["messages"]
+                message_total = result["message_total"]
+        else:
+            recent = history[-message_limit:] if message_limit else []
+            messages = [
+                {
+                    "role": item.get("role", ""),
+                    "name": item.get("name", ""),
+                    "content": _clip(
+                        redact_artifact(item.get("content", "")), MESSAGE_CONTENT_MAX
+                    ),
+                    "created_at": item.get("created_at", ""),
+                }
+                for item in recent
+            ]
+            message_total = len(history)
         return {
             "session_id": session.get("id"),
             "workspace_id": session.get("workspace_id"),
@@ -168,8 +210,8 @@ class SessionService:
             "created_at": session.get("created_at"),
             "execution_environment": session.get("execution_environment", "backend_process"),
             "device_id": session.get("device_id", ""),
-            "message_total": len(history),
-            "has_more": message_limit is not None and len(history) > message_limit,
+            "message_total": message_total,
+            "has_more": message_limit is not None and message_total > message_limit,
             "messages": messages,
             "task_total": task_total,
             "tasks": task_items,
@@ -180,12 +222,17 @@ class SessionService:
 
     @staticmethod
     def _summary(session: dict) -> dict:
+        is_local = session.get("execution_environment") == "local_worker"
         return {
             "session_id": session.get("id"),
             "workspace_id": session.get("workspace_id"),
             "title": redact_artifact(session.get("title", "")),
             "created_at": session.get("created_at"),
-            "message_total": len(session.get("history", [])),
+            "message_total": (
+                int(session.get("local_message_total", 0) or 0)
+                if is_local
+                else len(session.get("history", []))
+            ),
             "execution_environment": session.get("execution_environment", "backend_process"),
             "device_id": session.get("device_id", ""),
         }

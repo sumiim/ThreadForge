@@ -2,25 +2,27 @@
 
 ## 1. 目标与边界
 
-ThreadForge 使用 GitHub OAuth 识别用户。Web 与 Electron Desktop 使用同一套前端和中央 API；Session、Task、审批、事件及最终结果由服务器统一保存。本地 Worker 在用户电脑上运行完整 Pico Runtime、模型调用、文件工具、Git 与 Shell。
+ThreadForge 使用 GitHub OAuth 识别用户。Web 与 Electron Desktop 使用同一套前端和中央 API；本地 Worker 在用户电脑上运行完整 Pico Runtime、模型调用、文件工具、Git 与 Shell，并保存会话正文、模型配置与运行产物。服务器只保存设备、工作区、会话索引、Task 状态和审批审计，不持久化本地会话的用户消息、模型回答或 API Key。
 
 Worker 只主动建立出站 WebSocket 连接，不监听本地公网端口。服务器不会保存本机工作区的真实绝对路径，只保存设备 ID、逻辑工作区 ID、名称和 Git 标记。
+
+V1 使用 HTTPS/WSS 保护网络链路，但尚未实现应用层端到端加密。中央服务在转发当下可以看到提示词、回答和模型配置明文，只是不把它们持久化或写入日志；因此不能宣称“服务器无法读取正文”。若未来需要零信任控制面，应使用经指纹核验的 Worker 公钥和成熟 sealed-box 实现，而不是自定义密码协议。
 
 ```text
 Web / Electron
       │ GitHub OAuth + REST/SSE
       ▼
-中央 ThreadForge（唯一事实来源）
+中央 ThreadForge（身份、路由与控制状态）
       │ 设备令牌 + WSS
       ▼
-本地 Worker ── Pico / 模型 / 文件 / Git / Shell
+本地 Worker ── 历史 / .env / Pico / 模型 / 文件 / Git / Shell
 ```
 
 V1 每台 Worker 同时只执行一个根任务。运行期间断线时，服务器将任务收敛为 `worker_disconnected`；Worker 重连后可以接收新任务，但不会恢复已中断任务。
 
 ## 2. 线上控制面前提
 
-多用户不能依赖开发者的 SSH 隧道。生产环境需要一个域名和 HTTPS 反向代理，并把 Web、REST、SSE、OAuth callback 与 Worker WebSocket 放在同一站点。仓库提供 [Caddy 示例](../deploy/Caddyfile.example)。API 和 Web 容器仍只监听宿主机 `127.0.0.1`，公网仅开放 Caddy 的 443。
+多用户不能依赖开发者的 SSH 隧道。生产环境需要一个公网主机名和 HTTPS 反向代理，并把 Web、REST、SSE、OAuth callback 与 Worker WebSocket 放在同一站点。仓库提供 [`Caddyfile`](../Caddyfile) 和 [`compose.public.yaml`](../compose.public.yaml)，具体配置见[公网 Web 部署](public-web-deployment.md)。API 和 Web 容器仍只监听宿主机 `127.0.0.1`，公网仅开放 Caddy 的 80/443。
 
 生产 CD 必须调用仓库内的 [`scripts/deploy-production.sh`](../scripts/deploy-production.sh)。该脚本会同时构建并启动 `api` 与 `web` 服务，并且只有在 API readiness、Web HTTP 200、经 Web 同源代理访问 API 成功以及两个容器均处于 running 状态时才返回成功。服务器上的受限 sudo/forced-command 脚本只应作为固定入口转交给此脚本，避免部署逻辑在服务器和仓库之间漂移。Web Nginx 同时代理 `/api/*` 与 `/health/*` 到 Compose 内的 `api:8000`，因此没有配置公网 Caddy 时，通过 SSH 转发 Web 端口也能使用完整控制台。
 
@@ -39,45 +41,54 @@ GitHub OAuth App 的 Authorization callback URL 必须与上面的 callback 完�
 
 ## 3. Windows 安装
 
-安装脚本从当前仓库安装 Pico 和 Worker，并创建用户级命令，不需要管理员权限：
+首次进入工作台时，前端会检查当前账号是否有在线且协议兼容的 Companion。已绑定但离线时会先尝试唤醒；首次使用、唤醒超时或协议不兼容时，会显示带真实下载进度的安装窗口。下载包由中央服务校验签名清单和制品 SHA-256 后同源转发。
+
+下载的 ZIP 包包含安装脚本与 Pico/Worker wheels。当前安装包仍要求电脑已有 Python 3.12；解压后执行以下命令即可创建用户级命令，不需要管理员权限：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-worker.ps1
 ```
 
-重新打开 PowerShell 后，先在已登录网页的“设置 → 本地 Worker”中生成一次性配对码，再执行：
+安装脚本同时注册当前用户的登录自启动项和 `threadforge://worker/start` 协议。后台服务不显示常驻窗口；只有收到目录授权请求时才临时打开系统目录选择器。
+
+重新打开 PowerShell 后，先在已登录网页的“设置 → 本地 Worker”中生成一次性配对码，再执行一次：
 
 ```powershell
 threadforge-worker pair `
   --server https://threadforge.example.com `
   --code XXXX-XXXX-XXXX-XXXX `
   --name "我的电脑"
-
-threadforge-worker workspace add "D:\codes\my-project" --name "my-project"
-threadforge-worker workspace list
 ```
 
-模型配置属于本机 Worker，不上传到服务器。启动前在当前用户环境中配置兼容 OpenAI 的模型参数：
+配对成功后会自动启动后台服务。此后可以直接在 Web 或 Electron 的设备卡片点击“添加本地目录”；中央服务向对应 Worker 发出一次性请求，本机用户确认目录后才会注册。CLI 的 `workspace add/list` 保留作诊断和兼容入口。
 
-```powershell
-$env:PICO_OPENAI_API_BASE = "https://api.openai.com/v1"
-$env:PICO_OPENAI_API_KEY = "..."
-$env:PICO_OPENAI_MODEL = "gpt-5.4"
-threadforge-worker run
+模型配置属于本机 Worker。打开“设置 → 本地 Worker”，在在线设备卡片点击设置图标，填写兼容 OpenAI 的 API 地址、模型和 API Key。配置经当前已认证的 Worker WebSocket 一次性转发，在本机原子写入：
+
+```text
+%LOCALAPPDATA%\ThreadForge\Worker\.env
 ```
 
-Worker 会在网络中断后指数退避重连。Windows 设备令牌使用当前用户的 DPAPI 加密后写入 `%LOCALAPPDATA%\ThreadForge\Worker\worker.json`；模型密钥不写入该文件。撤销设备后必须重新配对。
+Worker 在启动时读取该 `.env`，在线修改后也立即更新当前进程，后续任务使用新配置。Windows 上 `.env` 的 ACL 仅允许当前用户、SYSTEM 和 Administrators 访问；设备令牌则使用当前用户的 DPAPI 加密后写入 `%LOCALAPPDATA%\ThreadForge\Worker\worker.json`。API Key 不写入设备配置、中央数据库、响应或日志。Worker 会在网络中断后指数退避重连，同一用户只允许一个服务实例；撤销设备后必须重新配对。
+
+会话文件位于 `%LOCALAPPDATA%\ThreadForge\Worker\sessions`。历史读取完全独立于模型配置：更换 API 地址、API Key、供应商网关或模型后，可以直接打开和继续旧会话，不需要切回原供应商；只有新发出的消息使用当前 `.env` 配置。
 
 ## 4. 使用流程
 
 1. 用户通过 GitHub 登录 Web 或 Electron。
-2. 用户安装 Worker、输入一次性配对码，并授权一个或多个本地目录。
-3. Worker 上线后，本地工作区出现在“新建会话”列表中。
-4. 用户创建 Session；服务器将其绑定到 `owner_id + device_id + workspace_id`。
-5. Task 由服务器发给指定 Worker。危险工具需要在任一已登录前端审批，服务器再把精确决策转发给 Worker。
-6. Worker 回传受限事件、会话补丁和最终结果；服务器持久化后由 Web 与 Desktop 共同读取。
+2. 用户安装 Worker 并输入一次性配对码；后台服务随当前用户登录自动启动。
+3. 用户在 Web 或 Electron 选择在线设备并点击“添加本地目录”，本机服务弹出原生目录选择器。
+4. Worker 上线后，本地工作区出现在“新建会话”列表中。
+5. 用户创建 Session；服务器保存不含正文的索引，Worker 在首次运行时创建本地会话文件。
+6. Task 由服务器发给指定 Worker。危险工具需要在任一已登录前端审批，服务器再把精确决策转发给 Worker。
+7. Worker 实时转发受限事件和最终结果供当前页面显示，但只在本机持久化会话正文；刷新页面时中央 API 向在线 Worker 按需读取历史。
 
 前端不直接连接 Worker。这样页面关闭、刷新、换设备或同时打开 Web/Desktop 时，仍由服务器保证统一状态、审批归属和事件顺序。
+
+中央 API 是身份、归属、任务状态和审批顺序的事实来源；本地 Worker 是会话正文、模型配置和本地运行产物的事实来源。Worker 离线时中央仍可显示会话索引与任务状态，但正文暂时不可读取。Worker 每次连接会分块同步不含正文的本地会话索引，因此重新配对到另一套 ThreadForge API 后，原有本地历史仍能重新出现在前端。
+
+从早期预览版升级时，服务器可能已有本地 Worker Session/Task 的正文副本。服务器只有在新版 Worker 上报同一 `session_id`、证明本机副本存在后，才清除对应中央 history、memory、checkpoint、Task input 和 final answer；Worker 尚未上报的唯一副本不会被启动迁移直接删除。
+
+`github_oauth` 多用户模式不展示也不接受服务器 `backend_process` 工作区，即使请求复用升级前遗留的服务器 Session 也会被拒绝。这样普通用户无法绕过 Worker 在部署仓库中执行命令，也不会产生新的服务器端会话正文。`single_owner_instance` 仅保留给本机开发和兼容旧版 Runtime。
 
 ## 5. Electron
 
@@ -90,20 +101,15 @@ pnpm build:electron
 
 桌面壳只允许 HTTPS 远端站点，或 HTTP loopback 开发地址。未配置 `THREADFORGE_WEB_URL` 时会加载内置静态页面；该模式适合本机开发，不是线上 GitHub OAuth 多用户的推荐方式。
 
-桌面端同时提供本机 Worker 管理能力：
+Electron 不拥有目录选择、Worker 进程控制或工作区管理的私有 IPC。Web 与 Electron 都调用中央设备 API，由后台 Worker Service 执行本机操作，因此核心能力保持一致。桌面壳只保留窗口、系统外链和通知等展示层能力。
 
-- “设置 → 本地 Worker → 绑定新设备”生成配对码后，Electron 可直接完成配对并启动 Worker；纯 Web 页面仍显示 CLI 命令。
-- “选择本地目录”调用 Electron 原生目录选择器，再通过受限 IPC 执行 `threadforge-worker workspace add`，不会把任意 Shell 交给渲染进程。
-- Electron 启动时会检测当前用户已安装且已配对的 Worker，并自动拉起 `threadforge-worker run`；退出应用时终止由本应用启动的 Worker。
-- 添加新工作区后桌面端会重启 Worker，使最新工作区清单通过 hello 消息同步到中央服务。
-
-当前桌面安装包仍要求本机先安装 Worker CLI：
+当前桌面安装包仍要求单独安装 Worker Service：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-worker.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install-worker.ps1
 ```
 
-后续可将 Python Worker 打包为签名的随桌面端分发的可执行文件；在此之前，Electron 会明确提示 Worker 尚未安装，不会静默失败。
+Worker 独立发布包与 Electron 安装器分开版本化；两种前端仍使用相同中央协议。
 
 ## 6. 协议与安全约束
 
@@ -111,16 +117,28 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-worker.ps1
 - `POST /api/v1/workers/pair`：Worker 使用配对码换取设备 ID 和只返回一次的设备令牌。
 - `WS /api/v1/workers/connect`：Worker 通过 `Authorization: Bearer <device token>` 主动连接。
 - `GET /api/v1/devices`：用户只能查看自己的设备。
+- `GET /api/v1/worker/releases/latest`：返回经过 Ed25519 验证的稳定版清单；浏览器 Cookie 或有效设备令牌二选一认证。
+- `GET /api/v1/worker/releases/download/{platform}`：只代理清单中的固定 GitHub Release 制品，并在开始响应前校验签名清单、大小和 SHA-256。
+- `POST /api/v1/devices/{device_id}/workspace-selection-requests`：为属于当前用户、在线且声明 `workspace_selection` 能力的 Worker 创建两分钟一次性请求。
+- `GET /api/v1/devices/{device_id}/workspace-selection-requests/{request_id}`：查询请求的 pending/completed/cancelled/failed/expired 状态。
+- `PUT /api/v1/devices/{device_id}/model-config`：把模型参数转发给在线 Worker；API Key 不在中央持久化。
 - `DELETE /api/v1/devices/{device_id}`：撤销设备，并终止该设备上的活动任务。
 - Task 创建、取消、审批和 Worker 回传都校验用户、设备、工作区和 Task 的归属。
 - 配对码只保存在服务端内存；设备令牌在服务端只保存 SHA-256 digest。
 - 审批 digest 基于脱敏前原始参数计算；持久化 preview 在脱敏后生成。
 - Worker 公共事件使用字段白名单；绝对路径和 `..` 路径不会转发给前端。
+- 目录选择器在用户会话内按需创建；服务器只收到逻辑工作区 ID、名称和 Git 标记，不接收本机绝对路径。
+- `threadforge://worker/start` 只能启动无参数后台服务，不能从网页传入目录、命令或令牌。
+- Worker 通过 `sessions.updated` 分块同步会话 ID、标题、工作区和消息数，正文不进入该消息；`session.history.get/result` 只在用户打开会话时经当前连接临时传输。
+- Worker 握手上报语义版本、协议版本和 capabilities；前端只把在线且协议兼容的设备视为可用。Companion 上线后在后台检查稳定版，空闲时安装经 Ed25519 签名和 SHA-256 绑定的更新并重启。
+- 本地 Worker Task 的持久化控制记录不包含用户输入和最终回答，也不在服务器创建 Run report/trace；实时 SSE 和为终态竞态保留的答案缓存仅存在内存中，答案缓存最多保留 10 分钟和 512 项。
 - 模型请求使用服务端下发超时，且本地客户端关闭内部重试，使取消最坏等待不被多次重试放大。
 
 ## 7. 当前限制
 
-- Windows Worker 目前通过脚本和 CLI 安装，尚无签名安装包、托盘程序或自动更新。
-- Electron 目前负责已安装 Worker 的配对、启动、停止和工作区管理；自动下载安装和升级仍待后续版本。
-- Worker 运行时必须保持命令进程存在；系统服务/开机自启将在后续版本实现。
-- 服务器只同步 Agent 会话和受限事件，不提供任意本地文件上传通道。
+- Windows Worker 通过下载 ZIP 内的脚本安装并注册每用户登录自启动；发布清单已签名，但 PowerShell 脚本本身尚未购买 Authenticode 代码签名证书，Windows 可能显示未知发布者提示。
+- 安装包仍依赖系统已有 Python 3.12，尚未封装 Python Runtime；要面向非开发者发布，应进一步制作 MSIX/NSIS 安装器并签署可执行文件。
+- 首次配对仍使用 CLI；后续可增加签名安装器中的配对向导，但不应在 URL 中携带设备令牌。
+- Worker 是用户会话内的后台进程而不是 Windows LocalSystem 服务；系统服务运行在 Session 0，无法安全地向当前桌面显示目录选择器。
+- 当前只支持 OpenAI-compatible 模型接口；增加原生 Anthropic 等供应商需要扩展本地模型客户端和配置契约。
+- 服务器只同步会话索引和受限运行事件，不提供任意本地文件上传通道。

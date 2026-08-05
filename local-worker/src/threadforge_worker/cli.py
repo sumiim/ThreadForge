@@ -27,7 +27,10 @@ def build_parser() -> argparse.ArgumentParser:
     workspace_subparsers.add_parser("list")
 
     subparsers.add_parser("run", help="connect to ThreadForge and execute assigned tasks")
+    subparsers.add_parser("service", help="run the per-user Worker Companion service")
     subparsers.add_parser("status", help="show non-secret local Worker configuration")
+    update = subparsers.add_parser("update", help="verify and install the latest signed Worker release")
+    update.add_argument("--check", action="store_true", help="check without installing")
     return parser
 
 
@@ -43,6 +46,9 @@ def main(argv=None) -> int:
         config.device_name = result["name"]
         store.save(config)
         print(f"Paired device: {config.device_name} ({config.device_id})")
+        from .service import start_service_background
+
+        start_service_background(args.data_dir)
         return 0
     if args.command == "workspace" and args.workspace_command == "add":
         workspace = store.add_workspace(config, args.path, args.name)
@@ -56,6 +62,23 @@ def main(argv=None) -> int:
         print(f"Server: {config.server_url}")
         print(f"Device: {config.device_name or '-'} ({config.device_id or 'not paired'})")
         print(f"Workspaces: {len(config.workspaces)}")
+        return 0
+    if args.command == "service":
+        from .service import run_service, start_service_background
+
+        result = run_service(args.data_dir)
+        if result == 75:
+            start_service_background(args.data_dir)
+            return 0
+        return result
+    if args.command == "update":
+        from .updater import apply_update, update_available
+
+        if args.check:
+            available, manifest = update_available(store)
+            print(f"Latest: {manifest['version']} ({'update available' if available else 'current'})")
+            return 0
+        print("Worker updated." if apply_update(store) else "Worker is current.")
         return 0
     WorkerClient(store, config).run_forever()
     return 0

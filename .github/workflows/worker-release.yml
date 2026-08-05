@@ -1,0 +1,86 @@
+name: Worker Release
+
+on:
+  push:
+    tags:
+      - "worker-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and sign Worker release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Validate tag and package version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#worker-v}"
+          package_version="$(python -c "import tomllib; print(tomllib.load(open('local-worker/pyproject.toml','rb'))['project']['version'])")"
+          [[ "${tag}" == "worker-v${version}" && "${version}" == "${package_version}" ]]
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build Worker wheels
+        run: |
+          python -m pip install --upgrade pip build cryptography
+          python -m pip install -e ./pico-legacy-runtime -e "./local-worker[dev]"
+          python -m ruff check local-worker/src local-worker/tests
+          python -m pytest -q local-worker/tests
+          python -m build --wheel ./pico-legacy-runtime
+          python -m build --wheel ./local-worker
+
+      - name: Assemble offline installer bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-worker/packages
+          cp scripts/install-worker.ps1 release-worker/
+          python -m pip download \
+            --dest release-worker/packages \
+            --only-binary=:all: \
+            --platform win_amd64 \
+            --python-version 312 \
+            --implementation cp \
+            --abi cp312 \
+            --abi abi3 \
+            --abi none \
+            --find-links pico-legacy-runtime/dist \
+            --find-links local-worker/dist \
+            local-worker/dist/threadforge_worker-*.whl
+          (cd release-worker && zip -r ../threadforge-worker-windows-x86_64.zip .)
+
+      - name: Sign release manifest
+        env:
+          WORKER_RELEASE_SIGNING_KEY_B64: ${{ secrets.WORKER_RELEASE_SIGNING_KEY_B64 }}
+        run: |
+          test -n "${WORKER_RELEASE_SIGNING_KEY_B64}"
+          python scripts/build-worker-release.py \
+            --version "${{ steps.version.outputs.version }}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --artifact threadforge-worker-windows-x86_64.zip \
+            --output worker-manifest.json
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "ThreadForge Worker ${{ steps.version.outputs.version }}" \
+            --generate-notes \
+            threadforge-worker-windows-x86_64.zip \
+            worker-manifest.json

@@ -13,6 +13,8 @@ import type {
   TaskQueued,
   TaskSnapshot,
   Workspace,
+  WorkspaceSelectionRequest,
+  WorkerReleaseManifest,
 } from './types'
 import { apiUrl } from './base-url.ts'
 
@@ -71,7 +73,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 // 后端错误码 -> 前端可读文案
 const errorText: Record<string, string> = {
   network_error: '无法连接 api-server，请确认后端已启动',
-  model_not_configured: '后端未配置模型（PICO_OPENAI_API_KEY），无法运行 Agent',
+  model_not_configured: '当前执行环境未配置模型，请先完成模型设置',
   active_task_exists: '已有任务在运行，请等待完成或先停止',
   task_runner_unavailable: '任务运行器不可用，请稍后重试',
   session_not_found: '会话不存在，可能已被删除',
@@ -90,7 +92,11 @@ const errorText: Record<string, string> = {
   device_not_found: '本地 Worker 设备不存在',
   pairing_code_invalid: '配对码无效或已过期，请重新生成',
   worker_offline: '所选本地 Worker 已离线',
+  worker_capability_unavailable: '本地 Worker 版本过旧，请更新后重试',
+  worker_command_pending: '该设备已有目录选择请求等待处理',
+  worker_command_failed: '本地 Worker 未能完成请求，请检查配置后重试',
   worker_protocol_error: '本地 Worker 协议错误，请检查版本',
+  worker_release_unavailable: 'Worker 安装包暂时不可用，请稍后重试',
 }
 
 export function friendlyMessage(error: unknown): string {
@@ -128,6 +134,74 @@ export function createPairingCode(): Promise<{ code: string; expires_in_seconds:
 
 export function revokeDevice(deviceId: string): Promise<{ status: string; device_id: string }> {
   return request(`/api/v1/devices/${encodeURIComponent(deviceId)}`, { method: 'DELETE' })
+}
+
+export function requestWorkspaceSelection(deviceId: string): Promise<WorkspaceSelectionRequest> {
+  return request(`/api/v1/devices/${encodeURIComponent(deviceId)}/workspace-selection-requests`, {
+    method: 'POST',
+  })
+}
+
+export function getWorkspaceSelection(
+  deviceId: string,
+  requestId: string,
+): Promise<WorkspaceSelectionRequest> {
+  return request(
+    `/api/v1/devices/${encodeURIComponent(deviceId)}/workspace-selection-requests/${encodeURIComponent(requestId)}`,
+  )
+}
+
+export function configureWorkerModel(
+  deviceId: string,
+  config: { base_url: string; api_key: string; model: string },
+): Promise<{ status: string; model: string }> {
+  return request(`/api/v1/devices/${encodeURIComponent(deviceId)}/model-config`, {
+    method: 'PUT',
+    body: JSON.stringify(config),
+  })
+}
+
+export function getLatestWorkerRelease(): Promise<WorkerReleaseManifest> {
+  return request('/api/v1/worker/releases/latest')
+}
+
+export async function downloadWorkerRelease(
+  platformName: string,
+  onProgress: (received: number, total: number) => void,
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await fetch(
+    apiUrl(`/api/v1/worker/releases/download/${encodeURIComponent(platformName)}`),
+    { credentials: 'include' },
+  )
+  if (!response.ok) {
+    let message = `下载失败（HTTP ${response.status}）`
+    try {
+      const body = (await response.json()) as ErrorBody
+      message = body.error?.message ?? message
+    } catch {
+      // Keep the fallback for non-JSON proxy errors.
+    }
+    throw new ApiError(message, 'worker_release_unavailable', response.status)
+  }
+  const total = Number(response.headers.get('Content-Length') ?? 0)
+  const disposition = response.headers.get('Content-Disposition') ?? ''
+  const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? 'threadforge-worker.zip'
+  if (!response.body) {
+    const blob = await response.blob()
+    onProgress(blob.size, total || blob.size)
+    return { blob, filename }
+  }
+  const reader = response.body.getReader()
+  const chunks: ArrayBuffer[] = []
+  let received = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(Uint8Array.from(value).buffer)
+    received += value.byteLength
+    onProgress(received, total)
+  }
+  return { blob: new Blob(chunks, { type: 'application/zip' }), filename }
 }
 
 export function getRuntimeConfig(): Promise<RuntimeConfig> {

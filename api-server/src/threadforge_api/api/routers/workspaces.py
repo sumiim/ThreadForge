@@ -17,18 +17,19 @@ def list_workspaces(
     container=Depends(get_container),
 ) -> dict:
     items = []
-    for entry in container.workspace_catalog.list():
-        items.append(
-            {
-                "workspace_id": entry.workspace_id,
-                "name": entry.name,
-                "display_path": str(entry.canonical_path),
-                "available": entry.available,
-                "is_git": entry.is_git,
-                "execution_environment": ExecutionEnvironment.BACKEND_PROCESS.value,
-                "container_sandbox_enabled": False,
-            }
-        )
+    if container.settings.identity_mode != "github_oauth":
+        for entry in container.workspace_catalog.list():
+            items.append(
+                {
+                    "workspace_id": entry.workspace_id,
+                    "name": entry.name,
+                    "display_path": str(entry.canonical_path),
+                    "available": entry.available,
+                    "is_git": entry.is_git,
+                    "execution_environment": ExecutionEnvironment.BACKEND_PROCESS.value,
+                    "container_sandbox_enabled": False,
+                }
+            )
     online = container.worker_hub.online_ids(actor.owner_id)
     for device in container.device_store.list_for_owner(actor.owner_id):
         for workspace in device.workspaces:

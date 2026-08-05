@@ -20,7 +20,7 @@ from pico.providers.clients import OpenAICompatibleModelClient
 from pico.run_lifecycle import finalize_failed_run
 from pico.run_store import RunStore
 from pico.security import redact_artifact
-from pico.session_store import InMemorySessionStore
+from pico.session_store import SessionStore
 from pico.task_state import (
     STATUS_COMPLETED,
     STATUS_RUNNING,
@@ -179,9 +179,21 @@ def run_task(
     model_client_factory: Callable[[], object] | None = None,
 ) -> None:
     settings = task.get("settings", {})
-    session = dict(task["session"])
+    incoming_session = dict(task["session"])
+    session_store = SessionStore(data_dir / "sessions")
+    session_id = str(incoming_session["id"])
+    if session_store.exists(session_id):
+        session = session_store.load(session_id)
+        if session.get("workspace_id") != task.get("workspace_id"):
+            raise RuntimeError("local session workspace does not match the task")
+        # Ownership belongs to the currently paired control plane. History and
+        # memory remain local when a user switches API servers.
+        for key in ("owner_id", "title", "device_id", "execution_environment"):
+            if key in incoming_session:
+                session[key] = incoming_session[key]
+    else:
+        session = incoming_session
     session["workspace_root"] = str(workspace_path)
-    session_store = InMemorySessionStore()
     run_store = RunStore(data_dir / "runs")
     model_client = (
         model_client_factory()
@@ -251,7 +263,9 @@ def run_task(
             "status": status,
             "stop_reason": getattr(state, "stop_reason", "") or STOP_REASON_RUNTIME_ERROR,
             "final_answer": redact_artifact(getattr(state, "final_answer", "") or ""),
-            "session": pico.session,
+            "message_total": len(pico.session.get("history", [])),
+            "session_updated_at": pico.session.get("updated_at", ""),
+            "session_persisted": True,
         }
     )
 

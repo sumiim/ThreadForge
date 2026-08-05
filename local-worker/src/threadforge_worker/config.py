@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import urllib.parse
 import uuid
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from dataclasses import dataclass, field
@@ -125,6 +126,105 @@ class ConfigStore:
         config.workspaces.append(workspace)
         self.save(config)
         return workspace
+
+    def remove_workspace(self, config: WorkerConfig, workspace_id: str) -> bool:
+        remaining = [item for item in config.workspaces if item.workspace_id != workspace_id]
+        if len(remaining) == len(config.workspaces):
+            return False
+        config.workspaces = remaining
+        self.save(config)
+        return True
+
+    @property
+    def model_env_path(self) -> Path:
+        return self.root / ".env"
+
+    def save_model_env(self, *, base_url: str, api_key: str, model: str) -> None:
+        base_url = _validate_model_value("base_url", base_url, 2048)
+        api_key = _validate_model_value("api_key", api_key, 8192)
+        model = _validate_model_value("model", model, 200)
+        parsed = urllib.parse.urlsplit(base_url)
+        loopback = parsed.hostname in {"127.0.0.1", "::1", "localhost"}
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.fragment
+            or (parsed.scheme == "http" and not loopback)
+        ):
+            raise ValueError(
+                "model API base URL must use HTTPS, except for loopback development"
+            )
+        payload = (
+            "# Managed by ThreadForge Worker Companion. Do not commit this file.\n"
+            f"PICO_OPENAI_API_BASE={base_url}\n"
+            f"PICO_OPENAI_API_KEY={api_key}\n"
+            f"PICO_OPENAI_MODEL={model}\n"
+        )
+        self.root.mkdir(parents=True, exist_ok=True)
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                delete=False,
+                dir=self.root,
+                prefix=".env.",
+                suffix=".tmp",
+            ) as handle:
+                temp_path = Path(handle.name)
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            _secure_secret_file(temp_path)
+            temp_path.replace(self.model_env_path)
+            temp_path = None
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+        _secure_secret_file(self.model_env_path)
+        self.load_model_env()
+
+    def load_model_env(self) -> dict[str, str]:
+        from pico.config import load_project_env
+
+        if not self.model_env_path.is_file():
+            return {}
+        return load_project_env(self.root, override=True)
+
+
+def _validate_model_value(name: str, value: str, max_length: int) -> str:
+    value = str(value).strip()
+    if not value or len(value) > max_length or "\n" in value or "\r" in value:
+        raise ValueError(f"invalid model {name}")
+    return value
+
+
+def _secure_secret_file(path: Path) -> None:
+    if sys.platform != "win32":
+        path.parent.chmod(0o700)
+        path.chmod(0o600)
+        return
+    import ntsecuritycon
+    import win32api
+    import win32security
+
+    current_sid = win32security.LookupAccountName(None, win32api.GetUserName())[0]
+    system_sid = win32security.CreateWellKnownSid(win32security.WinLocalSystemSid, None)
+    admins_sid = win32security.CreateWellKnownSid(
+        win32security.WinBuiltinAdministratorsSid, None
+    )
+    dacl = win32security.ACL()
+    for sid in (current_sid, system_sid, admins_sid):
+        dacl.AddAccessAllowedAce(
+            win32security.ACL_REVISION, ntsecuritycon.FILE_ALL_ACCESS, sid
+        )
+    security = win32security.SECURITY_DESCRIPTOR()
+    security.SetSecurityDescriptorDacl(True, dacl, False)
+    win32security.SetFileSecurity(
+        str(path), win32security.DACL_SECURITY_INFORMATION, security
+    )
 
 
 def _protect_token(token: str) -> str:

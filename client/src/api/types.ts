@@ -28,9 +28,41 @@ export interface Device {
   online: boolean
   model: string
   model_configured: boolean
+  version: string
+  protocol_version: number
+  compatible: boolean
+  capabilities: string[]
   created_at: string
   last_seen_at: string
   workspaces: WorkerWorkspace[]
+}
+
+export interface WorkspaceSelectionRequest {
+  request_id: string
+  device_id: string
+  status: 'pending' | 'completed' | 'cancelled' | 'failed' | 'expired'
+  workspace_id: string | null
+  error: string | null
+  created_at: string
+  expires_at: string
+}
+
+export interface WorkerReleaseArtifact {
+  filename: string
+  url: string
+  size: number
+  sha256: string
+}
+
+export interface WorkerReleaseManifest {
+  schema_version: 1
+  channel: 'stable'
+  version: string
+  protocol_version: number
+  minimum_server_protocol: number
+  published_at: string
+  platforms: Record<string, WorkerReleaseArtifact>
+  signature: { algorithm: 'ed25519'; value: string }
 }
 
 export interface RuntimeConfig {

@@ -1,54 +1,65 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Alert, Button, Input, Popconfirm, Spin, Tag, Typography } from 'antd'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Alert, Button, Form, Input, Modal, Popconfirm, Spin, Tag, Tooltip, Typography } from 'antd'
 import {
   DeleteOutlined,
   FolderOpenOutlined,
   LaptopOutlined,
   LinkOutlined,
-  PlayCircleOutlined,
+  PoweroffOutlined,
   ReloadOutlined,
-  StopOutlined,
+  SettingOutlined,
 } from '@ant-design/icons'
-import { createPairingCode, friendlyMessage, listDevices, revokeDevice } from '../../api/client'
+import {
+  configureWorkerModel,
+  createPairingCode,
+  friendlyMessage,
+  getWorkspaceSelection,
+  listDevices,
+  requestWorkspaceSelection,
+  revokeDevice,
+} from '../../api/client'
 import type { Device } from '../../api/types'
 
+const delay = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+
+const selectionErrors: Record<string, string> = {
+  selection_busy: '本机已有目录选择窗口等待处理',
+  selection_expired: '目录选择请求已过期',
+  selection_failed: '本机目录选择失败',
+  worker_disconnected: 'Worker 已断开连接',
+  worker_reconnected: 'Worker 重连后请求已失效，请重新操作',
+  worker_revoked: '设备已被撤销',
+}
+
 export default function WorkerDevices() {
-  const desktop = window.threadforge?.desktop
   const [devices, setDevices] = useState<Device[]>([])
-  const [workerStatus, setWorkerStatus] = useState<Awaited<ReturnType<NonNullable<typeof desktop>['workerStatus']>> | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [pairing, setPairing] = useState<{ code: string; expires_in_seconds: number } | null>(null)
-  const [workerName, setWorkerName] = useState('我的电脑')
+  const [selectionDeviceId, setSelectionDeviceId] = useState('')
+  const [modelDevice, setModelDevice] = useState<Device | null>(null)
+  const [modelSaving, setModelSaving] = useState(false)
+  const [modelForm] = Form.useForm<{ base_url: string; api_key: string; model: string }>()
+  const operationVersion = useRef(0)
   const workerServer = window.threadforge?.apiBaseUrl ?? window.location.origin
 
   const refresh = useCallback(async () => {
     setError('')
     try {
-      const [deviceResponse, nextWorkerStatus] = await Promise.all([
-        listDevices(),
-        desktop ? desktop.workerStatus() : Promise.resolve(null),
-      ])
-      setDevices(deviceResponse.items)
-      setWorkerStatus(nextWorkerStatus)
+      setDevices((await listDevices()).items)
     } catch (cause) {
       setError(friendlyMessage(cause))
     } finally {
       setLoading(false)
     }
-  }, [desktop])
+  }, [])
 
   useEffect(() => {
     let active = true
-    void Promise.all([
-      listDevices(),
-      desktop ? desktop.workerStatus() : Promise.resolve(null),
-    ])
-      .then(([response, nextWorkerStatus]) => {
-        if (active) {
-          setDevices(response.items)
-          setWorkerStatus(nextWorkerStatus)
-        }
+    void listDevices()
+      .then((response) => {
+        if (active) setDevices(response.items)
       })
       .catch((cause: unknown) => {
         if (active) setError(friendlyMessage(cause))
@@ -58,57 +69,16 @@ export default function WorkerDevices() {
       })
     return () => {
       active = false
+      operationVersion.current += 1
     }
-  }, [desktop])
+  }, [])
 
   const createCode = async () => {
     try {
+      setError('')
       setPairing(await createPairingCode())
     } catch (cause) {
       setError(friendlyMessage(cause))
-    }
-  }
-
-  const pairDesktopWorker = async () => {
-    if (!desktop || !pairing) return
-    try {
-      await desktop.pairWorker({ server: workerServer, code: pairing.code, name: workerName })
-      setPairing(null)
-      await refresh()
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '桌面 Worker 配对失败')
-    }
-  }
-
-  const chooseWorkspace = async () => {
-    if (!desktop) return
-    try {
-      const selectedPath = await desktop.selectDirectory()
-      if (!selectedPath) return
-      await desktop.addWorkspace({ path: selectedPath })
-      await refresh()
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '工作区添加失败')
-    }
-  }
-
-  const startDesktopWorker = async () => {
-    if (!desktop) return
-    try {
-      await desktop.startWorker()
-      await refresh()
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Worker 启动失败')
-    }
-  }
-
-  const stopDesktopWorker = async () => {
-    if (!desktop) return
-    try {
-      await desktop.stopWorker()
-      await refresh()
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Worker 停止失败')
     }
   }
 
@@ -121,6 +91,71 @@ export default function WorkerDevices() {
     }
   }
 
+  const startLocalService = async () => {
+    setNotice('已请求系统启动 ThreadForge Worker')
+    window.location.href = 'threadforge://worker/start'
+    await delay(1500)
+    await refresh()
+  }
+
+  const selectWorkspace = async (deviceId: string) => {
+    const version = operationVersion.current + 1
+    operationVersion.current = version
+    setSelectionDeviceId(deviceId)
+    setError('')
+    setNotice('请在 Worker 所在电脑完成目录选择')
+    try {
+      let request = await requestWorkspaceSelection(deviceId)
+      const deadline = new Date(request.expires_at).getTime() + 2000
+      while (request.status === 'pending' && Date.now() < deadline) {
+        await delay(1000)
+        if (operationVersion.current !== version) return
+        request = await getWorkspaceSelection(deviceId, request.request_id)
+      }
+      if (operationVersion.current !== version) return
+      if (request.status === 'completed') {
+        setNotice('本地工作区已添加')
+        await refresh()
+      } else if (request.status === 'cancelled') {
+        setNotice('已取消目录选择')
+      } else {
+        setNotice('')
+        setError(selectionErrors[request.error ?? ''] ?? '目录选择请求未完成')
+      }
+    } catch (cause) {
+      if (operationVersion.current === version) setError(friendlyMessage(cause))
+    } finally {
+      if (operationVersion.current === version) setSelectionDeviceId('')
+    }
+  }
+
+  const openModelConfig = (device: Device) => {
+    setModelDevice(device)
+    modelForm.setFieldsValue({
+      base_url: 'https://api.openai.com/v1',
+      api_key: '',
+      model: device.model || 'gpt-5.4',
+    })
+  }
+
+  const saveModelConfig = async () => {
+    if (!modelDevice) return
+    try {
+      const values = await modelForm.validateFields()
+      setModelSaving(true)
+      setError('')
+      await configureWorkerModel(modelDevice.device_id, values)
+      setNotice('模型配置已安全写入 Worker 本地')
+      setModelDevice(null)
+      modelForm.resetFields()
+      await refresh()
+    } catch (cause) {
+      if (cause instanceof Error) setError(friendlyMessage(cause))
+    } finally {
+      setModelSaving(false)
+    }
+  }
+
   return (
     <div>
       <div className="mb-1.5 flex items-center justify-between">
@@ -128,29 +163,10 @@ export default function WorkerDevices() {
         <Button type="text" size="small" icon={<ReloadOutlined />} onClick={() => void refresh()} />
       </div>
       <p className="mb-3 text-xs text-stone-500">
-        Worker 在本机执行 Agent、文件、Git 与 Shell；服务器只同步会话和事件。
+        Worker 在本机执行 Agent、文件、Git 与 Shell；会话正文和模型密钥仅保存在本机。
       </p>
       {error ? <Alert className="mb-3" type="error" showIcon message={error} /> : null}
-      {desktop ? (
-        <div className="mb-3 rounded-xl border border-stone-200 bg-stone-50 p-3">
-          <div className="flex items-center gap-2 text-xs text-stone-600">
-            <Tag color={workerStatus?.running ? 'green' : 'default'}>
-              {workerStatus?.running ? '运行中' : '未运行'}
-            </Tag>
-            {workerStatus?.installed
-              ? `桌面端自动管理已启用 · ${workerStatus.workspaceCount} 个本地目录`
-              : '尚未安装 Worker'}
-          </div>
-          {workerStatus?.error ? (
-            <Alert className="mt-2" type="warning" showIcon message={workerStatus.error} />
-          ) : null}
-          {!workerStatus?.installed ? (
-            <p className="mt-2 text-[11px] text-stone-500">
-              请先在仓库执行 scripts/install-worker.ps1，重新打开桌面端后即可自动启动。
-            </p>
-          ) : null}
-        </div>
-      ) : null}
+      {notice ? <Alert className="mb-3" type="info" showIcon message={notice} /> : null}
       {loading ? (
         <Spin size="small" />
       ) : devices.length === 0 ? (
@@ -159,30 +175,65 @@ export default function WorkerDevices() {
         </div>
       ) : (
         <div className="space-y-2">
-          {devices.map((device) => (
-            <div key={device.device_id} className="rounded-xl border border-stone-200 p-3">
-              <div className="flex items-center gap-2">
-                <LaptopOutlined className="text-stone-500" />
-                <span className="min-w-0 flex-1 truncate text-sm font-medium text-stone-800">
-                  {device.name}
-                </span>
-                <Tag color={device.online ? 'green' : 'default'}>{device.online ? '在线' : '离线'}</Tag>
-                <Popconfirm
-                  title="撤销这台设备？"
-                  description="设备将立即断开，正在执行的任务会失败。"
-                  okText="撤销"
-                  okButtonProps={{ danger: true }}
-                  cancelText="取消"
-                  onConfirm={() => void revoke(device.device_id)}
-                >
-                  <Button type="text" danger size="small" icon={<DeleteOutlined />} />
-                </Popconfirm>
+          {devices.map((device) => {
+            const canSelectWorkspace = (device.capabilities ?? []).includes('workspace_selection')
+            return (
+              <div key={device.device_id} className="rounded-xl border border-stone-200 p-3">
+                <div className="flex items-center gap-2">
+                  <LaptopOutlined className="text-stone-500" />
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium text-stone-800">
+                    {device.name}
+                  </span>
+                  <Tag color={device.online ? 'green' : 'default'}>{device.online ? '在线' : '离线'}</Tag>
+                  <Popconfirm
+                    title="撤销这台设备？"
+                    description="设备将立即断开，正在执行的任务会失败。"
+                    okText="撤销"
+                    okButtonProps={{ danger: true }}
+                    cancelText="取消"
+                    onConfirm={() => void revoke(device.device_id)}
+                  >
+                    <Button type="text" danger size="small" icon={<DeleteOutlined />} />
+                  </Popconfirm>
+                </div>
+                <div className="mt-2 text-[11px] text-stone-500">
+                  Worker {device.version || '旧版'} · {device.workspaces.length} 个工作区 ·{' '}
+                  {device.model_configured ? device.model : '模型未配置'}
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {device.online && (device.capabilities ?? []).includes('model_configuration') ? (
+                    <Tooltip title="配置模型接口">
+                      <Button
+                        size="small"
+                        aria-label="配置模型接口"
+                        icon={<SettingOutlined />}
+                        onClick={() => openModelConfig(device)}
+                      />
+                    </Tooltip>
+                  ) : null}
+                  {device.online && canSelectWorkspace ? (
+                    <Button
+                      size="small"
+                      icon={<FolderOpenOutlined />}
+                      loading={selectionDeviceId === device.device_id}
+                      disabled={Boolean(selectionDeviceId && selectionDeviceId !== device.device_id)}
+                      onClick={() => void selectWorkspace(device.device_id)}
+                    >
+                      添加本地目录
+                    </Button>
+                  ) : null}
+                  {device.online && (!canSelectWorkspace || !device.compatible) ? (
+                    <Tag color="warning">需要更新 Worker</Tag>
+                  ) : null}
+                  {!device.online ? (
+                    <Button size="small" icon={<PoweroffOutlined />} onClick={() => void startLocalService()}>
+                      启动本机 Worker
+                    </Button>
+                  ) : null}
+                </div>
               </div>
-              <div className="mt-2 text-[11px] text-stone-500">
-                {device.workspaces.length} 个工作区 · {device.model_configured ? device.model : '模型未配置'}
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
       <Button className="mt-3" block icon={<LinkOutlined />} onClick={() => void createCode()}>
@@ -190,50 +241,48 @@ export default function WorkerDevices() {
       </Button>
       {pairing ? (
         <div className="mt-3 rounded-xl bg-stone-100 p-3">
-          <div className="text-xs text-stone-500">一次性配对码（{Math.floor(pairing.expires_in_seconds / 60)} 分钟）</div>
+          <div className="text-xs text-stone-500">
+            一次性配对码（{Math.floor(pairing.expires_in_seconds / 60)} 分钟）
+          </div>
           <Typography.Text copyable className="mt-1 block font-mono text-lg tracking-wider">
             {pairing.code}
           </Typography.Text>
           <div className="mt-2 text-[11px] text-stone-500">
-            {desktop ? '桌面端可以直接完成配对；也可以复制配对码到命令行。' : '在本机执行：'}
-            {!desktop ? (
-              <code className="break-all">
-                threadforge-worker pair --server {workerServer} --code {pairing.code}
-              </code>
-            ) : null}
+            在本机执行：
+            <code className="break-all">
+              threadforge-worker pair --server {workerServer} --code {pairing.code}
+            </code>
           </div>
-          {desktop ? (
-            <>
-              <Input
-                className="mt-3"
-                value={workerName}
-                onChange={(event) => setWorkerName(event.target.value)}
-                placeholder="设备名称"
-                maxLength={128}
-              />
-              <Button className="mt-2" type="primary" block onClick={() => void pairDesktopWorker()}>
-                在桌面端配对并启动
-              </Button>
-            </>
-          ) : null}
         </div>
       ) : null}
-      {desktop && workerStatus?.paired ? (
-        <div className="mt-3 flex gap-2">
-          <Button icon={<FolderOpenOutlined />} onClick={() => void chooseWorkspace()}>
-            选择本地目录
-          </Button>
-          {workerStatus.running ? (
-            <Button danger icon={<StopOutlined />} onClick={() => void stopDesktopWorker()}>
-              停止 Worker
-            </Button>
-          ) : (
-            <Button icon={<PlayCircleOutlined />} onClick={() => void startDesktopWorker()}>
-              启动 Worker
-            </Button>
-          )}
-        </div>
-      ) : null}
+      <Modal
+        title="本地模型配置"
+        open={Boolean(modelDevice)}
+        okText="保存到本机"
+        cancelText="取消"
+        confirmLoading={modelSaving}
+        onOk={() => void saveModelConfig()}
+        onCancel={() => {
+          setModelDevice(null)
+          modelForm.resetFields()
+        }}
+      >
+        <Form form={modelForm} layout="vertical" requiredMark={false}>
+          <Form.Item
+            label="API 地址"
+            name="base_url"
+            rules={[{ required: true, type: 'url', message: '请输入有效的 HTTP(S) 地址' }]}
+          >
+            <Input autoComplete="url" placeholder="https://api.openai.com/v1" />
+          </Form.Item>
+          <Form.Item label="模型" name="model" rules={[{ required: true, message: '请输入模型名称' }]}>
+            <Input autoComplete="off" placeholder="gpt-5.4" />
+          </Form.Item>
+          <Form.Item label="API Key" name="api_key" rules={[{ required: true, message: '请输入 API Key' }]}>
+            <Input.Password autoComplete="new-password" />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   )
 }
