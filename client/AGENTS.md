@@ -93,4 +93,4 @@ V1 页面骨架已实现（白色调对话工作台）：
 
 桌面壳（Electron）已就绪：`pnpm dev:electron` 开发、`pnpm build:electron` 出 Windows 安装包；`pnpm dev` / `pnpm build` 保持纯 web 不变。窗口图标尚未定制（暂用 Electron 默认）。
 
-本地 Worker V1 已接入：Web/Electron 统一经中央 API 管理设备、Session、Task、审批和事件；Worker 通过出站 WebSocket 在用户电脑执行 Pico、模型、文件、Git 与 Shell。下一步是签名安装包、托盘/开机自启和自动更新，并在后续版本接入真实 Skills/MCP 执行能力。
+本地 Worker V1 已接入：Web/Electron 统一经中央 API 管理设备、Session、Task、审批和事件；Worker 通过出站 WebSocket 在用户电脑执行 Pico、模型、文件、Git 与 Shell。前端会检测 Companion、尝试唤醒，并在首次使用、唤醒失败或协议不兼容时提供带进度的签名发布包下载；Worker 支持登录自启动和后台自动更新。后续版本再接入真实 Skills/MCP 执行能力。

@@ -2,7 +2,10 @@ import assert from 'node:assert/strict'
 import { afterEach, describe, it } from 'node:test'
 import {
   ApiError,
+  configureWorkerModel,
   createPairingCode,
+  downloadWorkerRelease,
+  getLatestWorkerRelease,
   getAuthStatus,
   getRuntimeConfig,
   listMcpServers,
@@ -80,6 +83,11 @@ describe('client authentication API', () => {
     await logout()
     await createPairingCode()
     await revokeDevice('dev_a/b')
+    await configureWorkerModel('dev_model', {
+      base_url: 'https://provider.example/v1',
+      api_key: 'secret',
+      model: 'model-a',
+    })
 
     assert.equal(calls[0].url, '/api/v1/auth/status')
     assert.equal(calls[0].init?.credentials, 'include')
@@ -92,5 +100,42 @@ describe('client authentication API', () => {
     assert.equal(calls[3].url, '/api/v1/devices/dev_a%2Fb')
     assert.equal(calls[3].init?.method, 'DELETE')
     assert.equal(new Headers(calls[3].init?.headers).get('X-ThreadForge-CSRF'), '1')
+    assert.equal(calls[4].url, '/api/v1/devices/dev_model/model-config')
+    assert.equal(calls[4].init?.method, 'PUT')
+    assert.deepEqual(JSON.parse(String(calls[4].init?.body)), {
+      base_url: 'https://provider.example/v1',
+      api_key: 'secret',
+      model: 'model-a',
+    })
+  })
+
+  it('downloads the same-origin Worker bundle with progress', async () => {
+    const progress: Array<[number, number]> = []
+    globalThis.fetch = async (input, init) => {
+      assert.equal(String(input), '/api/v1/worker/releases/download/windows-x86_64')
+      assert.equal(init?.credentials, 'include')
+      return new Response(new Uint8Array([1, 2, 3, 4]), {
+        headers: {
+          'Content-Length': '4',
+          'Content-Disposition': 'attachment; filename="worker.zip"',
+        },
+      })
+    }
+
+    const result = await downloadWorkerRelease('windows-x86_64', (received, total) => {
+      progress.push([received, total])
+    })
+
+    assert.equal(result.filename, 'worker.zip')
+    assert.equal(result.blob.size, 4)
+    assert.deepEqual(progress.at(-1), [4, 4])
+  })
+
+  it('requests signed Worker release metadata', async () => {
+    globalThis.fetch = async (input) => {
+      assert.equal(String(input), '/api/v1/worker/releases/latest')
+      return response({ version: '0.2.0' })
+    }
+    assert.equal((await getLatestWorkerRelease()).version, '0.2.0')
   })
 })

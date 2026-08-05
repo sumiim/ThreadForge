@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -22,6 +23,37 @@ class PairWorkerRequest(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError("device name must not be blank")
+        return value
+
+
+class ConfigureWorkerModelRequest(BaseModel):
+    base_url: str = Field(min_length=1, max_length=2048)
+    api_key: str = Field(min_length=1, max_length=8192)
+    model: str = Field(min_length=1, max_length=200)
+
+    @field_validator("base_url")
+    @classmethod
+    def _valid_base_url(cls, value: str) -> str:
+        value = value.strip().rstrip("/")
+        parsed = urlsplit(value)
+        loopback = parsed.hostname in {"127.0.0.1", "::1", "localhost"}
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.fragment
+            or (parsed.scheme == "http" and not loopback)
+        ):
+            raise ValueError("base_url must use HTTPS, except for loopback development")
+        return value
+
+    @field_validator("api_key", "model")
+    @classmethod
+    def _not_blank_or_multiline(cls, value: str) -> str:
+        value = value.strip()
+        if not value or "\n" in value or "\r" in value:
+            raise ValueError("value must be a non-empty single line")
         return value
 
 

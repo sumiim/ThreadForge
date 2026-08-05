@@ -1,0 +1,21 @@
+services:
+  gateway:
+    image: caddy:2.10-alpine
+    profiles: ["public"]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      - THREADFORGE_PUBLIC_HOST=${THREADFORGE_PUBLIC_HOST:?set THREADFORGE_PUBLIC_HOST in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - threadforge-caddy-data:/data
+      - threadforge-caddy-config:/config
+    depends_on:
+      - web
+    restart: unless-stopped
+
+volumes:
+  threadforge-caddy-data:
+  threadforge-caddy-config:

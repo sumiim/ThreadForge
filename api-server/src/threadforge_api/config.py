@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     auth_cookie_secure: bool = False
     worker_pairing_ttl_seconds: int = 600
     worker_message_max_bytes: int = 2 * 1024 * 1024
+    worker_release_manifest_url: str = (
+        "https://github.com/sumiim/ThreadForge/releases/latest/download/worker-manifest.json"
+    )
+    worker_release_max_bytes: int = 128 * 1024 * 1024
 
     @field_validator("trusted_hosts")
     @classmethod
@@ -128,6 +132,21 @@ class Settings(BaseSettings):
     def _validate_worker_message_max_bytes(cls, value: int) -> int:
         if not 64 * 1024 <= value <= 16 * 1024 * 1024:
             raise ValueError("worker_message_max_bytes must be in 64 KiB - 16 MiB")
+        return value
+
+    @field_validator("worker_release_manifest_url")
+    @classmethod
+    def _validate_worker_release_manifest_url(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("worker_release_manifest_url must be an HTTPS URL")
+        return value
+
+    @field_validator("worker_release_max_bytes")
+    @classmethod
+    def _validate_worker_release_max_bytes(cls, value: int) -> int:
+        if not 1024 * 1024 <= value <= 512 * 1024 * 1024:
+            raise ValueError("worker_release_max_bytes must be in 1-512 MiB")
         return value
 
     @model_validator(mode="after")

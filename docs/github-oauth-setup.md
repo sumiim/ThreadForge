@@ -4,7 +4,7 @@
 
 GitHub OAuth 只负责确认用户身份。ThreadForge 使用服务端白名单决定谁能登录，并用 `owner_id` 隔离 Session、Task、Approval、SSE 和运行产物。GitHub Access Token 只用于登录期间读取当前用户资料，不写入磁盘。
 
-当前版本仍是单进程、单 Worker、全局单活动任务。多个用户可以拥有独立数据，但不能同时执行多个根任务；API 仍只监听服务器 `127.0.0.1:8000`，前端继续通过 SSH 隧道访问。
+当前版本仍是单进程、全局单活动任务。多个用户可以绑定各自的本地 Worker 和独立数据，但不能同时执行多个根任务。API 始终只监听容器网络和宿主机 loopback；开发环境可以使用 SSH 隧道，正式环境按照 [`public-web-deployment.md`](public-web-deployment.md) 通过 Caddy 提供 HTTPS。
 
 ## 创建 GitHub OAuth App
 

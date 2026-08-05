@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, status
 
 from ...domain.errors import AppError, AuthorizationDeniedError, WorkerProtocolError
 from ...domain.identity import Actor
@@ -18,9 +18,10 @@ from ..dependencies import (
     get_worker_hub,
     require_csrf,
 )
-from ..models import PairWorkerRequest
+from ..models import ConfigureWorkerModelRequest, PairWorkerRequest
 
 router = APIRouter()
+WORKER_PROTOCOL_VERSION = 1
 
 
 @router.post("/api/v1/devices/pairing-codes", dependencies=[Depends(require_csrf)])
@@ -62,6 +63,10 @@ def list_devices(
                 "online": device.device_id in online,
                 "model": device.model,
                 "model_configured": device.model_configured,
+                "version": device.version,
+                "protocol_version": device.protocol_version,
+                "compatible": device.protocol_version == WORKER_PROTOCOL_VERSION,
+                "capabilities": device.capabilities,
                 "created_at": device.created_at,
                 "last_seen_at": device.last_seen_at,
                 "workspaces": [workspace.to_dict() for workspace in device.workspaces],
@@ -69,6 +74,52 @@ def list_devices(
             for device in device_store.list_for_owner(actor.owner_id)
         ]
     }
+
+
+@router.post(
+    "/api/v1/devices/{device_id}/workspace-selection-requests",
+    dependencies=[Depends(require_csrf)],
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def request_workspace_selection(
+    device_id: str,
+    actor: Actor = Depends(get_actor),
+    worker_hub: WorkerHub = Depends(get_worker_hub),
+) -> dict:
+    return worker_hub.request_workspace_selection(device_id, actor.owner_id)
+
+
+@router.get(
+    "/api/v1/devices/{device_id}/workspace-selection-requests/{request_id}"
+)
+def get_workspace_selection(
+    device_id: str,
+    request_id: str,
+    actor: Actor = Depends(get_actor),
+    worker_hub: WorkerHub = Depends(get_worker_hub),
+) -> dict:
+    return worker_hub.get_workspace_selection(device_id, request_id, actor.owner_id)
+
+
+@router.put(
+    "/api/v1/devices/{device_id}/model-config",
+    dependencies=[Depends(require_csrf)],
+)
+async def configure_worker_model(
+    device_id: str,
+    body: ConfigureWorkerModelRequest,
+    actor: Actor = Depends(get_actor),
+    worker_hub: WorkerHub = Depends(get_worker_hub),
+) -> dict:
+    # The key is forwarded over the authenticated Worker socket and remains
+    # in memory only; neither the device store nor API responses persist it.
+    return await worker_hub.configure_model(
+        device_id=device_id,
+        owner_id=actor.owner_id,
+        base_url=body.base_url,
+        api_key=body.api_key,
+        model=body.model,
+    )
 
 
 @router.delete("/api/v1/devices/{device_id}", dependencies=[Depends(require_csrf)])

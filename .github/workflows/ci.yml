@@ -217,10 +217,23 @@ jobs:
         run: docker build ./client
 
       - name: Validate Compose deployment
-        run: docker compose config --quiet
+        run: |
+          docker compose config --quiet
+          THREADFORGE_PUBLIC_HOST=threadforge.example.com \
+            docker compose --profile public -f compose.yaml -f compose.public.yaml config --quiet
+
+      - name: Validate Caddy public gateway
+        run: |
+          docker run --rm \
+            -e THREADFORGE_PUBLIC_HOST=threadforge.example.com \
+            -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2.10-alpine caddy validate --config /etc/caddy/Caddyfile
 
       - name: Validate production deployment script
         run: bash -n scripts/deploy-production.sh
+
+      - name: Validate Worker release builder
+        run: python scripts/build-worker-release.py --help
 
       - name: Smoke test Compose deployment
         run: |

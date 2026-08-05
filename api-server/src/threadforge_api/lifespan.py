@@ -38,6 +38,7 @@ from .infrastructure.run_reconciliation import (
 from .infrastructure.run_store_reader import RunStoreReader
 from .infrastructure.task_runner import TaskRunner
 from .infrastructure.worker_hub import WorkerHub
+from .infrastructure.worker_releases import WorkerReleaseService
 from .infrastructure.workspace_catalog import WorkspaceCatalog
 
 
@@ -64,6 +65,9 @@ class AppContainer:
         self.approval_repo = JsonApprovalRepository(settings.data_dir / "approvals")
         self.device_store = DeviceStore(settings.data_dir / "devices")
         self.pairing_store = PairingCodeStore(settings.worker_pairing_ttl_seconds)
+        self.worker_release_service = WorkerReleaseService(
+            settings.worker_release_manifest_url, settings.worker_release_max_bytes
+        )
         self._assign_legacy_ownership()
         self.runs_dir = settings.data_dir / "runs"
         secure_directory(self.runs_dir)
@@ -108,6 +112,7 @@ class AppContainer:
             self.task_repo,
             device_store=self.device_store,
             worker_hub=self.worker_hub,
+            allow_backend_workspaces=settings.identity_mode != "github_oauth",
         )
         self.task_service = TaskService(
             settings=settings,
@@ -169,7 +174,11 @@ class AppContainer:
     def _validate_control_repositories(self) -> None:
         for path in self.task_repo.root.glob("*.json"):
             task = self.task_repo.get(path.stem)
-            if task.status.terminal and not run_artifacts_match(self.settings.data_dir, task):
+            if (
+                task.execution_environment != "local_worker"
+                and task.status.terminal
+                and not run_artifacts_match(self.settings.data_dir, task)
+            ):
                 raise ValueError(f"terminal Task artifacts are inconsistent: {task.task_id}")
         for path in self.approval_repo.root.glob("*.json"):
             self.approval_repo.get(path.stem)
@@ -215,6 +224,9 @@ class AppContainer:
                 continue
             if task.status in _RECONCILE_ACTIVE:
                 try:
+                    if task.execution_environment == "local_worker":
+                        self.task_repo.update(task.task_id, _set_failed_restarted)
+                        continue
                     recovered = terminal_task_from_run(self.settings.data_dir, task)
                     if recovered is None:
                         self._fail_service_restarted(task)
@@ -229,7 +241,11 @@ class AppContainer:
                         )
                 except Exception:
                     ok = False
-            elif task.status.terminal and not run_artifacts_match(self.settings.data_dir, task):
+            elif (
+                task.execution_environment != "local_worker"
+                and task.status.terminal
+                and not run_artifacts_match(self.settings.data_dir, task)
+            ):
                 try:
                     converge_run_artifacts(
                         self.settings.data_dir,

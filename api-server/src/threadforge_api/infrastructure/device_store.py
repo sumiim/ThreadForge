@@ -47,6 +47,9 @@ class Device:
     last_seen_at: str = ""
     model: str = ""
     model_configured: bool = False
+    version: str = ""
+    protocol_version: int = 0
+    capabilities: list[str] = field(default_factory=list)
     workspaces: list[WorkerWorkspace] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -60,6 +63,9 @@ class Device:
             "last_seen_at": self.last_seen_at,
             "model": self.model,
             "model_configured": self.model_configured,
+            "version": self.version,
+            "protocol_version": self.protocol_version,
+            "capabilities": list(self.capabilities),
             "workspaces": [workspace.to_dict() for workspace in self.workspaces],
         }
 
@@ -74,6 +80,13 @@ class Device:
             last_seen_at=str(payload.get("last_seen_at", "")),
             model=str(payload.get("model", "")),
             model_configured=bool(payload.get("model_configured", False)),
+            version=str(payload.get("version", ""))[:32],
+            protocol_version=int(payload.get("protocol_version", 0)),
+            capabilities=[
+                str(item)
+                for item in payload.get("capabilities", [])
+                if isinstance(item, str)
+            ],
             workspaces=[
                 WorkerWorkspace(
                     workspace_id=str(item["workspace_id"]),
@@ -191,6 +204,9 @@ class DeviceStore:
         *,
         model: str,
         model_configured: bool,
+        version: str,
+        protocol_version: int,
+        capabilities: list[str],
         workspaces: list[WorkerWorkspace],
     ) -> Device:
         if len(workspaces) > 100:
@@ -202,6 +218,9 @@ class DeviceStore:
             device.last_seen_at = utc_now()
             device.model = model[:200]
             device.model_configured = bool(model_configured)
+            device.version = version[:32]
+            device.protocol_version = protocol_version
+            device.capabilities = list(capabilities)
             device.workspaces = list(workspaces)
             write_json_atomic(self.root / f"{device_id}.json", device.to_dict())
             return device

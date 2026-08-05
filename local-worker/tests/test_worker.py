@@ -6,24 +6,28 @@ import json
 import sys
 import threading
 import time
+from unittest.mock import patch
 
 import pytest
 from pico.approval import ApprovalOutcome, ApprovalRequest
 from pico.features.memory import default_memory_state
 from pico.providers.clients import FakeModelClient
+from pico.session_store import SessionStore
 
 from threadforge_worker.client import (
+    WorkerClient,
     _stable_failure_reason,
     _validated_server_url,
     _websocket_url,
 )
-from threadforge_worker.config import ConfigStore, WorkerConfig
+from threadforge_worker.config import ConfigStore, LocalWorkspace, WorkerConfig
 from threadforge_worker.runtime import (
     ActiveRun,
     CancellationToken,
     RemoteApprovalStrategy,
     run_task,
 )
+from threadforge_worker.service import ServiceAlreadyRunningError, ServiceLock
 
 
 def test_config_roundtrip_does_not_store_plaintext_token(tmp_path):
@@ -54,6 +58,102 @@ def test_workspace_registration_uses_canonical_directory(tmp_path):
     file_path.write_text("x", encoding="utf-8")
     with pytest.raises(ValueError, match="directory"):
         store.add_workspace(config, str(file_path))
+    assert store.remove_workspace(config, workspace.workspace_id) is True
+    assert config.workspaces == []
+    assert store.remove_workspace(config, workspace.workspace_id) is False
+
+
+def test_model_configuration_is_written_to_worker_env_and_loaded(tmp_path):
+    store = ConfigStore(tmp_path / "state")
+    with patch.dict("os.environ", {}, clear=True):
+        store.save_model_env(
+            base_url="https://provider.example/v1",
+            api_key="local-secret",
+            model="model-a",
+        )
+        assert store.load_model_env()["PICO_OPENAI_MODEL"] == "model-a"
+        assert "local-secret" in store.model_env_path.read_text(encoding="utf-8")
+        assert __import__("os").environ["PICO_OPENAI_API_KEY"] == "local-secret"
+    if sys.platform != "win32":
+        assert store.model_env_path.stat().st_mode & 0o777 == 0o600
+    with pytest.raises(ValueError, match="single line|invalid"):
+        store.save_model_env(
+            base_url="https://provider.example/v1",
+            api_key="bad\nvalue",
+            model="model-a",
+        )
+    with pytest.raises(ValueError, match="HTTPS"):
+        store.save_model_env(
+            base_url="http://provider.example/v1",
+            api_key="secret",
+            model="model-a",
+        )
+
+
+def test_service_lock_prevents_duplicate_worker_processes(tmp_path):
+    outer = ServiceLock(tmp_path)
+    inner = ServiceLock(tmp_path)
+    with outer, pytest.raises(ServiceAlreadyRunningError), inner:
+        pass
+
+
+def test_companion_selection_registers_workspace_without_sending_local_path(tmp_path):
+    store = ConfigStore(tmp_path / "state")
+    config = WorkerConfig()
+    workspace_root = tmp_path / "private" / "repo"
+    workspace_root.mkdir(parents=True)
+    messages = []
+
+    class Socket:
+        def send(self, raw):
+            messages.append(json.loads(raw))
+
+    client = WorkerClient(
+        store,
+        config,
+        workspace_selector=lambda: str(workspace_root),
+    )
+    client._socket = Socket()
+    client._handle({"type": "workspace.select", "request_id": "wsel_test"})
+    deadline = time.monotonic() + 1
+    while not messages and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    result = messages[0]
+    assert result["type"] == "workspace.selection.completed"
+    assert result["status"] == "selected"
+    assert result["workspace_id"].startswith("ws_")
+    assert result["workspaces"][0]["name"] == "repo"
+    assert str(workspace_root) not in json.dumps(result)
+
+
+def test_worker_rejects_new_task_while_update_is_installing(tmp_path):
+    messages = []
+
+    class Socket:
+        def send(self, raw):
+            messages.append(json.loads(raw))
+
+    workspace_id = "ws_" + "a" * 32
+    config = WorkerConfig(
+        workspaces=[LocalWorkspace(workspace_id, "Repo", str(tmp_path))]
+    )
+    client = WorkerClient(ConfigStore(tmp_path / "state"), config)
+    client._socket = Socket()
+
+    assert client.begin_update() is True
+    assert client.begin_update() is False
+    client._start_task(
+        {
+            "task_id": "task_" + "b" * 32,
+            "session_id": "ses_" + "c" * 32,
+            "workspace_id": workspace_id,
+        }
+    )
+    client.end_update()
+
+    assert messages[-1]["type"] == "terminal"
+    assert messages[-1]["stop_reason"] == "worker_updating"
 
 
 def test_websocket_url_and_stable_failure_codes():
@@ -132,4 +232,123 @@ def test_runtime_completes_with_fake_model_without_provider_call(tmp_path):
     assert terminal["type"] == "terminal"
     assert terminal["status"] == "completed"
     assert terminal["final_answer"] == "done"
-    assert json.dumps(terminal["session"])
+    assert "session" not in terminal
+    assert terminal["message_total"] == 2
+    stored = json.loads(
+        (tmp_path / "worker-state" / "sessions" / f"{task['session']['id']}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert [item["content"] for item in stored["history"]] == ["say done", "done"]
+
+
+def test_history_read_and_model_configuration_protocol(tmp_path):
+    store = ConfigStore(tmp_path / "state")
+    session_store = SessionStore(store.root / "sessions")
+    session_id = "ses_" + "a" * 32
+    session_store.save(
+        {
+            "id": session_id,
+            "workspace_id": "ws_" + "b" * 32,
+            "history": [
+                {"role": "user", "content": "old question"},
+                {"role": "assistant", "content": "old answer"},
+            ],
+        }
+    )
+    messages = []
+
+    class Socket:
+        def send(self, raw):
+            messages.append(json.loads(raw))
+
+    client = WorkerClient(store, WorkerConfig())
+    client._socket = Socket()
+    client._handle(
+        {
+            "type": "session.history.get",
+            "request_id": "hist_test",
+            "session_id": session_id,
+            "message_limit": 100,
+        }
+    )
+    deadline = time.monotonic() + 1
+    while not messages and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert [item["content"] for item in messages[0]["messages"]] == [
+        "old question",
+        "old answer",
+    ]
+
+    messages.clear()
+    with patch.dict("os.environ", {}, clear=True):
+        client._handle(
+            {
+                "type": "model.configure",
+                "request_id": "model_test",
+                "base_url": "https://provider.example/v1",
+                "api_key": "new-secret",
+                "model": "model-b",
+            }
+        )
+        assert messages == [
+            {
+                "type": "model.configuration.completed",
+                "request_id": "model_test",
+                "status": "completed",
+                "model": "model-b",
+            }
+        ]
+        messages.clear()
+        client._handle(
+            {
+                "type": "session.history.get",
+                "request_id": "hist_after_provider_switch",
+                "session_id": session_id,
+                "message_limit": 100,
+            }
+        )
+        deadline = time.monotonic() + 1
+        while not messages and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert [item["content"] for item in messages[0]["messages"]] == [
+            "old question",
+            "old answer",
+        ]
+
+
+def test_large_unicode_history_stays_within_worker_message_limit(tmp_path):
+    store = ConfigStore(tmp_path / "state")
+    session_store = SessionStore(store.root / "sessions")
+    session_id = "ses_" + "f" * 32
+    session_store.save(
+        {
+            "id": session_id,
+            "workspace_id": "ws_" + "e" * 32,
+            "history": [
+                {"role": "user", "content": "中" * 4000}
+                for _ in range(500)
+            ],
+        }
+    )
+    raw_messages = []
+
+    class Socket:
+        def send(self, raw):
+            raw_messages.append(raw)
+
+    client = WorkerClient(store, WorkerConfig())
+    client._socket = Socket()
+    client._handle(
+        {
+            "type": "session.history.get",
+            "request_id": "hist_large",
+            "session_id": session_id,
+            "message_limit": 500,
+        }
+    )
+    deadline = time.monotonic() + 3
+    while not raw_messages and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(raw_messages[0].encode("utf-8")) <= 2 * 1024 * 1024
+    assert len(json.loads(raw_messages[0])["messages"]) == 500

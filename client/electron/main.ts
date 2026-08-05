@@ -24,7 +24,11 @@ if (configuredWebUrl && !process.env.THREADFORGE_API_BASE_URL) {
 }
 
 function openExternalUrl(url: string) {
-  if (url.startsWith('https://') || url.startsWith('mailto:')) {
+  if (
+    url.startsWith('https://') ||
+    url.startsWith('mailto:') ||
+    url === 'threadforge://worker/start'
+  ) {
     void shell.openExternal(url)
   }
 }

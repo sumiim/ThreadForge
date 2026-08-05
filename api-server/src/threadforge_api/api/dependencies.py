@@ -13,6 +13,7 @@ from ..domain.identity import Actor, canonical_owner_id
 from ..infrastructure.auth import AUTH_COOKIE_NAME, AuthManager
 from ..infrastructure.device_store import DeviceStore, PairingCodeStore
 from ..infrastructure.worker_hub import WorkerHub
+from ..infrastructure.worker_releases import WorkerReleaseService
 from ..lifespan import AppContainer
 
 
@@ -53,6 +54,10 @@ def get_pairing_store(request: Request) -> PairingCodeStore:
 
 def get_worker_hub(request: Request) -> WorkerHub:
     return request.app.state.container.worker_hub
+
+
+def get_worker_release_service(request: Request) -> WorkerReleaseService:
+    return request.app.state.container.worker_release_service
 
 
 def require_csrf(request: Request) -> None:

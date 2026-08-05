@@ -139,6 +139,26 @@ class WorkerOfflineError(AppError):
     code = "worker_offline"
 
 
+class WorkerCapabilityUnavailableError(AppError):
+    http_status = 409
+    code = "worker_capability_unavailable"
+
+
+class WorkerCommandPendingError(AppError):
+    http_status = 409
+    code = "worker_command_pending"
+
+
+class WorkerCommandFailedError(AppError):
+    http_status = 422
+    code = "worker_command_failed"
+
+
 class WorkerProtocolError(AppError):
     http_status = 400
     code = "worker_protocol_error"
+
+
+class WorkerReleaseUnavailableError(AppError):
+    http_status = 503
+    code = "worker_release_unavailable"
