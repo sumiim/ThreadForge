@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .auto_update import run_auto_update_loop
 from .client import WorkerClient
 from .config import ConfigStore
 
@@ -149,24 +150,7 @@ def run_service(data_dir: str | None = None) -> int:
             def auto_update() -> None:
                 if client is None:
                     return
-                while not client.wait_for_stop(0):
-                    retry_seconds = 6 * 60 * 60
-                    if client.begin_update():
-                        try:
-                            from .updater import apply_update
-
-                            if apply_update(store):
-                                client.stop()
-                                return
-                        except Exception as exc:
-                            print(f"Worker update check skipped: {exc}", file=sys.stderr)
-                            retry_seconds = 30 * 60
-                        finally:
-                            client.end_update()
-                    else:
-                        retry_seconds = 5 * 60
-                    if client.wait_for_stop(retry_seconds):
-                        return
+                run_auto_update_loop(store, client)
 
             client = WorkerClient(
                 store,
