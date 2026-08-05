@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform
 import re
@@ -18,7 +19,12 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect
 
 from . import __version__
-from .config import ConfigStore, WorkerConfig
+from .config import (
+    ConfigStore,
+    WorkerConfig,
+    WorkspaceConfigWriteError,
+    WorkspacePathError,
+)
 from .runtime import ActiveRun, CancellationToken, RemoteApprovalStrategy, run_task
 
 _SESSION_ID = re.compile(r"^ses_[a-f0-9]{32}$")
@@ -26,6 +32,7 @@ _SESSION_SYNC_CHUNK_SIZE = 100
 _MESSAGE_CONTENT_MAX = 4000
 _HISTORY_PAYLOAD_CONTENT_BUDGET = 1700 * 1024
 WORKER_PROTOCOL_VERSION = 1
+LOGGER = logging.getLogger(__name__)
 
 
 def pair(server_url: str, code: str, name: str) -> dict:
@@ -392,6 +399,16 @@ class WorkerClient:
                 "selected",
                 workspace_id=workspace.workspace_id,
             )
+        except WorkspacePathError:
+            LOGGER.exception("Selected workspace path is unavailable")
+            self._send_workspace_selection_result(
+                request_id, "failed", error="workspace_path_unavailable"
+            )
+        except WorkspaceConfigWriteError:
+            LOGGER.exception("Worker workspace configuration could not be saved")
+            self._send_workspace_selection_result(
+                request_id, "failed", error="workspace_config_write_failed"
+            )
         except RuntimeError as exc:
             error = str(exc)
             if error not in {
@@ -401,6 +418,7 @@ class WorkerClient:
                 error = "selection_failed"
             self._send_workspace_selection_result(request_id, "failed", error=error)
         except Exception:
+            LOGGER.exception("Unexpected workspace registration failure")
             self._send_workspace_selection_result(request_id, "failed", error="workspace_registration_failed")
         finally:
             self._workspace_lock.release()

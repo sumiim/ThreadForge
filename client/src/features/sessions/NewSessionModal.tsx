@@ -28,6 +28,8 @@ const selectionErrors: Record<string, string> = {
   selection_busy: '本机已有目录选择窗口等待处理',
   selection_expired: '目录选择请求已过期',
   selection_failed: '本机目录选择失败，请重新安装最新 Worker',
+  workspace_path_unavailable: '所选目录不存在或当前用户无权访问，请重新选择',
+  workspace_config_write_failed: 'Worker 暂时无法保存配置，请稍后重试；诊断日志保存在本机',
   workspace_registration_failed: '目录已选择，但 Worker 保存工作区失败',
   worker_disconnected: 'Worker 已断开连接',
   worker_reconnected: 'Worker 重连后请求已失效，请重新操作',

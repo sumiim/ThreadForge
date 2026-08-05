@@ -6,11 +6,24 @@ import json
 import os
 import sys
 import tempfile
+import time
 import urllib.parse
 import uuid
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+class WorkspacePathError(ValueError):
+    """The directory selected by the user cannot be resolved locally."""
+
+
+class WorkspaceConfigWriteError(RuntimeError):
+    """The local Worker configuration could not be persisted."""
+
+
+_CONFIG_REPLACE_ATTEMPTS = 5
+_CONFIG_REPLACE_DELAY_SECONDS = 0.05
 
 
 def default_data_dir() -> Path:
@@ -102,7 +115,7 @@ class ConfigStore:
                 handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
-            temp_path.replace(self.path)
+            _replace_with_retry(temp_path, self.path)
             temp_path = None
         finally:
             if temp_path is not None:
@@ -112,19 +125,27 @@ class ConfigStore:
             self.path.chmod(0o600)
 
     def add_workspace(self, config: WorkerConfig, path: str, name: str | None = None) -> LocalWorkspace:
-        root = Path(path).expanduser().resolve(strict=True)
+        try:
+            root = Path(path).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise WorkspacePathError("selected workspace path is unavailable") from exc
         if not root.is_dir():
-            raise ValueError("workspace path must be a directory")
+            raise WorkspacePathError("workspace path must be a directory")
         for existing in config.workspaces:
             if Path(existing.path) == root:
                 return existing
+        default_name = root.name or root.anchor.rstrip("\\/") or "Workspace"
         workspace = LocalWorkspace(
             workspace_id="ws_" + uuid.uuid4().hex,
-            name=(name or root.name).strip() or root.name,
+            name=(name or default_name).strip() or default_name,
             path=str(root),
         )
         config.workspaces.append(workspace)
-        self.save(config)
+        try:
+            self.save(config)
+        except Exception as exc:
+            config.workspaces.remove(workspace)
+            raise WorkspaceConfigWriteError("failed to save Worker workspace") from exc
         return workspace
 
     def remove_workspace(self, config: WorkerConfig, workspace_id: str) -> bool:
@@ -199,6 +220,18 @@ def _validate_model_value(name: str, value: str, max_length: int) -> str:
     if not value or len(value) > max_length or "\n" in value or "\r" in value:
         raise ValueError(f"invalid model {name}")
     return value
+
+
+def _replace_with_retry(source: Path, target: Path) -> None:
+    """Tolerate short-lived Windows scanner/installer locks on worker.json."""
+    for attempt in range(_CONFIG_REPLACE_ATTEMPTS):
+        try:
+            source.replace(target)
+            return
+        except PermissionError:
+            if attempt == _CONFIG_REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(_CONFIG_REPLACE_DELAY_SECONDS * (2**attempt))
 
 
 def _secure_secret_file(path: Path) -> None:
