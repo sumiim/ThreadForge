@@ -13,7 +13,7 @@
     "build:electron": "cross-env ELECTRON=1 tsc -b && vite build && electron-builder",
     "typecheck": "tsc -b",
     "lint": "eslint .",
-    "test": "node --test src/api/client.test.ts src/api/vite-env.test.ts src/hooks/session-state.test.ts",
+    "test": "node --test src/api/client.test.ts src/api/vite-env.test.ts src/hooks/session-state.test.ts src/features/devices/worker-version.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {

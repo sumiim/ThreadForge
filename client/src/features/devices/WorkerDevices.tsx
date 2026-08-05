@@ -13,12 +13,14 @@ import {
   configureWorkerModel,
   createPairingCode,
   friendlyMessage,
+  getLatestWorkerRelease,
   getWorkspaceSelection,
   listDevices,
   requestWorkspaceSelection,
   revokeDevice,
 } from '../../api/client'
-import type { Device } from '../../api/types'
+import type { Device, WorkerReleaseManifest } from '../../api/types'
+import { workerIsReady } from './worker-version'
 
 const delay = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds))
 
@@ -33,6 +35,7 @@ const selectionErrors: Record<string, string> = {
 
 export default function WorkerDevices() {
   const [devices, setDevices] = useState<Device[]>([])
+  const [release, setRelease] = useState<WorkerReleaseManifest | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -47,7 +50,9 @@ export default function WorkerDevices() {
   const refresh = useCallback(async () => {
     setError('')
     try {
-      setDevices((await listDevices()).items)
+      const [deviceResponse, manifest] = await Promise.all([listDevices(), getLatestWorkerRelease()])
+      setDevices(deviceResponse.items)
+      setRelease(manifest)
     } catch (cause) {
       setError(friendlyMessage(cause))
     } finally {
@@ -57,9 +62,11 @@ export default function WorkerDevices() {
 
   useEffect(() => {
     let active = true
-    void listDevices()
-      .then((response) => {
-        if (active) setDevices(response.items)
+    void Promise.all([listDevices(), getLatestWorkerRelease()])
+      .then(([response, manifest]) => {
+        if (!active) return
+        setDevices(response.items)
+        setRelease(manifest)
       })
       .catch((cause: unknown) => {
         if (active) setError(friendlyMessage(cause))
@@ -176,7 +183,8 @@ export default function WorkerDevices() {
       ) : (
         <div className="space-y-2">
           {devices.map((device) => {
-            const canSelectWorkspace = (device.capabilities ?? []).includes('workspace_selection')
+            const canSelectWorkspace =
+              workerIsReady(device, release) && (device.capabilities ?? []).includes('workspace_selection')
             return (
               <div key={device.device_id} className="rounded-xl border border-stone-200 p-3">
                 <div className="flex items-center gap-2">
