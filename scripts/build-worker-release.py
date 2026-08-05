@@ -10,9 +10,6 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from cryptography.hazmat.primitives import serialization
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", required=True)
@@ -21,6 +18,8 @@ def main() -> int:
     parser.add_argument("--artifact", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    from cryptography.hazmat.primitives import serialization
+
     if args.tag != f"worker-v{args.version}":
         raise ValueError("release tag must equal worker-v<version>")
     artifact = args.artifact.resolve(strict=True)
