@@ -18,7 +18,7 @@ try {
         --onefile `
         --name threadforge-worker `
         --paths local-worker/src `
-        --collect-submodules pico `
+        --paths pico-legacy-runtime `
         --collect-submodules threadforge_worker `
         --hidden-import tkinter `
         --hidden-import tkinter.filedialog `
@@ -30,6 +30,27 @@ try {
         local-worker/src/threadforge_worker/__main__.py
     if ($LASTEXITCODE -ne 0) {
         throw "PyInstaller failed with exit code $LASTEXITCODE"
+    }
+
+    python -m PyInstaller `
+        --clean `
+        --noconfirm `
+        --onefile `
+        --noconsole `
+        --name threadforge-worker-service `
+        --paths local-worker/src `
+        --paths pico-legacy-runtime `
+        --collect-submodules threadforge_worker `
+        --hidden-import tkinter `
+        --hidden-import tkinter.filedialog `
+        --hidden-import win32api `
+        --hidden-import win32con `
+        --hidden-import win32crypt `
+        --hidden-import win32security `
+        --hidden-import ntsecuritycon `
+        local-worker/src/threadforge_worker/__main__.py
+    if ($LASTEXITCODE -ne 0) {
+        throw "PyInstaller service build failed with exit code $LASTEXITCODE"
     }
 
     $makensis = @(
@@ -45,8 +66,10 @@ try {
     }
 
     $workerExe = (Resolve-Path "dist/threadforge-worker.exe").Path
+    $serviceExe = (Resolve-Path "dist/threadforge-worker-service.exe").Path
     & $makensis `
         "/DWORKER_EXE=$workerExe" `
+        "/DWORKER_SERVICE_EXE=$serviceExe" `
         "/DOUTPUT_FILE=$outputPath" `
         "/DWORKER_VERSION=$Version" `
         scripts/worker-installer.nsi

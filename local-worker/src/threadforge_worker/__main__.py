@@ -1,3 +1,3 @@
-from .cli import main
+from threadforge_worker.cli import main
 
 raise SystemExit(main())

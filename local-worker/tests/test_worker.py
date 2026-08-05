@@ -28,7 +28,11 @@ from threadforge_worker.runtime import (
     RemoteApprovalStrategy,
     run_task,
 )
-from threadforge_worker.service import ServiceAlreadyRunningError, ServiceLock
+from threadforge_worker.service import (
+    ServiceAlreadyRunningError,
+    ServiceLock,
+    run_service,
+)
 
 
 def test_protocol_links_are_strict_and_support_automatic_pairing():
@@ -119,6 +123,10 @@ def test_service_lock_prevents_duplicate_worker_processes(tmp_path):
     inner = ServiceLock(tmp_path)
     with outer, pytest.raises(ServiceAlreadyRunningError), inner:
         pass
+
+
+def test_service_exits_cleanly_before_first_pairing(tmp_path):
+    assert run_service(str(tmp_path)) == 0
 
 
 def test_companion_selection_registers_workspace_without_sending_local_path(tmp_path):

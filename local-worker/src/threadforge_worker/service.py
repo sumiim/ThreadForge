@@ -88,7 +88,9 @@ def run_service(data_dir: str | None = None) -> int:
     store.load_model_env()
     config = store.load()
     if not config.device_id or not config.device_token:
-        raise RuntimeError("Worker is not paired; run `threadforge-worker pair` first")
+        # The installer starts the service before the browser completes the
+        # first pairing link. An unpaired service is therefore an idle state.
+        return 0
     try:
         with ServiceLock(store.root):
             client: WorkerClient | None = None

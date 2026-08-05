@@ -65,13 +65,23 @@ jobs:
             throw "Worker installer exited with $($process.ExitCode)"
           }
           $worker = Join-Path $env:LOCALAPPDATA "ThreadForge\WorkerApp\threadforge-worker.exe"
+          $service = Join-Path $env:LOCALAPPDATA "ThreadForge\WorkerApp\threadforge-worker-service.exe"
           if (-not (Test-Path -LiteralPath $worker)) {
             throw "Worker executable was not installed"
+          }
+          if (-not (Test-Path -LiteralPath $service)) {
+            throw "Worker service executable was not installed"
           }
           & $worker --help
           if ($LASTEXITCODE -ne 0) { throw "Installed Worker CLI failed" }
           & $worker status
           if ($LASTEXITCODE -ne 0) { throw "Installed Worker status failed" }
+          $serviceProcess = Start-Process -FilePath $service -ArgumentList "service" -PassThru
+          if (-not $serviceProcess.WaitForExit(10000)) {
+            Stop-Process -Id $serviceProcess.Id -Force
+            throw "Unpaired Worker service did not exit"
+          }
+          if ($serviceProcess.ExitCode -ne 0) { throw "Unpaired Worker service failed" }
 
       - name: Sign release manifest
         shell: pwsh
