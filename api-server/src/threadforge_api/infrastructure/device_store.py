@@ -49,6 +49,8 @@ class Device:
     model_configured: bool = False
     version: str = ""
     protocol_version: int = 0
+    platform: str = ""
+    architecture: str = ""
     capabilities: list[str] = field(default_factory=list)
     workspaces: list[WorkerWorkspace] = field(default_factory=list)
 
@@ -65,6 +67,8 @@ class Device:
             "model_configured": self.model_configured,
             "version": self.version,
             "protocol_version": self.protocol_version,
+            "platform": self.platform,
+            "architecture": self.architecture,
             "capabilities": list(self.capabilities),
             "workspaces": [workspace.to_dict() for workspace in self.workspaces],
         }
@@ -82,6 +86,8 @@ class Device:
             model_configured=bool(payload.get("model_configured", False)),
             version=str(payload.get("version", ""))[:32],
             protocol_version=int(payload.get("protocol_version", 0)),
+            platform=str(payload.get("platform", ""))[:32],
+            architecture=str(payload.get("architecture", ""))[:32],
             capabilities=[
                 str(item)
                 for item in payload.get("capabilities", [])
@@ -206,6 +212,8 @@ class DeviceStore:
         model_configured: bool,
         version: str,
         protocol_version: int,
+        platform: str,
+        architecture: str,
         capabilities: list[str],
         workspaces: list[WorkerWorkspace],
     ) -> Device:
@@ -220,6 +228,8 @@ class DeviceStore:
             device.model_configured = bool(model_configured)
             device.version = version[:32]
             device.protocol_version = protocol_version
+            device.platform = platform[:32]
+            device.architecture = architecture[:32]
             device.capabilities = list(capabilities)
             device.workspaces = list(workspaces)
             write_json_atomic(self.root / f"{device_id}.json", device.to_dict())

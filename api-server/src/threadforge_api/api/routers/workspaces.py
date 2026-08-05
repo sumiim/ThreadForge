@@ -43,6 +43,7 @@ def list_workspaces(
                     "execution_environment": ExecutionEnvironment.LOCAL_WORKER.value,
                     "device_id": device.device_id,
                     "device_name": device.name,
+                    "device_platform": device.platform,
                     "model": device.model,
                     "model_configured": device.model_configured,
                     "container_sandbox_enabled": False,

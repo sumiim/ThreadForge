@@ -124,7 +124,7 @@ class WorkerReleaseService:
             parsed = urllib.parse.urlsplit(url)
             if not url.startswith(_ALLOWED_ARTIFACT_PREFIX) or parsed.query or parsed.fragment:
                 raise ValueError("release artifact URL is not trusted")
-            expected_filename = f"threadforge-worker-{name}.zip"
+            expected_filename = f"threadforge-worker-{name}.exe"
             if artifact.get("filename") != expected_filename or not parsed.path.endswith(
                 "/" + expected_filename
             ):

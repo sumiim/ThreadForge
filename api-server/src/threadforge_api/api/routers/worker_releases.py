@@ -55,7 +55,7 @@ def download_worker_release(
 
     return StreamingResponse(
         chunks(),
-        media_type="application/zip",
+        media_type="application/octet-stream",
         headers={
             "Content-Length": str(artifact["size"]),
             "Content-Disposition": f'attachment; filename="{artifact["filename"]}"',

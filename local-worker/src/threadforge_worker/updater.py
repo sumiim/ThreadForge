@@ -8,10 +8,7 @@ import json
 import re
 import subprocess
 import sys
-import tempfile
 import urllib.request
-import zipfile
-from pathlib import Path
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -22,6 +19,9 @@ from .config import ConfigStore
 WORKER_RELEASE_PUBLIC_KEY_B64 = "fcq2gihsuHOcqMw1Kjzlq21OHcZ79aaqqlpu5fsokps="
 WORKER_PROTOCOL_VERSION = 1
 _MAX_BUNDLE_BYTES = 128 * 1024 * 1024
+_WINDOWS_CREATION_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
+    subprocess, "DETACHED_PROCESS", 0
+)
 
 
 def update_available(store: ConfigStore) -> tuple[bool, dict]:
@@ -52,12 +52,14 @@ def apply_update(store: ConfigStore) -> bool:
             "User-Agent": f"ThreadForge-Worker/{__version__}",
         },
     )
-    store.root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="update-", dir=store.root) as temp_dir:
-        bundle_path = Path(temp_dir) / artifact["filename"]
-        digest = hashlib.sha256()
-        total = 0
-        with urllib.request.urlopen(request, timeout=60) as response, bundle_path.open("wb") as output:
+    update_root = store.root / "updates"
+    update_root.mkdir(parents=True, exist_ok=True)
+    installer_path = update_root / artifact["filename"]
+    download_path = installer_path.with_suffix(installer_path.suffix + ".download")
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response, download_path.open("wb") as output:
             while chunk := response.read(64 * 1024):
                 total += len(chunk)
                 if total > _MAX_BUNDLE_BYTES or total > artifact["size"]:
@@ -65,34 +67,18 @@ def apply_update(store: ConfigStore) -> bool:
                 digest.update(chunk)
                 output.write(chunk)
         if total != artifact["size"] or digest.hexdigest() != artifact["sha256"]:
-            raise RuntimeError("Worker update bundle failed checksum verification")
-        extract_root = Path(temp_dir) / "bundle"
-        _extract_bundle(bundle_path, extract_root)
-        wheels = sorted((extract_root / "packages").glob("*.whl"))
-        pico = next((path for path in wheels if path.name.startswith("pico-")), None)
-        worker = next(
-            (path for path in wheels if path.name.startswith("threadforge_worker-")), None
-        )
-        if pico is None or worker is None:
-            raise RuntimeError("Worker update bundle is incomplete")
-        subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "--disable-pip-version-check",
-                "--no-input",
-                "--upgrade",
-                "--no-index",
-                "--find-links",
-                str(extract_root / "packages"),
-                str(pico),
-                str(worker),
-            ],
-            check=True,
-            stdin=subprocess.DEVNULL,
-        )
+            raise RuntimeError("Worker update installer failed checksum verification")
+        download_path.replace(installer_path)
+    finally:
+        download_path.unlink(missing_ok=True)
+    subprocess.Popen(
+        [str(installer_path), "/S"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        creationflags=_WINDOWS_CREATION_FLAGS,
+    )
     return True
 
 
@@ -143,6 +129,9 @@ def _verify_manifest(
     artifact = platforms.get("windows-x86_64") if isinstance(platforms, dict) else None
     if not isinstance(artifact, dict):
         raise TypeError("Worker release has no Windows artifact")
+    expected_filename = "threadforge-worker-windows-x86_64.exe"
+    if artifact.get("filename") != expected_filename:
+        raise RuntimeError("Worker release artifact filename is invalid")
     if (
         not isinstance(artifact.get("size"), int)
         or not 0 < artifact["size"] <= _MAX_BUNDLE_BYTES
@@ -155,26 +144,3 @@ def _version_tuple(value: str) -> tuple[int, int, int]:
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value):
         raise RuntimeError("Worker release version is invalid")
     return tuple(int(part) for part in value.split("."))
-
-
-def _extract_bundle(bundle_path: Path, destination: Path) -> None:
-    with zipfile.ZipFile(bundle_path) as archive:
-        members = archive.infolist()
-        if len(members) > 32 or sum(item.file_size for item in members) > 256 * 1024 * 1024:
-            raise RuntimeError("Worker update archive is unsafe")
-        destination.mkdir()
-        for member in members:
-            member_path = Path(member.filename)
-            if member_path.is_absolute() or ".." in member_path.parts:
-                raise RuntimeError("Worker update archive contains an unsafe path")
-            if member.is_dir():
-                continue
-            if not (
-                member_path.parts[:1] == ("packages",) and member_path.suffix == ".whl"
-            ) and member_path.name != "install-worker.ps1":
-                raise RuntimeError("Worker update archive contains an unexpected file")
-            target = destination / member_path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with archive.open(member) as source, target.open("wb") as output:
-                while chunk := source.read(64 * 1024):
-                    output.write(chunk)

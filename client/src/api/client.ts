@@ -185,7 +185,7 @@ export async function downloadWorkerRelease(
   }
   const total = Number(response.headers.get('Content-Length') ?? 0)
   const disposition = response.headers.get('Content-Disposition') ?? ''
-  const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? 'threadforge-worker.zip'
+  const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? 'threadforge-worker.exe'
   if (!response.body) {
     const blob = await response.blob()
     onProgress(blob.size, total || blob.size)
@@ -201,7 +201,7 @@ export async function downloadWorkerRelease(
     received += value.byteLength
     onProgress(received, total)
   }
-  return { blob: new Blob(chunks, { type: 'application/zip' }), filename }
+  return { blob: new Blob(chunks, { type: 'application/octet-stream' }), filename }
 }
 
 export function getRuntimeConfig(): Promise<RuntimeConfig> {

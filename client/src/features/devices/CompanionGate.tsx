@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Alert, Button, Modal, Progress, Spin, Tag, Typography } from 'antd'
+import { Alert, Button, Modal, Progress, Spin, Tag } from 'antd'
 import {
   CheckCircleOutlined,
   DownloadOutlined,
-  LinkOutlined,
   LoadingOutlined,
   PoweroffOutlined,
 } from '@ant-design/icons'
@@ -27,7 +26,6 @@ export default function CompanionGate() {
   const [error, setError] = useState('')
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null)
   const [downloaded, setDownloaded] = useState(false)
-  const [pairing, setPairing] = useState<{ code: string; expires_in_seconds: number } | null>(null)
   const operationVersion = useRef(0)
   const workerServer = window.threadforge?.apiBaseUrl ?? window.location.origin
 
@@ -53,25 +51,29 @@ export default function CompanionGate() {
     return connected
   }, [])
 
+  const waitForConnection = useCallback(async (operation: number) => {
+    const deadline = Date.now() + WAKE_TIMEOUT_MS
+    while (operationVersion.current === operation && Date.now() < deadline) {
+      await delay(1_000)
+      try {
+        if (await probe(operation)) return true
+      } catch {
+        // Keep polling through a transient central API error.
+      }
+    }
+    return false
+  }, [probe])
+
   const wakeAndWait = useCallback(async () => {
     const operation = operationVersion.current + 1
     operationVersion.current = operation
     setState('waking')
     window.location.href = 'threadforge://worker/start'
-    const deadline = Date.now() + WAKE_TIMEOUT_MS
-    while (operationVersion.current === operation && Date.now() < deadline) {
-      await delay(1_000)
-      try {
-        if (await probe(operation)) return
-      } catch {
-        // Keep polling through a transient central API error.
-      }
-    }
-    if (operationVersion.current === operation) {
+    if (!(await waitForConnection(operation)) && operationVersion.current === operation) {
       setState('download')
       void loadRelease()
     }
-  }, [loadRelease, probe])
+  }, [loadRelease, waitForConnection])
 
   useEffect(() => {
     const operation = operationVersion.current + 1
@@ -119,10 +121,30 @@ export default function CompanionGate() {
       window.setTimeout(() => URL.revokeObjectURL(url), 1_000)
       setDownloadProgress(100)
       setDownloaded(true)
-      setPairing(await createPairingCode())
     } catch (cause) {
       setDownloadProgress(null)
       setError(friendlyMessage(cause))
+    }
+  }
+
+  const pairAndWait = async () => {
+    const operation = operationVersion.current + 1
+    operationVersion.current = operation
+    try {
+      setError('')
+      const pairing = await createPairingCode()
+      setState('waking')
+      const query = new URLSearchParams({ server: workerServer, code: pairing.code })
+      window.location.href = `threadforge://worker/pair?${query.toString()}`
+      if (!(await waitForConnection(operation)) && operationVersion.current === operation) {
+        setError('未能连接 Companion。请确认安装程序已运行完成，再重新连接。')
+        setState('download')
+      }
+    } catch (cause) {
+      if (operationVersion.current === operation) {
+        setError(friendlyMessage(cause))
+        setState('download')
+      }
     }
   }
 
@@ -166,8 +188,7 @@ export default function CompanionGate() {
               <Tag color={release ? 'green' : 'default'}>{release ? '签名版本' : '等待清单'}</Tag>
             </div>
             <div className="text-xs leading-5 text-stone-600">
-              安装包包含 Worker 与运行依赖 wheels，需要电脑已安装 Python 3.12。解压后运行
-              <Typography.Text code>install-worker.ps1</Typography.Text>。
+              安装程序已包含 Worker 和完整运行环境，不需要安装 Python 或其他依赖。下载后只需运行一次。
             </div>
             {downloadProgress !== null ? (
               <Progress percent={downloadProgress} status={downloadProgress === 100 ? 'success' : 'active'} />
@@ -180,20 +201,19 @@ export default function CompanionGate() {
               loading={downloadProgress !== null && downloadProgress < 100}
               onClick={() => void download()}
             >
-              {downloaded ? '安装包已下载' : '下载并校验 Worker 安装包'}
+              {downloaded ? '安装程序已下载，请运行' : '下载安装程序'}
             </Button>
-            {pairing ? (
-              <div className="rounded-lg bg-stone-100 p-3 text-xs text-stone-600">
-                <div className="mb-1 flex items-center gap-1.5 font-medium text-stone-800">
-                  <LinkOutlined /> 安装后绑定此账号
-                </div>
-                <Typography.Text copyable className="block font-mono text-base">
-                  {pairing.code}
-                </Typography.Text>
-                <code className="mt-2 block break-all">
-                  threadforge-worker pair --server {workerServer} --code {pairing.code}
-                </code>
-              </div>
+            {downloaded ? (
+              <Alert
+                type="success"
+                showIcon
+                message="安装完成后返回此页面，点击下方按钮即可自动绑定当前账号。"
+              />
+            ) : null}
+            {downloaded ? (
+              <Button type="primary" block icon={<PoweroffOutlined />} onClick={() => void pairAndWait()}>
+                安装完成，连接本机
+              </Button>
             ) : null}
             <Button block icon={<PoweroffOutlined />} onClick={() => void wakeAndWait()}>
               已安装，重新唤醒

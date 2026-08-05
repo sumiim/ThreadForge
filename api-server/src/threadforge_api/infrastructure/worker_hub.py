@@ -558,12 +558,18 @@ class WorkerHub:
         capabilities = _parse_capabilities(message.get("capabilities", []))
         version = _parse_worker_version(message.get("version", ""))
         protocol_version = _parse_protocol_version(message.get("protocol_version", 0))
+        platform = _parse_platform_value(message.get("platform", "unknown"), "platform")
+        architecture = _parse_platform_value(
+            message.get("architecture", "unknown"), "architecture"
+        )
         connection.device = self._devices.update_presence(
             connection.device.device_id,
             model=str(message.get("model", "")),
             model_configured=bool(message.get("model_configured", False)),
             version=version,
             protocol_version=protocol_version,
+            platform=platform,
+            architecture=architecture,
             capabilities=capabilities,
             workspaces=workspaces,
         )
@@ -705,6 +711,8 @@ class WorkerHub:
                 model_configured=True,
                 version=connection.device.version,
                 protocol_version=connection.device.protocol_version,
+                platform=connection.device.platform,
+                architecture=connection.device.architecture,
                 capabilities=connection.device.capabilities,
                 workspaces=connection.device.workspaces,
             )
@@ -786,6 +794,8 @@ class WorkerHub:
             model_configured=connection.device.model_configured,
             version=connection.device.version,
             protocol_version=connection.device.protocol_version,
+            platform=connection.device.platform,
+            architecture=connection.device.architecture,
             capabilities=connection.device.capabilities,
             workspaces=workspaces,
         )
@@ -1114,6 +1124,13 @@ def _parse_protocol_version(raw_version) -> int:
     if not 1 <= raw_version <= 1000:
         raise WorkerProtocolError("protocol_version is unsupported")
     return raw_version
+
+
+def _parse_platform_value(raw_value, field: str) -> str:
+    value = str(raw_value).strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,31}", value):
+        raise WorkerProtocolError(f"{field} is invalid")
+    return value
 
 
 def _parse_session_summary(raw, workspace_ids: set[str]) -> dict:

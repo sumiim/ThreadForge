@@ -65,6 +65,8 @@ def list_devices(
                 "model_configured": device.model_configured,
                 "version": device.version,
                 "protocol_version": device.protocol_version,
+                "platform": device.platform,
+                "architecture": device.architecture,
                 "compatible": device.protocol_version == WORKER_PROTOCOL_VERSION,
                 "capabilities": device.capabilities,
                 "created_at": device.created_at,

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import platform
+import re
+from urllib.parse import parse_qs, urlsplit
 
 from .client import WorkerClient, _validated_server_url, pair
 from .config import ConfigStore
@@ -28,6 +30,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("run", help="connect to ThreadForge and execute assigned tasks")
     subparsers.add_parser("service", help="run the per-user Worker Companion service")
+    protocol = subparsers.add_parser("protocol", help="handle a trusted threadforge:// link")
+    protocol.add_argument("uri")
     subparsers.add_parser("status", help="show non-secret local Worker configuration")
     update = subparsers.add_parser("update", help="verify and install the latest signed Worker release")
     update.add_argument("--check", action="store_true", help="check without installing")
@@ -39,15 +43,24 @@ def main(argv=None) -> int:
     store = ConfigStore(args.data_dir)
     config = store.load()
     if args.command == "pair":
-        result = pair(args.server, args.code, args.name)
-        config.server_url = _validated_server_url(args.server)
-        config.device_id = result["device_id"]
-        config.device_token = result["device_token"]
-        config.device_name = result["name"]
-        store.save(config)
+        _pair_and_save(store, config, args.server, args.code, args.name)
         print(f"Paired device: {config.device_name} ({config.device_id})")
         from .service import start_service_background
 
+        start_service_background(args.data_dir)
+        return 0
+    if args.command == "protocol":
+        action, parameters = _parse_protocol_uri(args.uri)
+        from .service import start_service_background
+
+        if action == "pair":
+            _pair_and_save(
+                store,
+                config,
+                parameters["server"],
+                parameters["code"],
+                parameters.get("name", platform.node() or "My computer"),
+            )
         start_service_background(args.data_dir)
         return 0
     if args.command == "workspace" and args.workspace_command == "add":
@@ -82,6 +95,60 @@ def main(argv=None) -> int:
         return 0
     WorkerClient(store, config).run_forever()
     return 0
+
+
+def _pair_and_save(
+    store: ConfigStore,
+    config,
+    server: str,
+    code: str,
+    name: str,
+) -> None:
+    validated_server = _validated_server_url(server)
+    if not re.fullmatch(r"[0-9A-Fa-f]{4}(?:-[0-9A-Fa-f]{4}){3}", code):
+        raise ValueError("pairing code is invalid")
+    normalized_name = name.strip()
+    if not normalized_name or len(normalized_name) > 100:
+        raise ValueError("device name is invalid")
+    result = pair(validated_server, code, normalized_name)
+    config.server_url = validated_server
+    config.device_id = result["device_id"]
+    config.device_token = result["device_token"]
+    config.device_name = result["name"]
+    store.save(config)
+
+
+def _parse_protocol_uri(uri: str) -> tuple[str, dict[str, str]]:
+    parsed = urlsplit(uri)
+    if (
+        parsed.scheme.lower() != "threadforge"
+        or parsed.netloc.lower() != "worker"
+        or parsed.fragment
+    ):
+        raise ValueError("unsupported ThreadForge link")
+    action = parsed.path.strip("/").lower()
+    allowed = {"start": set(), "pair": {"server", "code", "name"}}
+    if action not in allowed:
+        raise ValueError("unsupported ThreadForge action")
+    raw = (
+        parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
+        if parsed.query
+        else {}
+    )
+    if set(raw) - allowed[action] or any(len(values) != 1 for values in raw.values()):
+        raise ValueError("ThreadForge link contains unsupported parameters")
+    parameters = {key: values[0] for key, values in raw.items()}
+    if action == "start" and parameters:
+        raise ValueError("start link must not contain parameters")
+    if action == "pair":
+        if set(parameters) not in ({"server", "code"}, {"server", "code", "name"}):
+            raise ValueError("pair link is incomplete")
+        _validated_server_url(parameters["server"])
+        if not re.fullmatch(r"[0-9A-Fa-f]{4}(?:-[0-9A-Fa-f]{4}){3}", parameters["code"]):
+            raise ValueError("pairing code is invalid")
+        if "name" in parameters and (not parameters["name"].strip() or len(parameters["name"]) > 100):
+            raise ValueError("device name is invalid")
+    return action, parameters
 
 
 if __name__ == "__main__":

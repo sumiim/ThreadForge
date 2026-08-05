@@ -43,24 +43,11 @@ GitHub OAuth App 的 Authorization callback URL 必须与上面的 callback 完�
 
 首次进入工作台时，前端会检查当前账号是否有在线且协议兼容的 Companion。已绑定但离线时会先尝试唤醒；首次使用、唤醒超时或协议不兼容时，会显示带真实下载进度的安装窗口。下载包由中央服务校验签名清单和制品 SHA-256 后同源转发。
 
-下载的 ZIP 包包含安装脚本与 Pico/Worker wheels。当前安装包仍要求电脑已有 Python 3.12；解压后执行以下命令即可创建用户级命令，不需要管理员权限：
+Windows x86_64 下载的是单个 `threadforge-worker-windows-x86_64.exe`。安装程序内含 Python、Pico、Worker 和全部运行依赖，不要求用户预装 Python、pip 或 PowerShell 模块，也不需要解压或管理员权限。用户只需运行一次安装程序；安装器注册当前用户登录自启动和 `threadforge://` 协议，并在后台启动 Companion。后台不显示常驻窗口，只有收到目录授权请求时才临时打开系统目录选择器。
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-worker.ps1
-```
+安装后回到网页点击“安装完成，连接本机”。网页此时才创建短时一次性配对码，并打开 `threadforge://worker/pair?server=...&code=...`；安装器注册的协议处理器完成绑定并启动后台服务。配对码不会在下载期间提前生成，避免安装耗时导致过期。浏览器出于安全策略可能要求用户确认打开 ThreadForge Worker，这是唯一无法由网页静默跳过的交互。
 
-安装脚本同时注册当前用户的登录自启动项和 `threadforge://worker/start` 协议。后台服务不显示常驻窗口；只有收到目录授权请求时才临时打开系统目录选择器。
-
-重新打开 PowerShell 后，先在已登录网页的“设置 → 本地 Worker”中生成一次性配对码，再执行一次：
-
-```powershell
-threadforge-worker pair `
-  --server https://threadforge.example.com `
-  --code XXXX-XXXX-XXXX-XXXX `
-  --name "我的电脑"
-```
-
-配对成功后会自动启动后台服务。此后可以直接在 Web 或 Electron 的设备卡片点击“添加本地目录”；中央服务向对应 Worker 发出一次性请求，本机用户确认目录后才会注册。CLI 的 `workspace add/list` 保留作诊断和兼容入口。
+此后可以直接在 Web 或 Electron 的设备卡片点击“添加本地目录”；中央服务向对应 Worker 发出一次性请求，本机用户确认目录后才会注册。CLI 的 `pair` 与 `workspace add/list` 只保留作远端设备接入、诊断和兼容入口。
 
 模型配置属于本机 Worker。打开“设置 → 本地 Worker”，在在线设备卡片点击设置图标，填写兼容 OpenAI 的 API 地址、模型和 API Key。配置经当前已认证的 Worker WebSocket 一次性转发，在本机原子写入：
 
@@ -75,8 +62,8 @@ Worker 在启动时读取该 `.env`，在线修改后也立即更新当前进程
 ## 4. 使用流程
 
 1. 用户通过 GitHub 登录 Web 或 Electron。
-2. 用户安装 Worker 并输入一次性配对码；后台服务随当前用户登录自动启动。
-3. 用户在 Web 或 Electron 选择在线设备并点击“添加本地目录”，本机服务弹出原生目录选择器。
+2. 用户运行自包含安装器并在网页点击“连接本机”；一次性配对和后台启动自动完成。
+3. 用户在 Web 或 Electron 选择目标设备并点击“添加本地目录”，该设备上的服务弹出原生目录选择器。
 4. Worker 上线后，本地工作区出现在“新建会话”列表中。
 5. 用户创建 Session；服务器保存不含正文的索引，Worker 在首次运行时创建本地会话文件。
 6. Task 由服务器发给指定 Worker。危险工具需要在任一已登录前端审批，服务器再把精确决策转发给 Worker。
@@ -85,6 +72,8 @@ Worker 在启动时读取该 `.env`，在线修改后也立即更新当前进程
 前端不直接连接 Worker。这样页面关闭、刷新、换设备或同时打开 Web/Desktop 时，仍由服务器保证统一状态、审批归属和事件顺序。
 
 中央 API 是身份、归属、任务状态和审批顺序的事实来源；本地 Worker 是会话正文、模型配置和本地运行产物的事实来源。Worker 离线时中央仍可显示会话索引与任务状态，但正文暂时不可读取。Worker 每次连接会分块同步不含正文的本地会话索引，因此重新配对到另一套 ThreadForge API 后，原有本地历史仍能重新出现在前端。
+
+一个 GitHub 账号可以绑定多台 Worker，每台 Worker 可以授权多个工作区。设备握手上报系统、架构、版本与 capabilities；新建会话时用户选择的是具体设备下的具体工作区，后续 Task 固定路由到该 `device_id + workspace_id`，不会因另一台设备上线而漂移。浏览器只能通过自定义协议唤醒自己所在电脑的 Worker；远端设备需要在目标机器安装并使用网页生成的一次性配对码接入。
 
 从早期预览版升级时，服务器可能已有本地 Worker Session/Task 的正文副本。服务器只有在新版 Worker 上报同一 `session_id`、证明本机副本存在后，才清除对应中央 history、memory、checkpoint、Task input 和 final answer；Worker 尚未上报的唯一副本不会被启动迁移直接删除。
 
@@ -103,13 +92,7 @@ pnpm build:electron
 
 Electron 不拥有目录选择、Worker 进程控制或工作区管理的私有 IPC。Web 与 Electron 都调用中央设备 API，由后台 Worker Service 执行本机操作，因此核心能力保持一致。桌面壳只保留窗口、系统外链和通知等展示层能力。
 
-当前桌面安装包仍要求单独安装 Worker Service：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install-worker.ps1
-```
-
-Worker 独立发布包与 Electron 安装器分开版本化；两种前端仍使用相同中央协议。
+当前桌面安装包仍与 Worker 安装器分开版本化，但两种前端使用相同中央协议和同一个自包含 Worker。后续可以由 Electron 安装器链式安装同一制品，不能维护第二套 Worker Runtime。
 
 ## 6. 协议与安全约束
 
@@ -128,7 +111,7 @@ Worker 独立发布包与 Electron 安装器分开版本化；两种前端仍使
 - 审批 digest 基于脱敏前原始参数计算；持久化 preview 在脱敏后生成。
 - Worker 公共事件使用字段白名单；绝对路径和 `..` 路径不会转发给前端。
 - 目录选择器在用户会话内按需创建；服务器只收到逻辑工作区 ID、名称和 Git 标记，不接收本机绝对路径。
-- `threadforge://worker/start` 只能启动无参数后台服务，不能从网页传入目录、命令或令牌。
+- `threadforge://worker/start` 只能启动无参数后台服务；`threadforge://worker/pair` 只接受 HTTPS/loopback 服务地址、一次性配对码和可选设备名。协议处理器拒绝重复/未知参数、目录、命令、长期令牌和未知动作。
 - Worker 通过 `sessions.updated` 分块同步会话 ID、标题、工作区和消息数，正文不进入该消息；`session.history.get/result` 只在用户打开会话时经当前连接临时传输。
 - Worker 握手上报语义版本、协议版本和 capabilities；前端只把在线且协议兼容的设备视为可用。Companion 上线后在后台检查稳定版，空闲时安装经 Ed25519 签名和 SHA-256 绑定的更新并重启。
 - 本地 Worker Task 的持久化控制记录不包含用户输入和最终回答，也不在服务器创建 Run report/trace；实时 SSE 和为终态竞态保留的答案缓存仅存在内存中，答案缓存最多保留 10 分钟和 512 项。
@@ -136,9 +119,9 @@ Worker 独立发布包与 Electron 安装器分开版本化；两种前端仍使
 
 ## 7. 当前限制
 
-- Windows Worker 通过下载 ZIP 内的脚本安装并注册每用户登录自启动；发布清单已签名，但 PowerShell 脚本本身尚未购买 Authenticode 代码签名证书，Windows 可能显示未知发布者提示。
-- 安装包仍依赖系统已有 Python 3.12，尚未封装 Python Runtime；要面向非开发者发布，应进一步制作 MSIX/NSIS 安装器并签署可执行文件。
-- 首次配对仍使用 CLI；后续可增加签名安装器中的配对向导，但不应在 URL 中携带设备令牌。
+- Windows Worker 已使用 PyInstaller + NSIS 生成自包含、每用户安装器，发布清单已签名；安装器尚未购买 Authenticode 代码签名证书，Windows 仍可能显示未知发布者提示。
+- 稳定版自包含安装器目前只覆盖 Windows x86_64。Linux/macOS Worker 的协议与多设备路由可用，但面向普通用户的对应平台安装器、目标系统冒烟测试及 macOS 签名公证尚未完成。
+- 浏览器不允许网页静默执行下载的程序；首次安装仍需用户主动运行安装器，并可能确认一次自定义协议唤醒提示。
 - Worker 是用户会话内的后台进程而不是 Windows LocalSystem 服务；系统服务运行在 Session 0，无法安全地向当前桌面显示目录选择器。
 - 当前只支持 OpenAI-compatible 模型接口；增加原生 Anthropic 等供应商需要扩展本地模型客户端和配置契约。
 - 服务器只同步会话索引和受限运行事件，不提供任意本地文件上传通道。
