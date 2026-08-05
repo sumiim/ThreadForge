@@ -14,6 +14,7 @@ from pico.features.memory import default_memory_state
 from pico.providers.clients import FakeModelClient
 from pico.session_store import SessionStore
 
+import threadforge_worker.service as service_module
 from threadforge_worker.cli import _parse_protocol_uri
 from threadforge_worker.client import (
     WorkerClient,
@@ -32,6 +33,7 @@ from threadforge_worker.service import (
     ServiceAlreadyRunningError,
     ServiceLock,
     run_service,
+    start_service_background,
 )
 
 
@@ -127,6 +129,29 @@ def test_service_lock_prevents_duplicate_worker_processes(tmp_path):
 
 def test_service_exits_cleanly_before_first_pairing(tmp_path):
     assert run_service(str(tmp_path)) == 0
+
+
+def test_frozen_windows_service_uses_a_fresh_pyinstaller_environment(monkeypatch):
+    popen_calls = []
+
+    monkeypatch.setattr(service_module.sys, "platform", "win32")
+    monkeypatch.setattr(service_module.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(service_module.sys, "executable", r"C:\ThreadForge\worker-service.exe")
+    monkeypatch.setattr(service_module.subprocess, "CREATE_NO_WINDOW", 1, raising=False)
+    monkeypatch.setattr(service_module.subprocess, "DETACHED_PROCESS", 2, raising=False)
+    monkeypatch.setattr(
+        service_module.subprocess,
+        "Popen",
+        lambda command, **kwargs: popen_calls.append((command, kwargs)),
+    )
+    monkeypatch.setenv("_MEIPASS2", r"C:\Users\test\AppData\Local\Temp\_MEIparent")
+
+    start_service_background()
+
+    assert popen_calls[0][0] == [r"C:\ThreadForge\worker-service.exe", "service"]
+    assert popen_calls[0][1]["creationflags"] == 3
+    assert popen_calls[0][1]["env"]["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
+    assert popen_calls[0][1]["env"]["_MEIPASS2"].endswith("_MEIparent")
 
 
 def test_companion_selection_registers_workspace_without_sending_local_path(tmp_path):

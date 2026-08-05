@@ -193,6 +193,7 @@ export default function SessionPanel({
         onSelect={setSelectedWorkspace}
         onCreate={handleCreate}
         onCancel={() => setModalOpen(false)}
+        onOpenSettings={onOpenSettings}
       />
     </div>
   )

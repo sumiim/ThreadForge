@@ -61,6 +61,7 @@ export interface UseSessions {
   mcpServers: McpServerMetadata[]
   loading: boolean
   running: boolean
+  refreshWorkspaces: () => Promise<Workspace[]>
   select: (id: string) => void
   createSession: (workspaceId: string) => void
   sendMessage: (content: string) => void
@@ -100,6 +101,12 @@ export function useSessions(): UseSessions {
     },
     [],
   )
+
+  const refreshWorkspaces = useCallback(async () => {
+    const response = await listWorkspaces()
+    setWorkspaces(response.items)
+    return response.items
+  }, [])
 
   // ---- 本地状态更新辅助 -----------------------------------------------------
 
@@ -622,6 +629,7 @@ export function useSessions(): UseSessions {
     mcpServers,
     loading,
     running,
+    refreshWorkspaces,
     select,
     createSession,
     sendMessage,

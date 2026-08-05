@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -150,6 +151,11 @@ def start_service_background(data_dir: str | None = None) -> None:
     }
     if sys.platform == "win32":
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
+        if frozen:
+            kwargs["env"] = {
+                **os.environ,
+                "PYINSTALLER_RESET_ENVIRONMENT": "1",
+            }
     else:
         kwargs["start_new_session"] = True
     subprocess.Popen(command, **kwargs)
