@@ -10,6 +10,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", required=True)
