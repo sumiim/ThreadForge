@@ -1,20 +1,37 @@
 import { useEffect, useRef, useState } from 'react'
-import { Alert, Button, Modal, Progress, Radio, Tag } from 'antd'
+import { Alert, Button, Modal, Progress, Radio, Spin, Tag } from 'antd'
 import {
   CheckCircleOutlined,
   DownloadOutlined,
+  FolderOpenOutlined,
+  LoadingOutlined,
   PoweroffOutlined,
+  ReloadOutlined,
 } from '@ant-design/icons'
 import {
   createPairingCode,
   downloadWorkerRelease,
   friendlyMessage,
   getLatestWorkerRelease,
+  getWorkspaceSelection,
   listDevices,
+  requestWorkspaceSelection,
 } from '../../api/client'
-import type { Workspace, WorkerReleaseManifest } from '../../api/types'
+import type { Device, Workspace, WorkspaceSelectionRequest, WorkerReleaseManifest } from '../../api/types'
 
 const delay = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds))
+
+const selectionErrors: Record<string, string> = {
+  native_directory_picker_failed: '本机无法打开目录选择窗口，请重新安装最新 Worker',
+  native_directory_picker_unavailable: '本机缺少目录选择组件，请重新安装最新 Worker',
+  selection_busy: '本机已有目录选择窗口等待处理',
+  selection_expired: '目录选择请求已过期',
+  selection_failed: '本机目录选择失败，请重新安装最新 Worker',
+  workspace_registration_failed: '目录已选择，但 Worker 保存工作区失败',
+  worker_disconnected: 'Worker 已断开连接',
+  worker_reconnected: 'Worker 重连后请求已失效，请重新操作',
+  worker_revoked: '设备已被撤销',
+}
 
 interface NewSessionModalProps {
   open: boolean
@@ -27,7 +44,7 @@ interface NewSessionModalProps {
   onWorkspacesChanged?: () => Promise<unknown> | unknown
 }
 
-// 新建会话：选择工作区（GET /api/v1/workspaces 返回的可用工作区）
+// 新建会话同时负责：选择工作区、绑定多台 Worker、目录授权和首次安装。
 export default function NewSessionModal({
   open,
   workspaces,
@@ -40,20 +57,40 @@ export default function NewSessionModal({
 }: NewSessionModalProps) {
   const selectable = workspaces.filter((w) => w.available)
   const value = selected && selectable.some((w) => w.workspace_id === selected) ? selected : undefined
+  const [devices, setDevices] = useState<Device[] | null>(null)
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null)
   const [release, setRelease] = useState<WorkerReleaseManifest | null>(null)
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null)
   const [downloaded, setDownloaded] = useState(false)
   const [error, setError] = useState('')
+  const [selecting, setSelecting] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const operationVersion = useRef(0)
   const noWorkspace = selectable.length === 0
+  const compatibleDevices = (devices ?? []).filter((device) => device.online && device.compatible)
+  const selectedDevice =
+    compatibleDevices.find((device) => device.device_id === selectedDeviceId) ?? compatibleDevices[0] ?? null
 
   useEffect(() => {
-    if (!open || !noWorkspace || release) return
+    if (!open || !noWorkspace || devices !== null) return
     let active = true
-    void getLatestWorkerRelease()
-      .then((manifest) => {
-        if (active) setRelease(manifest)
+    void listDevices()
+      .then(({ items }) => {
+        if (!active) return
+        const compatible = items.filter((device) => device.online && device.compatible)
+        setDevices(items)
+        setSelectedDeviceId((current) =>
+          compatible.some((device) => device.device_id === current) ? current : (compatible[0]?.device_id ?? null),
+        )
+        if (compatible.length === 0 && !release) {
+          void getLatestWorkerRelease()
+            .then((manifest) => {
+              if (active) setRelease(manifest)
+            })
+            .catch((cause: unknown) => {
+              if (active) setError(friendlyMessage(cause))
+            })
+        }
       })
       .catch((cause: unknown) => {
         if (active) setError(friendlyMessage(cause))
@@ -61,19 +98,29 @@ export default function NewSessionModal({
     return () => {
       active = false
     }
-  }, [open, noWorkspace, release])
+  }, [devices, noWorkspace, open, release])
 
-  const resetDownloadState = () => {
+  const resetState = () => {
     operationVersion.current += 1
-    setConnecting(false)
+    setDevices(null)
+    setSelectedDeviceId(null)
+    setRelease(null)
     setDownloadProgress(null)
     setDownloaded(false)
+    setSelecting(false)
+    setConnecting(false)
     setError('')
   }
 
   const handleCancel = () => {
-    resetDownloadState()
+    resetState()
     onCancel()
+  }
+
+  const refreshDevices = () => {
+    setDevices(null)
+    setSelectedDeviceId(null)
+    setError('')
   }
 
   const download = async () => {
@@ -107,14 +154,15 @@ export default function NewSessionModal({
       const server = window.threadforge?.apiBaseUrl ?? window.location.origin
       const query = new URLSearchParams({ server, code: pairing.code })
       window.location.href = `threadforge://worker/pair?${query.toString()}`
-      const deadline = Date.now() + 10_000
-      while (Date.now() < deadline) {
+      for (let attempt = 0; attempt < 10; attempt += 1) {
         await delay(1_000)
         if (operationVersion.current !== operation) return
-        const devices = (await listDevices()).items
-        if (devices.some((device) => device.online && device.compatible)) {
+        const items = (await listDevices()).items
+        const device = items.find((item) => item.online && item.compatible)
+        if (device) {
+          setDevices(items)
+          setSelectedDeviceId(device.device_id)
           await onWorkspacesChanged?.()
-          handleCancel()
           return
         }
       }
@@ -126,6 +174,100 @@ export default function NewSessionModal({
     }
   }
 
+  const selectWorkspace = async () => {
+    if (!selectedDevice) return
+    const operation = operationVersion.current + 1
+    operationVersion.current = operation
+    setSelecting(true)
+    setError('')
+    try {
+      let request: WorkspaceSelectionRequest = await requestWorkspaceSelection(selectedDevice.device_id)
+      let attempts = 0
+      while (request.status === 'pending' && attempts < 122) {
+        attempts += 1
+        await delay(1_000)
+        if (operationVersion.current !== operation) return
+        request = await getWorkspaceSelection(selectedDevice.device_id, request.request_id)
+      }
+      if (operationVersion.current !== operation) return
+      if (request.status === 'completed') {
+        await onWorkspacesChanged?.()
+        return
+      }
+      if (request.status === 'cancelled') {
+        setError('已取消目录选择')
+      } else {
+        setError(selectionErrors[request.error ?? ''] ?? '目录选择请求未完成')
+      }
+    } catch (cause) {
+      if (operationVersion.current === operation) setError(friendlyMessage(cause))
+    } finally {
+      if (operationVersion.current === operation) setSelecting(false)
+    }
+  }
+
+  const renderDownloadPanel = () => (
+    <div className="space-y-3 rounded-lg border border-stone-200 px-3 py-4">
+      <Alert
+        type="info"
+        showIcon
+        message="没有可用的兼容 Worker"
+        description="请安装或更新本机 Worker。安装程序自带运行环境，不需要单独安装 Python。"
+      />
+      {error ? <Alert type="error" showIcon message={error} /> : null}
+      {devices?.some((device) => device.online && !device.compatible) ? (
+        <Alert type="warning" showIcon message="检测到旧版 Worker，请下载最新版本后重新运行安装程序。" />
+      ) : null}
+      <div className="flex items-center justify-between gap-3 border-b border-stone-200 pb-3">
+        <div>
+          <div className="text-sm font-medium text-stone-800">Windows Worker</div>
+          <div className="mt-1 text-xs text-stone-500">
+            {release ? `稳定版 ${release.version}` : error ? '暂时无法读取版本' : '正在读取最新版本'}
+          </div>
+        </div>
+        <Tag color={release ? 'green' : 'default'}>{release ? '清单签名已验证' : '等待清单'}</Tag>
+      </div>
+      {downloadProgress !== null ? (
+        <Progress percent={downloadProgress} status={downloadProgress === 100 ? 'success' : 'active'} />
+      ) : null}
+      <Button
+        type="primary"
+        block
+        icon={downloaded ? <CheckCircleOutlined /> : <DownloadOutlined />}
+        disabled={!release || downloaded || connecting}
+        loading={Boolean(downloadProgress !== null && downloadProgress < 100)}
+        onClick={() => void download()}
+      >
+        {downloaded ? '安装程序已下载，请运行' : '下载安装程序'}
+      </Button>
+      {downloaded ? (
+        <>
+          <Alert
+            type="success"
+            showIcon
+            message="请先运行刚下载的安装程序"
+            description="安装完成后点击下方按钮，网页会生成一次性配对码并连接本机 Worker。"
+          />
+          <Button type="primary" block icon={<PoweroffOutlined />} loading={connecting} onClick={() => void connectWorker()}>
+            安装完成，连接本机
+          </Button>
+        </>
+      ) : null}
+      <Button block icon={<ReloadOutlined />} onClick={refreshDevices}>
+        刷新 Worker 状态
+      </Button>
+      <Button
+        block
+        onClick={() => {
+          handleCancel()
+          onOpenSettings()
+        }}
+      >
+        打开 Worker 设置
+      </Button>
+    </div>
+  )
+
   return (
     <Modal
       title="新建会话"
@@ -135,86 +277,78 @@ export default function NewSessionModal({
       okText="创建"
       cancelText="取消"
       okButtonProps={{ disabled: !value }}
+      width={560}
     >
       <div className="mb-2 text-sm font-medium text-stone-800">工作区</div>
       {selectable.length === 0 ? (
-        <div className="space-y-3 rounded-lg border border-stone-200 px-3 py-4">
-          <Alert
-            type="info"
-            showIcon
-            message="暂无可用工作区"
-            description="需要在本机安装并连接 Worker，然后在 Worker 所在电脑选择一个目录。"
-          />
-          {error ? <Alert type="error" showIcon message={error} /> : null}
-          <div className="flex items-center justify-between gap-3 border-b border-stone-200 pb-3">
-            <div>
-              <div className="text-sm font-medium text-stone-800">Windows Worker</div>
-              <div className="mt-1 text-xs text-stone-500">
-                {release ? `稳定版 ${release.version}` : error ? '暂时无法读取版本' : '正在读取最新版本'}
-              </div>
-            </div>
-            <Tag color={release ? 'green' : 'default'}>
-              {release ? '清单签名已验证' : '等待清单'}
-            </Tag>
+        devices === null ? (
+          <div className="flex min-h-40 flex-col items-center justify-center gap-3 text-center text-xs text-stone-500">
+            <Spin indicator={<LoadingOutlined spin />} />
+            正在检测本账号绑定的 Worker
           </div>
-          <div className="text-xs leading-5 text-stone-600">
-            安装程序已包含 Worker 和完整运行环境，不需要安装 Python 或其他依赖。下载后运行一次即可。
-          </div>
-          {downloadProgress !== null ? (
-            <Progress percent={downloadProgress} status={downloadProgress === 100 ? 'success' : 'active'} />
-          ) : null}
-          <Button
-            type="primary"
-            block
-            icon={downloaded ? <CheckCircleOutlined /> : <DownloadOutlined />}
-            disabled={!release || downloaded || connecting}
-            loading={Boolean(downloadProgress !== null && downloadProgress < 100)}
-            onClick={() => void download()}
-          >
-            {downloaded ? '安装程序已下载，请运行' : '下载安装程序'}
-          </Button>
-          {downloaded ? (
-            <>
-              <Alert
-                type="success"
-                showIcon
-                message="请先运行刚下载的安装程序"
-                description="安装完成后点击下方按钮，网页会生成一次性配对码并连接本机 Worker。"
-              />
-              <Button
-                type="primary"
-                block
-                icon={<PoweroffOutlined />}
-                loading={connecting}
-                onClick={() => void connectWorker()}
+        ) : selectedDevice ? (
+          <div className="space-y-3 rounded-lg border border-stone-200 px-3 py-4">
+            <Alert
+              type="info"
+              showIcon
+              message="请选择要使用的 Worker，并授权一个本地目录"
+              description="每台 Worker 可以绑定多个工作区；后续可以在这里切换不同设备。"
+            />
+            {error ? <Alert type="error" showIcon message={error} /> : null}
+            {compatibleDevices.length > 1 ? (
+              <Radio.Group
+                value={selectedDevice.device_id}
+                onChange={(event) => setSelectedDeviceId(event.target.value as string)}
+                className="flex w-full flex-col gap-2"
               >
-                安装完成，连接本机
-              </Button>
-            </>
-          ) : null}
-          <Button
-            block
-            onClick={() => {
-              handleCancel()
-              onOpenSettings()
-            }}
-          >
-            打开 Worker 设置
-          </Button>
-        </div>
+                {compatibleDevices.map((device) => (
+                  <Radio key={device.device_id} value={device.device_id} className="w-full rounded-lg border border-stone-200 px-3 py-2">
+                    <span className="flex min-w-0 flex-col">
+                      <span className="truncate text-sm font-medium text-stone-800">{device.name}</span>
+                      <span className="text-[11px] text-stone-500">
+                        {device.platform || 'unknown'} / {device.architecture || 'unknown'} · Worker{' '}
+                        {device.version || '版本未知'} · {device.workspaces.length} 个工作区
+                      </span>
+                    </span>
+                  </Radio>
+                ))}
+              </Radio.Group>
+            ) : (
+              <div className="rounded-lg border border-stone-200 px-3 py-3 text-xs text-stone-600">
+                <div className="font-medium text-stone-800">{selectedDevice.name}</div>
+                <div className="mt-1">
+                  {selectedDevice.platform || 'unknown'} / {selectedDevice.architecture || 'unknown'} · Worker{' '}
+                  {selectedDevice.version || '版本未知'} · 尚未授权工作区
+                </div>
+              </div>
+            )}
+            <Button type="primary" block icon={<FolderOpenOutlined />} loading={selecting} onClick={() => void selectWorkspace()}>
+              {selecting ? '等待本机选择目录' : '选择本地目录'}
+            </Button>
+            <Button block icon={<ReloadOutlined />} onClick={refreshDevices}>
+              刷新 Worker 状态
+            </Button>
+          </div>
+        ) : (
+          renderDownloadPanel()
+        )
       ) : (
         <Radio.Group
           value={value}
-          onChange={(e) => onSelect(e.target.value as string)}
+          onChange={(event) => onSelect(event.target.value as string)}
           className="flex w-full flex-col gap-2"
         >
-          {selectable.map((w) => (
-            <Radio key={w.workspace_id} value={w.workspace_id} className="w-full rounded-lg border border-stone-200 px-3 py-2">
+          {selectable.map((workspace) => (
+            <Radio
+              key={workspace.workspace_id}
+              value={workspace.workspace_id}
+              className="w-full rounded-lg border border-stone-200 px-3 py-2"
+            >
               <span className="flex min-w-0 flex-col">
-                <span className="truncate font-mono text-xs text-stone-700">{w.display_path}</span>
+                <span className="truncate font-mono text-xs text-stone-700">{workspace.display_path}</span>
                 <span className="text-[11px] text-stone-400">
-                  {w.execution_environment === 'local_worker'
-                    ? `${w.device_name ?? '本地 Worker'}${w.device_platform ? ` · ${w.device_platform}` : ''}${w.model_configured ? '' : ' · 模型未配置'}`
+                  {workspace.execution_environment === 'local_worker'
+                    ? `${workspace.device_name ?? '本地 Worker'}${workspace.device_platform ? ` · ${workspace.device_platform}` : ''}${workspace.model_configured ? '' : ' · 模型未配置'}`
                     : '服务器工作区'}
                 </span>
               </span>

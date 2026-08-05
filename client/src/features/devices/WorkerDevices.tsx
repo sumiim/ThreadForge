@@ -25,7 +25,7 @@ const delay = (milliseconds: number) => new Promise((resolve) => setTimeout(reso
 const selectionErrors: Record<string, string> = {
   selection_busy: '本机已有目录选择窗口等待处理',
   selection_expired: '目录选择请求已过期',
-  selection_failed: '本机目录选择失败',
+  selection_failed: '本机目录选择失败，请重新下载安装最新 Worker',
   worker_disconnected: 'Worker 已断开连接',
   worker_reconnected: 'Worker 重连后请求已失效，请重新操作',
   worker_revoked: '设备已被撤销',

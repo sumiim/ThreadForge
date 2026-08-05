@@ -28,7 +28,7 @@ const selectionErrors: Record<string, string> = {
   native_directory_picker_unavailable: '本机缺少目录选择组件，请重新安装最新 Worker',
   selection_busy: '本机已有目录选择窗口等待处理',
   selection_expired: '目录选择请求已过期',
-  selection_failed: '本机目录选择失败',
+  selection_failed: '本机目录选择失败，请从“新建会话”窗口重新下载安装最新 Worker',
   workspace_registration_failed: '目录已选择，但 Worker 保存工作区失败',
   worker_disconnected: 'Worker 已断开连接',
   worker_reconnected: 'Worker 重连后请求已失效，请重新操作',
@@ -171,6 +171,7 @@ export default function CompanionGate({ onWorkspacesChanged }: CompanionGateProp
     <Modal
       title="连接本地 Worker Companion"
       open
+      mask={false}
       closable={false}
       maskClosable={false}
       footer={null}
@@ -188,7 +189,8 @@ export default function CompanionGate({ onWorkspacesChanged }: CompanionGateProp
           <div className="rounded-lg border border-stone-200 px-3 py-3 text-xs text-stone-600">
             <div className="font-medium text-stone-800">{workspaceDevice.name}</div>
             <div className="mt-1">
-              {workspaceDevice.platform || 'unknown'} / {workspaceDevice.architecture || 'unknown'} · 尚未授权工作区
+              {workspaceDevice.platform || 'unknown'} / {workspaceDevice.architecture || 'unknown'} · Worker{' '}
+              {workspaceDevice.version || '版本未知'} · 尚未授权工作区
             </div>
           </div>
         ) : null}
