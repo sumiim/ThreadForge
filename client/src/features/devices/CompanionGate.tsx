@@ -3,25 +3,50 @@ import { Alert, Button, Modal, Progress, Spin, Tag } from 'antd'
 import {
   CheckCircleOutlined,
   DownloadOutlined,
+  FolderOpenOutlined,
   LoadingOutlined,
   PoweroffOutlined,
+  ReloadOutlined,
 } from '@ant-design/icons'
 import {
   createPairingCode,
   downloadWorkerRelease,
   friendlyMessage,
   getLatestWorkerRelease,
+  getWorkspaceSelection,
   listDevices,
+  requestWorkspaceSelection,
 } from '../../api/client'
-import type { Device, WorkerReleaseManifest } from '../../api/types'
+import type { Device, WorkspaceSelectionRequest, WorkerReleaseManifest } from '../../api/types'
 
 const WAKE_TIMEOUT_MS = 8_000
 const delay = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds))
-type GateState = 'checking' | 'waking' | 'connected' | 'download'
 
-export default function CompanionGate() {
+type GateState = 'checking' | 'waking' | 'workspace' | 'connected' | 'download'
+
+interface CompanionGateProps {
+  onWorkspacesChanged?: () => Promise<unknown> | unknown
+}
+
+interface ProbeResult {
+  items: Device[]
+  device: Device | null
+}
+
+const selectionErrors: Record<string, string> = {
+  selection_busy: '本机已有目录选择窗口等待处理',
+  selection_expired: '目录选择请求已过期',
+  selection_failed: '本机目录选择失败',
+  worker_disconnected: 'Worker 已断开连接',
+  worker_reconnected: 'Worker 重连后请求已失效，请重新操作',
+  worker_revoked: '设备已被撤销',
+}
+
+export default function CompanionGate({ onWorkspacesChanged }: CompanionGateProps) {
   const [state, setState] = useState<GateState>('checking')
   const [devices, setDevices] = useState<Device[]>([])
+  const [workspaceDevice, setWorkspaceDevice] = useState<Device | null>(null)
+  const [selecting, setSelecting] = useState(false)
   const [release, setRelease] = useState<WorkerReleaseManifest | null>(null)
   const [error, setError] = useState('')
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null)
@@ -39,30 +64,81 @@ export default function CompanionGate() {
     }
   }, [])
 
-  const probe = useCallback(async (expectedVersion = operationVersion.current) => {
-    const result = (await listDevices()).items
-    if (operationVersion.current !== expectedVersion) return false
-    setDevices(result)
-    const connected = result.some((device) => device.online && device.compatible)
-    if (connected) {
-      setState('connected')
+  const probe = useCallback(async (expectedVersion = operationVersion.current): Promise<ProbeResult> => {
+    const items = (await listDevices()).items
+    const device = items.find((item) => item.online && item.compatible) ?? null
+    if (operationVersion.current !== expectedVersion) return { items, device: null }
+
+    setDevices(items)
+    setWorkspaceDevice(device)
+    if (device) {
+      setState(device.workspaces.length > 0 ? 'connected' : 'workspace')
       setError('')
     }
-    return connected
+    return { items, device }
   }, [])
 
-  const waitForConnection = useCallback(async (operation: number) => {
-    const deadline = Date.now() + WAKE_TIMEOUT_MS
-    while (operationVersion.current === operation && Date.now() < deadline) {
-      await delay(1_000)
-      try {
-        if (await probe(operation)) return true
-      } catch {
-        // Keep polling through a transient central API error.
+  const waitForConnection = useCallback(
+    async (operation: number): Promise<Device | null> => {
+      const deadline = Date.now() + WAKE_TIMEOUT_MS
+      while (operationVersion.current === operation && Date.now() < deadline) {
+        await delay(1_000)
+        try {
+          const result = await probe(operation)
+          if (result.device) return result.device
+        } catch {
+          // Keep polling through a transient central API error.
+        }
       }
-    }
-    return false
-  }, [probe])
+      return null
+    },
+    [probe],
+  )
+
+  const runWorkspaceSelection = useCallback(
+    async (deviceId: string, operation: number): Promise<boolean> => {
+      if (operationVersion.current !== operation) return false
+      setSelecting(true)
+      setError('')
+      try {
+        let request: WorkspaceSelectionRequest = await requestWorkspaceSelection(deviceId)
+        const deadline = new Date(request.expires_at).getTime() + 2_000
+        while (request.status === 'pending' && Date.now() < deadline) {
+          await delay(1_000)
+          if (operationVersion.current !== operation) return false
+          request = await getWorkspaceSelection(deviceId, request.request_id)
+        }
+        if (operationVersion.current !== operation) return false
+        if (request.status === 'completed') {
+          await onWorkspacesChanged?.()
+          await probe(operation)
+          return true
+        }
+        if (request.status === 'cancelled') {
+          setError('已取消目录选择')
+        } else {
+          setError(selectionErrors[request.error ?? ''] ?? '目录选择请求未完成')
+        }
+        setState('workspace')
+        return false
+      } catch (cause) {
+        if (operationVersion.current === operation) {
+          setError(friendlyMessage(cause))
+          setState('workspace')
+        }
+        return false
+      } finally {
+        if (operationVersion.current === operation) setSelecting(false)
+      }
+    },
+    [onWorkspacesChanged, probe],
+  )
+
+  const selectWorkspace = async (deviceId: string) => {
+    const operation = operationVersion.current + 1
+    operationVersion.current = operation
+    await runWorkspaceSelection(deviceId, operation)
+  }
 
   const wakeAndWait = useCallback(async () => {
     const operation = operationVersion.current + 1
@@ -78,13 +154,10 @@ export default function CompanionGate() {
   useEffect(() => {
     const operation = operationVersion.current + 1
     operationVersion.current = operation
-    void listDevices()
-      .then(async ({ items }) => {
-        if (operationVersion.current !== operation) return
-        setDevices(items)
-        if (items.some((device) => device.online && device.compatible)) {
-          setState('connected')
-        } else if (items.length === 0 || items.some((device) => device.online && !device.compatible)) {
+    void probe(operation)
+      .then(async ({ items, device }) => {
+        if (operationVersion.current !== operation || device) return
+        if (items.length === 0 || items.some((item) => item.online && !item.compatible)) {
           setState('download')
           await loadRelease()
         } else {
@@ -92,19 +165,33 @@ export default function CompanionGate() {
         }
       })
       .catch((cause: unknown) => {
+        if (operationVersion.current !== operation) return
         setError(friendlyMessage(cause))
         setState('download')
       })
     return () => {
       operationVersion.current += 1
     }
-  }, [loadRelease, wakeAndWait])
+  }, [loadRelease, probe, wakeAndWait])
 
   useEffect(() => {
-    if (state !== 'download') return
-    const timer = window.setInterval(() => void probe().catch(() => undefined), 3_000)
+    if (state !== 'download' && state !== 'workspace') return
+    const timer = window.setInterval(() => {
+      if (selecting) return
+      void probe()
+        .then(({ items, device }) => {
+          if (device || state !== 'workspace' || operationVersion.current === 0) return
+          if (items.length === 0 || items.some((item) => item.online && !item.compatible)) {
+            setState('download')
+            void loadRelease()
+          } else {
+            void wakeAndWait()
+          }
+        })
+        .catch(() => undefined)
+    }, 3_000)
     return () => window.clearInterval(timer)
-  }, [probe, state])
+  }, [loadRelease, probe, selecting, state, wakeAndWait])
 
   const download = async () => {
     try {
@@ -136,9 +223,14 @@ export default function CompanionGate() {
       setState('waking')
       const query = new URLSearchParams({ server: workerServer, code: pairing.code })
       window.location.href = `threadforge://worker/pair?${query.toString()}`
-      if (!(await waitForConnection(operation)) && operationVersion.current === operation) {
+      const device = await waitForConnection(operation)
+      if (!device && operationVersion.current === operation) {
         setError('未能连接 Companion。请确认安装程序已运行完成，再重新连接。')
         setState('download')
+        return
+      }
+      if (device && device.workspaces.length === 0) {
+        await runWorkspaceSelection(device.device_id, operation)
       }
     } catch (cause) {
       if (operationVersion.current === operation) {
@@ -170,6 +262,39 @@ export default function CompanionGate() {
               <div className="mt-1 text-xs text-stone-500">连接成功后会自动进入工作台</div>
             </div>
           </div>
+        ) : state === 'workspace' ? (
+          <>
+            <Alert
+              type="info"
+              showIcon
+              message="Worker 已连接，请授权一个本地工作区"
+              description="目录选择窗口会在 Worker 所在的电脑上打开，网页不会读取或上传真实路径。"
+            />
+            {error ? <Alert type="error" showIcon message={error} /> : null}
+            {workspaceDevice ? (
+              <div className="rounded-lg border border-stone-200 px-3 py-3 text-xs text-stone-600">
+                <div className="font-medium text-stone-800">{workspaceDevice.name}</div>
+                <div className="mt-1">
+                  {workspaceDevice.platform || 'unknown'} / {workspaceDevice.architecture || 'unknown'} · 尚未授权工作区
+                </div>
+              </div>
+            ) : null}
+            <Button
+              type="primary"
+              block
+              icon={<FolderOpenOutlined />}
+              loading={selecting}
+              disabled={!workspaceDevice}
+              onClick={() => {
+                if (workspaceDevice) void selectWorkspace(workspaceDevice.device_id)
+              }}
+            >
+              {selecting ? '等待本机选择目录' : '选择本地目录'}
+            </Button>
+            <Button block icon={<ReloadOutlined />} onClick={() => void probe()}>
+              刷新连接状态
+            </Button>
+          </>
         ) : (
           <>
             <Alert
@@ -185,7 +310,9 @@ export default function CompanionGate() {
                   {release ? `稳定版 ${release.version}` : '正在读取最新版本'}
                 </div>
               </div>
-              <Tag color={release ? 'green' : 'default'}>{release ? '签名版本' : '等待清单'}</Tag>
+              <Tag color={release ? 'green' : 'default'}>
+                {release ? '清单签名已验证' : '等待清单'}
+              </Tag>
             </div>
             <div className="text-xs leading-5 text-stone-600">
               安装程序已包含 Worker 和完整运行环境，不需要安装 Python 或其他依赖。下载后只需运行一次。

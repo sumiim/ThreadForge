@@ -38,6 +38,7 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
     skills,
     mcpServers,
     running,
+    refreshWorkspaces,
     select,
     createSession,
     sendMessage,
@@ -68,7 +69,9 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
     // 主题 ConfigProvider：antd 组件随亮/暗切换；Tailwind 侧由 .dark 类变量色板接管
     <ConfigProvider theme={mode === 'dark' ? darkThemeConfig : themeConfig}>
       <Layout className="h-screen">
-        {auth.identity_mode === 'github_oauth' ? <CompanionGate /> : null}
+        {auth.identity_mode === 'github_oauth' ? (
+          <CompanionGate onWorkspacesChanged={refreshWorkspaces} />
+        ) : null}
         <Sider
           width={280}
           theme={mode === 'dark' ? 'dark' : 'light'}

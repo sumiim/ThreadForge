@@ -1,4 +1,4 @@
-import { Modal, Radio } from 'antd'
+import { Button, Modal, Radio } from 'antd'
 import type { Workspace } from '../../api/types'
 
 interface NewSessionModalProps {
@@ -8,6 +8,7 @@ interface NewSessionModalProps {
   onSelect: (workspaceId: string) => void
   onCreate: () => void
   onCancel: () => void
+  onOpenSettings: () => void
 }
 
 // 新建会话：选择工作区（GET /api/v1/workspaces 返回的可用工作区）
@@ -18,6 +19,7 @@ export default function NewSessionModal({
   onSelect,
   onCreate,
   onCancel,
+  onOpenSettings,
 }: NewSessionModalProps) {
   const selectable = workspaces.filter((w) => w.available)
   const value = selected && selectable.some((w) => w.workspace_id === selected) ? selected : undefined
@@ -34,8 +36,17 @@ export default function NewSessionModal({
     >
       <div className="mb-2 text-sm font-medium text-stone-800">工作区</div>
       {selectable.length === 0 ? (
-        <div className="rounded-lg border border-stone-200 px-3 py-4 text-center text-xs text-stone-500">
-          后端未返回可用工作区，请检查 api-server 配置
+        <div className="flex flex-col items-center gap-3 rounded-lg border border-stone-200 px-3 py-4 text-center text-xs text-stone-500">
+          <span>暂无可用工作区，请先连接 Worker 并授权一个本地目录。</span>
+          <Button
+            size="small"
+            onClick={() => {
+              onCancel()
+              onOpenSettings()
+            }}
+          >
+            打开 Worker 设置
+          </Button>
         </div>
       ) : (
         <Radio.Group
