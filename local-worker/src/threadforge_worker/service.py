@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import ctypes
+import logging
 import os
 import subprocess
 import sys
+from contextlib import contextmanager
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from .auto_update import run_auto_update_loop
@@ -14,6 +18,26 @@ from .config import ConfigStore
 
 class ServiceAlreadyRunningError(RuntimeError):
     pass
+
+
+def configure_worker_logging(root: Path) -> None:
+    """Keep bounded diagnostics on the Worker machine, never on the server."""
+    root.mkdir(parents=True, exist_ok=True)
+    log_path = (root / "worker.log").resolve()
+    logger = logging.getLogger("threadforge_worker")
+    for handler in logger.handlers:
+        if isinstance(handler, RotatingFileHandler) and Path(handler.baseFilename) == log_path:
+            return
+    handler = RotatingFileHandler(
+        log_path,
+        maxBytes=512 * 1024,
+        backupCount=2,
+        encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 
 class ServiceLock:
@@ -111,32 +135,46 @@ def _select_directory_windows() -> str | None:
     shell32.SHGetPathFromIDListW.argtypes = [ctypes.c_void_p, wintypes.LPWSTR]
     shell32.SHGetPathFromIDListW.restype = wintypes.BOOL
     ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    with _ole_apartment(ole32):
+        display_name = ctypes.create_unicode_buffer(260)
+        browse_info = BrowseInfo(
+            hwnd_owner=0,
+            pidl_root=None,
+            display_name=display_name,
+            title="ThreadForge 请求添加本地工作区",
+            flags=0x0001 | 0x0040,  # BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE
+            callback=None,
+            lparam=0,
+            image=0,
+        )
+        item_id_list = shell32.SHBrowseForFolderW(ctypes.byref(browse_info))
+        if not item_id_list:
+            return None
+        try:
+            selected_path = ctypes.create_unicode_buffer(32768)
+            if not shell32.SHGetPathFromIDListW(item_id_list, selected_path):
+                raise RuntimeError("native_directory_picker_failed")
+            return selected_path.value or None
+        finally:
+            ole32.CoTaskMemFree(item_id_list)
 
-    display_name = ctypes.create_unicode_buffer(260)
-    browse_info = BrowseInfo(
-        hwnd_owner=0,
-        pidl_root=None,
-        display_name=display_name,
-        title="ThreadForge 请求添加本地工作区",
-        flags=0x0001 | 0x0040,  # BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE
-        callback=None,
-        lparam=0,
-        image=0,
-    )
-    item_id_list = shell32.SHBrowseForFolderW(ctypes.byref(browse_info))
-    if not item_id_list:
-        return None
+
+@contextmanager
+def _ole_apartment(ole32):
+    ole32.OleInitialize.argtypes = [ctypes.c_void_p]
+    ole32.OleInitialize.restype = ctypes.c_long
+    result = int(ole32.OleInitialize(None))
+    if result not in {0, 1}:
+        raise RuntimeError("native_directory_picker_failed")
     try:
-        selected_path = ctypes.create_unicode_buffer(32768)
-        if not shell32.SHGetPathFromIDListW(item_id_list, selected_path):
-            raise RuntimeError("native_directory_picker_failed")
-        return selected_path.value or None
+        yield
     finally:
-        ole32.CoTaskMemFree(item_id_list)
+        ole32.OleUninitialize()
 
 
 def run_service(data_dir: str | None = None) -> int:
     store = ConfigStore(data_dir)
+    configure_worker_logging(store.root)
     store.load_model_env()
     config = store.load()
     if not config.device_id or not config.device_token:

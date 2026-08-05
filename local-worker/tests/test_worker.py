@@ -17,6 +17,7 @@ from websockets.datastructures import Headers
 from websockets.exceptions import InvalidStatus
 from websockets.http11 import Response
 
+import threadforge_worker.config as config_module
 import threadforge_worker.service as service_module
 from threadforge_worker.auto_update import run_auto_update_loop
 from threadforge_worker.cli import _parse_protocol_uri
@@ -26,7 +27,13 @@ from threadforge_worker.client import (
     _validated_server_url,
     _websocket_url,
 )
-from threadforge_worker.config import ConfigStore, LocalWorkspace, WorkerConfig
+from threadforge_worker.config import (
+    ConfigStore,
+    LocalWorkspace,
+    WorkerConfig,
+    WorkspaceConfigWriteError,
+    WorkspacePathError,
+)
 from threadforge_worker.runtime import (
     ActiveRun,
     CancellationToken,
@@ -96,6 +103,47 @@ def test_workspace_registration_uses_canonical_directory(tmp_path):
     assert store.remove_workspace(config, workspace.workspace_id) is True
     assert config.workspaces == []
     assert store.remove_workspace(config, workspace.workspace_id) is False
+
+
+def test_config_save_retries_a_transient_replace_lock(tmp_path, monkeypatch):
+    store = ConfigStore(tmp_path / "state")
+    original_replace = config_module.Path.replace
+    attempts = []
+
+    def replace(source, target):
+        if config_module.Path(target) == store.path:
+            attempts.append(target)
+            if len(attempts) < 3:
+                raise PermissionError("temporarily locked")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(config_module.Path, "replace", replace)
+    monkeypatch.setattr(config_module.time, "sleep", lambda _delay: None)
+
+    store.save(WorkerConfig())
+
+    assert len(attempts) == 3
+    assert store.path.is_file()
+
+
+def test_workspace_registration_rolls_back_after_config_write_failure(tmp_path, monkeypatch):
+    store = ConfigStore(tmp_path / "state")
+    config = WorkerConfig()
+    workspace_root = tmp_path / "repo"
+    workspace_root.mkdir()
+    monkeypatch.setattr(store, "save", lambda _config: (_ for _ in ()).throw(PermissionError()))
+
+    with pytest.raises(WorkspaceConfigWriteError):
+        store.add_workspace(config, str(workspace_root))
+
+    assert config.workspaces == []
+
+
+def test_workspace_registration_rejects_an_unavailable_path(tmp_path):
+    store = ConfigStore(tmp_path / "state")
+
+    with pytest.raises(WorkspacePathError):
+        store.add_workspace(WorkerConfig(), str(tmp_path / "missing"))
 
 
 def test_model_configuration_is_written_to_worker_env_and_loaded(tmp_path):
@@ -266,6 +314,29 @@ def test_windows_directory_selection_uses_native_picker(monkeypatch):
     assert select_directory() == r"C:\repo"
 
 
+def test_ole_apartment_is_released_after_directory_selection():
+    events = []
+
+    class Function:
+        def __init__(self, result=None):
+            self.result = result
+            self.argtypes = None
+            self.restype = None
+
+        def __call__(self, *_args):
+            events.append(self.result)
+            return self.result
+
+    class Ole32:
+        OleInitialize = Function(0)
+        OleUninitialize = Function()
+
+    with service_module._ole_apartment(Ole32()):
+        events.append("selected")
+
+    assert events == [0, "selected", None]
+
+
 def test_companion_selection_registers_workspace_without_sending_local_path(tmp_path):
     store = ConfigStore(tmp_path / "state")
     config = WorkerConfig()
@@ -317,6 +388,40 @@ def test_companion_selection_reuses_live_config_when_store_reload_is_unavailable
         time.sleep(0.01)
     assert messages[0]["status"] == "selected"
     assert config.workspaces[0].path == str(workspace_root.resolve())
+
+
+@pytest.mark.parametrize(
+    ("exception", "expected_error"),
+    [
+        (WorkspacePathError("missing"), "workspace_path_unavailable"),
+        (WorkspaceConfigWriteError("locked"), "workspace_config_write_failed"),
+    ],
+)
+def test_companion_selection_reports_stable_workspace_errors(
+    tmp_path, monkeypatch, exception, expected_error
+):
+    messages = []
+
+    class Socket:
+        def send(self, raw):
+            messages.append(json.loads(raw))
+
+    store = ConfigStore(tmp_path / "state")
+    monkeypatch.setattr(
+        store,
+        "add_workspace",
+        lambda _config, _path: (_ for _ in ()).throw(exception),
+    )
+    client = WorkerClient(store, WorkerConfig(), workspace_selector=lambda: str(tmp_path))
+    client._socket = Socket()
+    client._handle({"type": "workspace.select", "request_id": "wsel_error"})
+
+    deadline = time.monotonic() + 1
+    while not messages and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert messages[0]["status"] == "failed"
+    assert messages[0]["error"] == expected_error
 
 
 def test_worker_rejects_new_task_while_update_is_installing(tmp_path):
