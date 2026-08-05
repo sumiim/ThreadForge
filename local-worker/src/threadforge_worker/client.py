@@ -374,7 +374,10 @@ class WorkerClient:
             if not selected_path:
                 self._send_workspace_selection_result(request_id, "cancelled")
                 return
-            config = self.store.load()
+            # Reuse the configuration that was loaded by this live service.
+            # Reading worker.json again here races with installer/reconnect
+            # activity and can fail while the service is still healthy.
+            config = self.config
             workspace = self.store.add_workspace(config, selected_path)
             self.config = config
             self._send_workspace_selection_result(

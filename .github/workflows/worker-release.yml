@@ -65,6 +65,10 @@ jobs:
           if ($process.ExitCode -ne 0) {
             throw "Worker installer exited with $($process.ExitCode)"
           }
+          $upgrade = Start-Process -FilePath $installer -ArgumentList "/S" -Wait -PassThru
+          if ($upgrade.ExitCode -ne 0) {
+            throw "Worker upgrade exited with $($upgrade.ExitCode)"
+          }
           $worker = Join-Path $env:LOCALAPPDATA "ThreadForge\WorkerApp\threadforge-worker.exe"
           $service = Join-Path $env:LOCALAPPDATA "ThreadForge\WorkerApp\threadforge-worker-service.exe"
           if (-not (Test-Path -LiteralPath $worker)) {

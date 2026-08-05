@@ -37,8 +37,12 @@ interface ErrorBody {
   error?: { code?: string; message?: string; details?: Record<string, unknown> }
 }
 
+const API_REQUEST_TIMEOUT_MS = 15_000
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response
+  const controller = new AbortController()
+  const timeout = globalThis.setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS)
   try {
     const method = (init?.method ?? 'GET').toUpperCase()
     const headers = new Headers(init?.headers)
@@ -48,9 +52,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...init,
       credentials: 'include',
       headers,
+      signal: controller.signal,
     })
-  } catch {
+  } catch (cause) {
+    if ((cause as { name?: string })?.name === 'AbortError') {
+      throw new ApiError('api-server request timed out', 'request_timeout', 0)
+    }
     throw new ApiError('无法连接 api-server，请确认后端已启动', 'network_error', 0)
+  } finally {
+    globalThis.clearTimeout(timeout)
   }
   if (!response.ok) {
     let code = 'unknown_error'
@@ -73,6 +83,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 // 后端错误码 -> 前端可读文案
 const errorText: Record<string, string> = {
+  request_timeout: 'api-server 响应超时，请检查公网入口后重试',
   network_error: '无法连接 api-server，请确认后端已启动',
   model_not_configured: '当前执行环境未配置模型，请先完成模型设置',
   active_task_exists: '已有任务在运行，请等待完成或先停止',
@@ -171,8 +182,25 @@ export function configureWorkerModel(
   })
 }
 
-export function getLatestWorkerRelease(): Promise<WorkerReleaseManifest> {
-  return request('/api/v1/worker/releases/latest')
+const WORKER_RELEASE_CACHE_MS = 30_000
+let workerReleaseCache: { manifest: WorkerReleaseManifest; expiresAt: number } | null = null
+let workerReleaseRequest: Promise<WorkerReleaseManifest> | null = null
+
+export function getLatestWorkerRelease(options?: { force?: boolean }): Promise<WorkerReleaseManifest> {
+  const force = options?.force ?? false
+  if (!force && workerReleaseCache && workerReleaseCache.expiresAt > Date.now()) {
+    return Promise.resolve(workerReleaseCache.manifest)
+  }
+  if (workerReleaseRequest) return workerReleaseRequest
+  workerReleaseRequest = request<WorkerReleaseManifest>('/api/v1/worker/releases/latest')
+    .then((manifest) => {
+      workerReleaseCache = { manifest, expiresAt: Date.now() + WORKER_RELEASE_CACHE_MS }
+      return manifest
+    })
+    .finally(() => {
+      workerReleaseRequest = null
+    })
+  return workerReleaseRequest
 }
 
 export async function downloadWorkerRelease(

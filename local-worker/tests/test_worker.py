@@ -255,6 +255,29 @@ def test_companion_selection_registers_workspace_without_sending_local_path(tmp_
     assert str(workspace_root) not in json.dumps(result)
 
 
+def test_companion_selection_reuses_live_config_when_store_reload_is_unavailable(tmp_path, monkeypatch):
+    store = ConfigStore(tmp_path / "state")
+    config = WorkerConfig()
+    workspace_root = tmp_path / "repo"
+    workspace_root.mkdir()
+    messages = []
+
+    class Socket:
+        def send(self, raw):
+            messages.append(json.loads(raw))
+
+    client = WorkerClient(store, config, workspace_selector=lambda: str(workspace_root))
+    client._socket = Socket()
+    monkeypatch.setattr(store, "load", lambda: (_ for _ in ()).throw(RuntimeError("reload race")))
+    client._handle({"type": "workspace.select", "request_id": "wsel_live_config"})
+
+    deadline = time.monotonic() + 1
+    while not messages and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert messages[0]["status"] == "selected"
+    assert config.workspaces[0].path == str(workspace_root.resolve())
+
+
 def test_worker_rejects_new_task_while_update_is_installing(tmp_path):
     messages = []
 

@@ -28,11 +28,21 @@ Section "Install"
   nsExec::ExecToStack 'taskkill /F /IM threadforge-worker.exe'
   Pop $0
   Pop $1
-  Sleep 300
   nsExec::ExecToStack 'taskkill /F /IM threadforge-worker-service.exe'
   Pop $0
   Pop $1
+  Sleep 500
 
+  ; Upgrade through the installed uninstaller so stale binaries, shortcuts,
+  ; protocol handlers and registry values cannot survive the replacement.
+  ; User data lives in $LOCALAPPDATA\ThreadForge\Worker and is intentionally
+  ; outside $INSTDIR, so pairing, workspaces, history and model config remain.
+  IfFileExists "$INSTDIR\uninstall.exe" 0 install_files
+  ExecWait '"$INSTDIR\uninstall.exe" /S _?=$INSTDIR' $0
+  IntCmp $0 0 install_files
+  Abort "Unable to remove the previous ThreadForge Worker installation (exit code $0)."
+
+install_files:
   SetOutPath "$INSTDIR"
   File "/oname=threadforge-worker.exe" "${WORKER_EXE}"
   File "/oname=threadforge-worker-service.exe" "${WORKER_SERVICE_EXE}"

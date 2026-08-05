@@ -161,10 +161,14 @@ describe('client authentication API', () => {
   })
 
   it('requests signed Worker release metadata', async () => {
+    let calls = 0
     globalThis.fetch = async (input) => {
       assert.equal(String(input), '/api/v1/worker/releases/latest')
+      calls += 1
       return response({ version: '0.2.0' })
     }
     assert.equal((await getLatestWorkerRelease()).version, '0.2.0')
+    assert.equal((await getLatestWorkerRelease()).version, '0.2.0')
+    assert.equal(calls, 1)
   })
 })
