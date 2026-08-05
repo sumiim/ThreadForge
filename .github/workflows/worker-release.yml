@@ -80,6 +80,12 @@ jobs:
           if (-not (Test-Path -LiteralPath $service)) {
             throw "Worker service executable was not installed"
           }
+          $runCommand = Get-ItemPropertyValue `
+            -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" `
+            -Name "ThreadForgeWorker"
+          if ($runCommand -notmatch ([regex]::Escape($service)) -or $runCommand -notmatch ' service$') {
+            throw "Worker login startup registration is invalid: $runCommand"
+          }
           & $worker --help
           if ($LASTEXITCODE -ne 0) { throw "Installed Worker CLI failed" }
           & $worker status
