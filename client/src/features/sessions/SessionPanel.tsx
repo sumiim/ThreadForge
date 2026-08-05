@@ -27,6 +27,7 @@ interface SessionPanelProps {
   onCreate: (workspaceId: string) => void
   onNavigate: (view: PanelView) => void
   onOpenSettings: () => void
+  onWorkspacesChanged?: () => Promise<unknown> | unknown
   themeMode: ThemeMode
   onToggleTheme: () => void
 }
@@ -41,6 +42,7 @@ export default function SessionPanel({
   onCreate,
   onNavigate,
   onOpenSettings,
+  onWorkspacesChanged,
   themeMode,
   onToggleTheme,
 }: SessionPanelProps) {
@@ -194,6 +196,7 @@ export default function SessionPanel({
         onCreate={handleCreate}
         onCancel={() => setModalOpen(false)}
         onOpenSettings={onOpenSettings}
+        onWorkspacesChanged={onWorkspacesChanged}
       />
     </div>
   )
