@@ -56,7 +56,10 @@ install_files:
   WriteRegStr HKCU "Software\Classes\threadforge" "URL Protocol" ""
   WriteRegStr HKCU "Software\Classes\threadforge\shell\open\command" "" '"$INSTDIR\threadforge-worker-service.exe" protocol "%1"'
 
-  CreateShortCut "$SMSTARTUP\ThreadForge Worker.lnk" "$INSTDIR\threadforge-worker-service.exe" "service"
+  ; HKCU Run is reliable for per-user installs and does not depend on the
+  ; shell Startup folder accepting an unsigned shortcut.
+  Delete "$SMSTARTUP\ThreadForge Worker.lnk"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ThreadForgeWorker" '"$INSTDIR\threadforge-worker-service.exe" service'
   CreateDirectory "$SMPROGRAMS\ThreadForge"
   CreateShortCut "$SMPROGRAMS\ThreadForge\Worker status.lnk" "$INSTDIR\threadforge-worker.exe" "status"
   CreateShortCut "$SMPROGRAMS\ThreadForge\Uninstall Worker.lnk" "$INSTDIR\uninstall.exe"
@@ -77,6 +80,7 @@ Section "Uninstall"
   Pop $0
   Pop $1
   Delete "$SMSTARTUP\ThreadForge Worker.lnk"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ThreadForgeWorker"
   RMDir /r "$SMPROGRAMS\ThreadForge"
   DeleteRegKey HKCU "Software\Classes\threadforge"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\ThreadForgeWorker"
