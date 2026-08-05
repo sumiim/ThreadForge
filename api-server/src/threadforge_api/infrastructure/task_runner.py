@@ -269,7 +269,12 @@ class TaskRunner:
         status = getattr(task_state, "status", "")
         stop_reason = getattr(task_state, "stop_reason", "")
         final_answer = getattr(task_state, "final_answer", "") or ""
-        if status == STATUS_COMPLETED and stop_reason == STOP_REASON_FINAL_ANSWER_RETURNED:
+        if run.token.is_cancelled():
+            public_status = TaskStatus.CANCELLED
+            terminal_event = "task.cancelled"
+            stop_reason = STOP_REASON_USER_CANCELLED
+            final_answer = ""
+        elif status == STATUS_COMPLETED and stop_reason == STOP_REASON_FINAL_ANSWER_RETURNED:
             public_status = TaskStatus.COMPLETED
             terminal_event = "task.completed"
         elif status == STATUS_STOPPED and stop_reason == STOP_REASON_USER_CANCELLED:
