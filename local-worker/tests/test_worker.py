@@ -13,6 +13,9 @@ from pico.approval import ApprovalOutcome, ApprovalRequest
 from pico.features.memory import default_memory_state
 from pico.providers.clients import FakeModelClient
 from pico.session_store import SessionStore
+from websockets.datastructures import Headers
+from websockets.exceptions import InvalidStatus
+from websockets.http11 import Response
 
 import threadforge_worker.service as service_module
 from threadforge_worker.auto_update import run_auto_update_loop
@@ -131,6 +134,44 @@ def test_service_lock_prevents_duplicate_worker_processes(tmp_path):
 
 def test_service_exits_cleanly_before_first_pairing(tmp_path):
     assert run_service(str(tmp_path)) == 0
+
+
+def test_worker_retries_transient_websocket_handshake_failure(tmp_path, monkeypatch):
+    store = ConfigStore(tmp_path)
+    config = WorkerConfig(device_id="dev_" + "a" * 32, device_token="token")
+    statuses = []
+    client = WorkerClient(store, config, status_callback=statuses.append)
+    attempts = []
+
+    def run_once():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise InvalidStatus(Response(502, "Bad Gateway", Headers()))
+        client.stop()
+
+    monkeypatch.setattr(client, "_run_once", run_once)
+    monkeypatch.setattr(client._stop_event, "wait", lambda _timeout: False)
+
+    client.run_forever()
+
+    assert len(attempts) == 2
+    assert statuses == ["connecting", "retrying", "connecting", "stopped"]
+
+
+def test_worker_rejects_permanent_websocket_handshake_failure(tmp_path, monkeypatch):
+    store = ConfigStore(tmp_path)
+    config = WorkerConfig(device_id="dev_" + "a" * 32, device_token="token")
+    client = WorkerClient(store, config)
+    monkeypatch.setattr(
+        client,
+        "_run_once",
+        lambda: (_ for _ in ()).throw(
+            InvalidStatus(Response(401, "Unauthorized", Headers()))
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="HTTP 401"):
+        client.run_forever()
 
 
 def test_frozen_windows_service_uses_a_fresh_pyinstaller_environment(monkeypatch):

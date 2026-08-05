@@ -14,7 +14,7 @@ from pathlib import Path
 
 from pico.security import redact_artifact
 from pico.session_store import SessionStore
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect
 
 from . import __version__
@@ -126,6 +126,13 @@ class WorkerClient:
                 if code in {4001, 4003, 4400, 4401, 4403}:
                     raise RuntimeError(f"Worker connection was rejected or revoked (code {code})") from exc
                 reason = f"connection closed (code {code or 'unknown'})"
+            except InvalidStatus as exc:
+                status = exc.response.status_code
+                if status not in {408, 425, 429} and not 500 <= status < 600:
+                    raise RuntimeError(
+                        f"Worker WebSocket handshake was rejected (HTTP {status})"
+                    ) from exc
+                reason = f"temporary WebSocket handshake failure (HTTP {status})"
             except (OSError, TimeoutError) as exc:
                 reason = str(exc) or type(exc).__name__
             if self._stop_event.is_set():
