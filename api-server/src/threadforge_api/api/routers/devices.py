@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, status
 
 from ...domain.errors import AppError, AuthorizationDeniedError, WorkerProtocolError
 from ...domain.identity import Actor
@@ -75,6 +75,46 @@ def list_devices(
             }
             for device in device_store.list_for_owner(actor.owner_id)
         ]
+    }
+
+
+@router.get("/api/v1/workers/online")
+def list_online_workers(
+    capability: str | None = Query(default=None, min_length=1, max_length=64),
+    actor: Actor = Depends(get_actor),
+    worker_hub: WorkerHub = Depends(get_worker_hub),
+) -> dict:
+    """List ready Workers for future multi-Worker routing.
+
+    The endpoint is deliberately read-only.  Current task execution still
+    binds one session to one selected workspace/Worker; clients may use this
+    inventory to build a multi-Worker connection plan later.
+    """
+    items = []
+    for device in worker_hub.online_devices(actor.owner_id):
+        if capability and capability not in device.capabilities:
+            continue
+        items.append(
+            {
+                "worker_id": device.device_id,
+                "device_id": device.device_id,
+                "name": device.name,
+                "online": True,
+                "version": device.version,
+                "protocol_version": device.protocol_version,
+                "platform": device.platform,
+                "architecture": device.architecture,
+                "compatible": device.protocol_version == WORKER_PROTOCOL_VERSION,
+                "capabilities": device.capabilities,
+                "workspaces": [workspace.to_dict() for workspace in device.workspaces],
+            }
+        )
+    return {
+        "items": items,
+        "routing": {
+            "mode": "single",
+            "multi_worker": "reserved",
+        },
     }
 
 

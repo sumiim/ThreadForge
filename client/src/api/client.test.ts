@@ -9,6 +9,7 @@ import {
   getAuthStatus,
   getRuntimeConfig,
   listMcpServers,
+  listOnlineWorkers,
   listSkills,
   logout,
   revokeDevice,
@@ -107,6 +108,34 @@ describe('client authentication API', () => {
       api_key: 'secret',
       model: 'model-a',
     })
+  })
+
+  it('loads the online Worker pool for future multi-Worker routing', async () => {
+    globalThis.fetch = async (input) => {
+      assert.equal(String(input), '/api/v1/workers/online?capability=workspace_selection')
+      return response({
+        items: [
+          {
+            worker_id: 'dev_a',
+            device_id: 'dev_a',
+            name: 'Laptop',
+            online: true,
+            version: '0.2.5',
+            protocol_version: 1,
+            platform: 'windows',
+            architecture: 'x86_64',
+            compatible: true,
+            capabilities: ['workspace_selection'],
+            workspaces: [],
+          },
+        ],
+        routing: { mode: 'single', multi_worker: 'reserved' },
+      })
+    }
+
+    const result = await listOnlineWorkers('workspace_selection')
+    assert.equal(result.routing.multi_worker, 'reserved')
+    assert.equal(result.items[0]?.worker_id, 'dev_a')
   })
 
   it('downloads the same-origin Worker bundle with progress', async () => {

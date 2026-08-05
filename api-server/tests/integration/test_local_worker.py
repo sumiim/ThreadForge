@@ -108,6 +108,35 @@ def test_companion_workspace_selection_roundtrip(client):
         ]
 
 
+def test_online_worker_pool_supports_multiple_connections_and_capability_filter(client):
+    first = _pair(client, "First laptop")
+    second = _pair(client, "Second server")
+    first_headers = {"Authorization": f"Bearer {first['device_token']}"}
+    second_headers = {"Authorization": f"Bearer {second['device_token']}"}
+
+    with client.websocket_connect("/api/v1/workers/connect", headers=first_headers) as first_socket:
+        _hello(first_socket, capabilities=["workspace_selection"])
+        with client.websocket_connect(
+            "/api/v1/workers/connect", headers=second_headers
+        ) as second_socket:
+            _hello(second_socket, workspace_id="ws_" + "b" * 32, capabilities=["local_history"])
+
+            online = client.get("/api/v1/workers/online")
+            assert online.status_code == 200
+            payload = online.json()
+            assert payload["routing"] == {"mode": "single", "multi_worker": "reserved"}
+            assert {item["worker_id"] for item in payload["items"]} == {
+                first["device_id"],
+                second["device_id"],
+            }
+
+            filtered = client.get("/api/v1/workers/online?capability=workspace_selection")
+            assert filtered.status_code == 200
+            assert [item["worker_id"] for item in filtered.json()["items"]] == [
+                first["device_id"]
+            ]
+
+
 def test_workspace_selection_requires_online_companion(client):
     paired = _pair(client)
     endpoint = f"/api/v1/devices/{paired['device_id']}/workspace-selection-requests"

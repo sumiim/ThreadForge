@@ -188,6 +188,22 @@ class WorkerHub:
                 if (connection := self._connections.get(device_id)) is not None and connection.ready
             }
 
+    def online_devices(self, owner_id: str) -> list[Device]:
+        """Return all ready Workers owned by ``owner_id``.
+
+        This is intentionally a separate query from task dispatch.  It gives
+        the API a stable inventory boundary for future multi-Worker routing
+        without changing the current one-session/one-Worker execution model.
+        """
+        owned = {device.device_id: device for device in self._devices.list_for_owner(owner_id)}
+        with self._lock:
+            return [
+                device
+                for device_id, device in owned.items()
+                if (connection := self._connections.get(device_id)) is not None
+                and connection.ready
+            ]
+
     def ephemeral_final_answer(self, task_id: str) -> str | None:
         now = time.monotonic()
         with self._lock:

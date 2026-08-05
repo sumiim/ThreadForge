@@ -40,6 +40,30 @@ export interface Device {
   workspaces: WorkerWorkspace[]
 }
 
+/** 在线 Worker 池条目；用于未来的多 Worker 路由/故障转移。 */
+export interface OnlineWorker extends Pick<
+  Device,
+  | 'device_id'
+  | 'name'
+  | 'online'
+  | 'version'
+  | 'protocol_version'
+  | 'platform'
+  | 'architecture'
+  | 'compatible'
+  | 'capabilities'
+  | 'workspaces'
+> {
+  worker_id: string
+}
+
+export type WorkerRoutingMode = 'single' | 'parallel' | 'failover'
+
+export interface WorkerConnectionPlan {
+  mode: WorkerRoutingMode
+  worker_ids: string[]
+}
+
 export interface WorkspaceSelectionRequest {
   request_id: string
   device_id: string

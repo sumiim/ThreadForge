@@ -4,6 +4,7 @@ import type {
   AuthStatus,
   Device,
   McpServerMetadata,
+  OnlineWorker,
   PendingApproval,
   RunEventEnvelope,
   RuntimeConfig,
@@ -126,6 +127,15 @@ export function logout(): Promise<{ status: string }> {
 
 export function listDevices(): Promise<{ items: Device[] }> {
   return request('/api/v1/devices')
+}
+
+/** 在线 Worker 池接口；当前仅提供清单，供后续多 Worker 路由使用。 */
+export function listOnlineWorkers(capability?: string): Promise<{
+  items: OnlineWorker[]
+  routing: { mode: 'single'; multi_worker: 'reserved' }
+}> {
+  const query = capability ? `?capability=${encodeURIComponent(capability)}` : ''
+  return request(`/api/v1/workers/online${query}`)
 }
 
 export function createPairingCode(): Promise<{ code: string; expires_in_seconds: number }> {
