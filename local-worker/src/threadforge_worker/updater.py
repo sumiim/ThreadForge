@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -78,6 +79,13 @@ def apply_update(store: ConfigStore) -> bool:
         stderr=subprocess.DEVNULL,
         close_fds=True,
         creationflags=_WINDOWS_CREATION_FLAGS,
+        env={
+            **os.environ,
+            # The NSIS installer starts the replacement frozen Worker. Without
+            # this flag it inherits the old process's soon-to-be-deleted _MEI
+            # directory and can fail while loading python312.dll.
+            "PYINSTALLER_RESET_ENVIRONMENT": "1",
+        },
     )
     return True
 

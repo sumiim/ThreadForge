@@ -81,6 +81,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Installed Worker CLI failed" }
           & $worker status
           if ($LASTEXITCODE -ne 0) { throw "Installed Worker status failed" }
+          ${env:_PYI_APPLICATION_HOME_DIR} = Join-Path $env:TEMP "deleted-threadforge-mei"
+          $env:PYINSTALLER_RESET_ENVIRONMENT = "1"
+          & $worker --help
+          if ($LASTEXITCODE -ne 0) { throw "Installed Worker failed to reset inherited PyInstaller state" }
+          Remove-Item Env:\_PYI_APPLICATION_HOME_DIR, Env:\PYINSTALLER_RESET_ENVIRONMENT
           $serviceProcess = Start-Process -FilePath $service -ArgumentList "service" -PassThru
           if (-not $serviceProcess.WaitForExit(10000)) {
             Stop-Process -Id $serviceProcess.Id -Force
