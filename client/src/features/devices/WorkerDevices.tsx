@@ -62,20 +62,29 @@ export default function WorkerDevices() {
 
   useEffect(() => {
     let active = true
-    void Promise.all([listDevices(), getLatestWorkerRelease()])
-      .then(([response, manifest]) => {
+    const load = async () => {
+      try {
+        const [response, manifest] = await Promise.all([listDevices(), getLatestWorkerRelease()])
         if (!active) return
         setDevices(response.items)
         setRelease(manifest)
-      })
-      .catch((cause: unknown) => {
+        setError('')
+      } catch (cause: unknown) {
         if (active) setError(friendlyMessage(cause))
-      })
-      .finally(() => {
+      } finally {
         if (active) setLoading(false)
-      })
+      }
+    }
+    void load()
+    // The Worker can restart itself after an update. Keep the settings view
+    // in sync without requiring the user to close and reopen the drawer.
+    const refreshTimer = window.setInterval(() => {
+      if (!active) return
+      void load()
+    }, 5_000)
     return () => {
       active = false
+      window.clearInterval(refreshTimer)
       operationVersion.current += 1
     }
   }, [])

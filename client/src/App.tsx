@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Avatar, Button, ConfigProvider, Drawer, Dropdown, Input, Layout, Modal, Tag } from 'antd'
 import {
   FileTextOutlined,
@@ -16,6 +16,7 @@ import RunArtifactsDrawer from './features/chat/RunArtifactsDrawer'
 import SkillsView from './features/skills/SkillsView'
 import McpView from './features/mcp/McpView'
 import WorkerDevices from './features/devices/WorkerDevices'
+import { getLatestWorkerRelease } from './api/client'
 
 const { Header, Sider, Content } = Layout
 
@@ -63,6 +64,10 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
     : runtimeConfig?.container_sandbox_enabled
       ? '独立容器沙盒'
       : '后端进程 · 无独立容器沙盒'
+
+  useEffect(() => {
+    void getLatestWorkerRelease().catch(() => undefined)
+  }, [])
 
   return (
     // 主题 ConfigProvider：antd 组件随亮/暗切换；Tailwind 侧由 .dark 类变量色板接管
