@@ -91,9 +91,13 @@ def test_apply_update_downloads_verified_installer_and_launches_it(tmp_path, mon
     monkeypatch.setattr(
         "threadforge_worker.updater.urllib.request.urlopen", lambda *_args, **_kwargs: io.BytesIO(artifact)
     )
+    monkeypatch.setenv("_PYI_APPLICATION_HOME_DIR", r"C:\Temp\stale-mei")
     monkeypatch.setattr("threadforge_worker.updater.subprocess.Popen", launched)
 
     assert apply_update(store) is True
     installer = tmp_path / "updates" / "threadforge-worker-windows-x86_64.exe"
     assert installer.read_bytes() == artifact
     assert launched.call_args.args[0] == [str(installer), "/S"]
+    child_env = launched.call_args.kwargs["env"]
+    assert child_env["_PYI_APPLICATION_HOME_DIR"] == r"C:\Temp\stale-mei"
+    assert child_env["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
