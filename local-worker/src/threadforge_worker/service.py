@@ -63,6 +63,8 @@ class ServiceLock:
 
 
 def select_directory() -> str | None:
+    if sys.platform == "win32":
+        return _select_directory_windows()
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -82,6 +84,54 @@ def select_directory() -> str | None:
         return selected or None
     finally:
         root.destroy()
+
+
+def _select_directory_windows() -> str | None:
+    """Open a folder picker without relying on bundled Tcl/Tk files."""
+    import ctypes
+    from ctypes import wintypes
+
+    class BrowseInfo(ctypes.Structure):
+        _fields_ = [
+            ("hwnd_owner", wintypes.HWND),
+            ("pidl_root", ctypes.c_void_p),
+            ("display_name", wintypes.LPWSTR),
+            ("title", wintypes.LPCWSTR),
+            ("flags", wintypes.UINT),
+            ("callback", ctypes.c_void_p),
+            ("lparam", wintypes.LPARAM),
+            ("image", ctypes.c_int),
+        ]
+
+    shell32 = ctypes.windll.shell32
+    ole32 = ctypes.windll.ole32
+    shell32.SHBrowseForFolderW.argtypes = [ctypes.POINTER(BrowseInfo)]
+    shell32.SHBrowseForFolderW.restype = ctypes.c_void_p
+    shell32.SHGetPathFromIDListW.argtypes = [ctypes.c_void_p, wintypes.LPWSTR]
+    shell32.SHGetPathFromIDListW.restype = wintypes.BOOL
+    ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+
+    display_name = ctypes.create_unicode_buffer(260)
+    browse_info = BrowseInfo(
+        hwnd_owner=0,
+        pidl_root=None,
+        display_name=display_name,
+        title="ThreadForge 请求添加本地工作区",
+        flags=0x0001 | 0x0040,  # BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE
+        callback=None,
+        lparam=0,
+        image=0,
+    )
+    item_id_list = shell32.SHBrowseForFolderW(ctypes.byref(browse_info))
+    if not item_id_list:
+        return None
+    try:
+        selected_path = ctypes.create_unicode_buffer(32768)
+        if not shell32.SHGetPathFromIDListW(item_id_list, selected_path):
+            raise RuntimeError("native_directory_picker_failed")
+        return selected_path.value or None
+    finally:
+        ole32.CoTaskMemFree(item_id_list)
 
 
 def run_service(data_dir: str | None = None) -> int:

@@ -33,6 +33,7 @@ from threadforge_worker.service import (
     ServiceAlreadyRunningError,
     ServiceLock,
     run_service,
+    select_directory,
     start_service_background,
 )
 
@@ -152,6 +153,13 @@ def test_frozen_windows_service_uses_a_fresh_pyinstaller_environment(monkeypatch
     assert popen_calls[0][1]["creationflags"] == 3
     assert popen_calls[0][1]["env"]["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
     assert popen_calls[0][1]["env"]["_MEIPASS2"].endswith("_MEIparent")
+
+
+def test_windows_directory_selection_uses_native_picker(monkeypatch):
+    monkeypatch.setattr(service_module.sys, "platform", "win32")
+    monkeypatch.setattr(service_module, "_select_directory_windows", lambda: r"C:\repo")
+
+    assert select_directory() == r"C:\repo"
 
 
 def test_companion_selection_registers_workspace_without_sending_local_path(tmp_path):
