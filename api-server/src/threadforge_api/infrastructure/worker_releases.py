@@ -7,9 +7,7 @@ import hashlib
 import json
 import tempfile
 import threading
-import time
-import urllib.parse
-import urllib.request
+from pathlib import Path
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -17,39 +15,38 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from ..domain.errors import WorkerReleaseUnavailableError
 
 WORKER_RELEASE_PUBLIC_KEY_B64 = "fcq2gihsuHOcqMw1Kjzlq21OHcZ79aaqqlpu5fsokps="
-_ALLOWED_ARTIFACT_PREFIX = "https://github.com/sumiim/ThreadForge/releases/download/"
 _PLATFORMS = {"windows-x86_64"}
+_MANIFEST_NAME = "worker-manifest.json"
 
 
 class WorkerReleaseService:
     def __init__(
         self,
-        manifest_url: str,
+        release_dir: Path,
         max_bytes: int,
         cache_seconds: int = 300,
         public_key_b64: str = WORKER_RELEASE_PUBLIC_KEY_B64,
     ):
-        self.manifest_url = manifest_url
+        self.release_dir = release_dir.resolve()
         self.max_bytes = max_bytes
         self.cache_seconds = cache_seconds
-        self._cache: tuple[float, dict] | None = None
+        self._cache: tuple[int, dict] | None = None
         self._lock = threading.Lock()
         self._public_key = Ed25519PublicKey.from_public_bytes(
             base64.b64decode(public_key_b64, validate=True)
         )
 
     def latest(self, *, refresh: bool = False) -> dict:
-        now = time.monotonic()
+        manifest_path = self.release_dir / _MANIFEST_NAME
+        try:
+            modified_ns = manifest_path.stat().st_mtime_ns
+        except OSError as exc:
+            raise WorkerReleaseUnavailableError("Worker release manifest is unavailable") from exc
         with self._lock:
-            if not refresh and self._cache and now - self._cache[0] < self.cache_seconds:
+            if not refresh and self._cache and self._cache[0] == modified_ns:
                 return self._cache[1]
         try:
-            request = urllib.request.Request(
-                self.manifest_url,
-                headers={"Accept": "application/json", "User-Agent": "ThreadForge-Control-Plane"},
-            )
-            with urllib.request.urlopen(request, timeout=10) as response:
-                raw = response.read(64 * 1024 + 1)
+            raw = manifest_path.read_bytes()
             if len(raw) > 64 * 1024:
                 raise ValueError("release manifest is too large")
             manifest = json.loads(raw)
@@ -59,7 +56,7 @@ class WorkerReleaseService:
         except Exception as exc:
             raise WorkerReleaseUnavailableError("Worker release manifest is unavailable") from exc
         with self._lock:
-            self._cache = (now, manifest)
+            self._cache = (modified_ns, manifest)
         return manifest
 
     def open_verified_artifact(self, platform_name: str):
@@ -76,10 +73,12 @@ class WorkerReleaseService:
         digest = hashlib.sha256()
         total = 0
         try:
-            request = urllib.request.Request(
-                artifact["url"], headers={"User-Agent": "ThreadForge-Control-Plane"}
-            )
-            with urllib.request.urlopen(request, timeout=30) as response:
+            artifact_path = (
+                self.release_dir / str(manifest["version"]) / str(artifact["filename"])
+            ).resolve(strict=True)
+            if artifact_path.parent != self.release_dir / str(manifest["version"]):
+                raise ValueError("release artifact path is invalid")
+            with artifact_path.open("rb") as response:
                 while chunk := response.read(64 * 1024):
                     total += len(chunk)
                     if total > self.max_bytes or total > expected_size:
@@ -120,14 +119,8 @@ class WorkerReleaseService:
         for name, artifact in platforms.items():
             if name not in _PLATFORMS or not isinstance(artifact, dict):
                 raise ValueError("unsupported release platform")
-            url = str(artifact.get("url", ""))
-            parsed = urllib.parse.urlsplit(url)
-            if not url.startswith(_ALLOWED_ARTIFACT_PREFIX) or parsed.query or parsed.fragment:
-                raise ValueError("release artifact URL is not trusted")
             expected_filename = f"threadforge-worker-{name}.exe"
-            if artifact.get("filename") != expected_filename or not parsed.path.endswith(
-                "/" + expected_filename
-            ):
+            if artifact.get("filename") != expected_filename:
                 raise ValueError("release artifact filename is invalid")
             if not isinstance(artifact.get("size"), int) or artifact["size"] <= 0:
                 raise ValueError("release artifact size is invalid")

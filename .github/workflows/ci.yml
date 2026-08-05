@@ -279,8 +279,52 @@ jobs:
             -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
             caddy:2.10-alpine caddy validate --config /etc/caddy/Caddyfile
 
-      - name: Validate production deployment script
-        run: bash -n scripts/deploy-production.sh
+      - name: Validate production scripts
+        run: bash -n scripts/deploy-production.sh scripts/threadforge-ci-dispatch.sh scripts/publish-worker-release.sh
+
+      - name: Smoke test private Worker release publisher
+        run: |
+          set -euo pipefail
+          release_root="$(mktemp -d)"
+          payload_root="$(mktemp -d)"
+          trap 'rm -rf -- "${release_root}" "${payload_root}"' EXIT
+          printf 'test-worker-binary' >"${payload_root}/threadforge-worker-windows-x86_64.exe"
+          python - "${payload_root}" <<'PY'
+          import hashlib
+          import json
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          installer = root / "threadforge-worker-windows-x86_64.exe"
+          manifest = {
+              "schema_version": 1,
+              "channel": "stable",
+              "version": "1.2.3",
+              "protocol_version": 1,
+              "minimum_server_protocol": 1,
+              "published_at": "2026-08-05T00:00:00Z",
+              "platforms": {
+                  "windows-x86_64": {
+                      "filename": installer.name,
+                      "size": installer.stat().st_size,
+                      "sha256": hashlib.sha256(installer.read_bytes()).hexdigest(),
+                  }
+              },
+              "signature": {"algorithm": "ed25519", "value": "test-signature"},
+          }
+          manifest_path = root / "worker-manifest.json"
+          manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+          with zipfile.ZipFile(root / "payload.zip", "w") as archive:
+              archive.write(installer, installer.name)
+              archive.write(manifest_path, manifest_path.name)
+          PY
+          base64 -w 0 "${payload_root}/payload.zip" | \
+            THREADFORGE_WORKER_RELEASE_DIR="${release_root}" \
+            bash scripts/publish-worker-release.sh worker-v1.2.3
+          test -s "${release_root}/worker-manifest.json"
+          test -s "${release_root}/1.2.3/threadforge-worker-windows-x86_64.exe"
 
       - name: Validate Worker release builder
         run: python scripts/build-worker-release.py --help
@@ -309,13 +353,3 @@ jobs:
             sleep 2
           done
           exit 1
-
-      - name: Upload wheels
-        uses: actions/upload-artifact@v5
-        with:
-          name: threadforge-python-wheels
-          path: |
-            pico-legacy-runtime/dist/*.whl
-            agent-orchestrator/dist/*.whl
-            api-server/dist/*.whl
-            local-worker/dist/*.whl

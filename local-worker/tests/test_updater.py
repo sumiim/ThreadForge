@@ -25,7 +25,6 @@ def _manifest(private_key) -> dict:
         "platforms": {
             "windows-x86_64": {
                 "filename": "threadforge-worker-windows-x86_64.exe",
-                "url": "https://github.com/sumiim/ThreadForge/releases/download/worker-v0.2.0/threadforge-worker-windows-x86_64.exe",
                 "size": 10,
                 "sha256": hashlib.sha256(b"0123456789").hexdigest(),
             }

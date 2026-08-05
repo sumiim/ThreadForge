@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from threadforge_api.config import Settings
 from threadforge_api.infrastructure.auth import GitHubIdentity
+from threadforge_api.infrastructure.device_store import WorkerWorkspace
 from threadforge_api.main import create_app
 
 
@@ -152,9 +153,32 @@ def test_non_allowlisted_github_user_is_rejected(settings, model_factory):
         assert client.get("/api/v1/auth/status").json()["authenticated"] is False
 
 
+def test_all_authenticated_policy_accepts_any_github_user(settings, model_factory):
+    oauth = FakeOAuthClient(GitHubIdentity(999, "new-contributor"))
+    open_settings = _oauth_settings(settings).model_copy(
+        update={
+            "github_access_policy": "all_authenticated",
+            "github_allowed_logins": ["sumiim"],
+        }
+    )
+    app = create_app(open_settings, model_client_factory=model_factory, oauth_client=oauth)
+    with TestClient(app) as client:
+        response = _complete(client, _start(client))
+        assert response.status_code == 303
+        status = client.get("/api/v1/auth/status").json()
+        assert status["authenticated"] is True
+        assert status["user"]["login"] == "new-contributor"
+
+
 def test_two_github_users_cannot_see_each_others_sessions(settings, model_factory):
     oauth = FakeOAuthClient(GitHubIdentity(123, "sumiim"))
-    app = create_app(_oauth_settings(settings), model_client_factory=model_factory, oauth_client=oauth)
+    open_settings = _oauth_settings(settings).model_copy(
+        update={
+            "github_access_policy": "all_authenticated",
+            "github_allowed_logins": ["sumiim"],
+        }
+    )
+    app = create_app(open_settings, model_client_factory=model_factory, oauth_client=oauth)
     with TestClient(app) as client:
         client.headers["X-ThreadForge-CSRF"] = "1"
         assert _complete(client, _start(client)).status_code == 303
@@ -164,13 +188,25 @@ def test_two_github_users_cannot_see_each_others_sessions(settings, model_factor
             "/api/v1/workers/pair",
             json={"code": pairing_code, "name": "Owner laptop"},
         ).json()
+        owner_workspace_id = "ws_" + "b" * 32
+        app.state.container.device_store.update_presence(
+            owner_device["device_id"],
+            model="owner-model",
+            model_configured=True,
+            version="0.2.1",
+            protocol_version=1,
+            platform="windows",
+            architecture="x86_64",
+            capabilities=[],
+            workspaces=[WorkerWorkspace(owner_workspace_id, "Owner repo", True)],
+        )
         owner_session = {"session_id": "ses_" + "a" * 32}
         app.state.container.session_store.save(
             {
                 "id": owner_session["session_id"],
                 "created_at": "2026-08-05T00:00:00Z",
                 "workspace_root": "worker://owner/ws_local",
-                "workspace_id": "ws_" + "b" * 32,
+                "workspace_id": owner_workspace_id,
                 "execution_environment": "local_worker",
                 "device_id": owner_device["device_id"],
                 "owner_id": owner_id,
@@ -186,6 +222,11 @@ def test_two_github_users_cannot_see_each_others_sessions(settings, model_factor
         assert client.get("/api/v1/sessions").json()["items"] == []
         assert client.get(f"/api/v1/sessions/{owner_session['session_id']}").status_code == 404
         assert client.get("/api/v1/devices").json()["items"] == []
+        assert client.get("/api/v1/workspaces").json()["items"] == []
+        assert (
+            client.post("/api/v1/sessions", json={"workspace_id": owner_workspace_id}).status_code
+            == 404
+        )
         assert client.delete(f"/api/v1/devices/{owner_device['device_id']}").status_code == 404
 
 

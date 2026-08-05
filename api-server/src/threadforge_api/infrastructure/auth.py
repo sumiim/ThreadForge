@@ -271,6 +271,7 @@ class AuthManager:
         oauth_client: OAuthClient | None = None,
     ):
         self.settings = settings
+        self._access_policy = settings.github_access_policy
         self._allowed_logins = {login.lower() for login in settings.github_allowed_logins}
         self._attempts = OAuthAttemptStore()
         self._users = UserStore(
@@ -310,7 +311,7 @@ class AuthManager:
             self.settings.github_oauth_callback_url,
         )
         identity = self._oauth_client.get_identity(access_token)
-        if identity.login.lower() not in self._allowed_logins:
+        if not self._login_allowed(identity.login):
             raise AuthorizationDeniedError("This GitHub account is not allowed to use ThreadForge")
         actor = self._users.upsert(identity)
         return actor, self._sessions.create(actor)
@@ -319,17 +320,23 @@ class AuthManager:
         actor = self._sessions.get(token or "")
         if actor is None:
             raise AuthenticationRequiredError("Sign in with GitHub to continue")
-        if actor.login.lower() not in self._allowed_logins:
+        if not self._login_allowed(actor.login):
             self._sessions.delete(token or "")
             raise AuthorizationDeniedError("This GitHub account is no longer allowed")
         return actor
 
     def optional_actor(self, token: str | None) -> Actor | None:
         actor = self._sessions.get(token or "")
-        if actor is not None and actor.login.lower() not in self._allowed_logins:
+        if actor is not None and not self._login_allowed(actor.login):
             self._sessions.delete(token or "")
             return None
         return actor
+
+    def _login_allowed(self, login: str) -> bool:
+        return (
+            self._access_policy == "all_authenticated"
+            or login.lower() in self._allowed_logins
+        )
 
     def logout(self, token: str | None) -> None:
         self._sessions.delete(token or "")
