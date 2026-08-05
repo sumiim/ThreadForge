@@ -382,8 +382,16 @@ class WorkerClient:
                 "selected",
                 workspace_id=workspace.workspace_id,
             )
+        except RuntimeError as exc:
+            error = str(exc)
+            if error not in {
+                "native_directory_picker_unavailable",
+                "native_directory_picker_failed",
+            }:
+                error = "selection_failed"
+            self._send_workspace_selection_result(request_id, "failed", error=error)
         except Exception:
-            self._send_workspace_selection_result(request_id, "failed", error="selection_failed")
+            self._send_workspace_selection_result(request_id, "failed", error="workspace_registration_failed")
         finally:
             self._workspace_lock.release()
 

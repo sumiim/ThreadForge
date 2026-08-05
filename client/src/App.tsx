@@ -86,6 +86,7 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
             onCreate={createSession}
             onNavigate={setView}
             onOpenSettings={() => setSettingsOpen(true)}
+            onWorkspacesChanged={refreshWorkspaces}
             themeMode={mode}
             onToggleTheme={toggleTheme}
           />
