@@ -8,7 +8,7 @@
 
 ## DNS 与防火墙
 
-1. 为主机名创建 `A` 记录，指向服务器公网 IPv4，例如 `threadforge.example.com -> 38.76.215.170`。
+1. 为主机名创建 `A` 记录，指向服务器公网 IPv4，例如 `threadforge.example.com -> 203.0.113.10`（文档保留地址）。
 2. 在云平台安全组和服务器防火墙中仅开放 TCP `80`、TCP `443`、UDP `443`；SSH 继续使用现有受限端口。
 3. 等待 DNS 生效，确认 `nslookup threadforge.example.com` 返回该服务器 IP。
 
@@ -25,7 +25,10 @@ THREADFORGE_TRUSTED_HOSTS='["threadforge.example.com","127.0.0.1","localhost"]'
 THREADFORGE_GITHUB_OAUTH_CALLBACK_URL=https://threadforge.example.com/api/v1/auth/github/callback
 THREADFORGE_GITHUB_OAUTH_RETURN_URL=https://threadforge.example.com/
 THREADFORGE_AUTH_COOKIE_SECURE=true
+THREADFORGE_GITHUB_ACCESS_POLICY=all_authenticated
 ```
+
+`all_authenticated` 允许任意完成 GitHub OAuth 的用户进入，但设备、工作区、会话、任务与审批仍按内部 `owner_id` 隔离。只面向受邀用户时保留默认的 `allowlist`，并在 `THREADFORGE_GITHUB_ALLOWED_LOGINS` 中列出账号；不要把空 allowlist 误认为开放注册。
 
 同时把 GitHub OAuth App 配置改为：
 

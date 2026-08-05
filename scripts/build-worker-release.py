@@ -15,7 +15,6 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", required=True)
     parser.add_argument("--tag", required=True)
-    parser.add_argument("--repository", required=True)
     parser.add_argument("--artifact", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -38,10 +37,6 @@ def main() -> int:
         "platforms": {
             "windows-x86_64": {
                 "filename": artifact.name,
-                "url": (
-                    f"https://github.com/{args.repository}/releases/download/"
-                    f"{args.tag}/{artifact.name}"
-                ),
                 "size": artifact.stat().st_size,
                 "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
             }

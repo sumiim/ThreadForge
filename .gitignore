@@ -43,3 +43,4 @@ Thumbs.db
 dist-electron/
 release/
 /release-desktop/
+/worker-releases/

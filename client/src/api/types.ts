@@ -52,7 +52,6 @@ export interface WorkspaceSelectionRequest {
 
 export interface WorkerReleaseArtifact {
   filename: string
-  url: string
   size: number
   sha256: string
 }

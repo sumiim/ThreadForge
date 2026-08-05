@@ -1,44 +1,69 @@
-# Worker 签名发布与自动更新
+# Worker 私有发布与自动更新
+
+## 发布边界
+
+GitHub 仓库只保存源码、构建脚本和版本标签，不保存 Worker 安装包、发布清单、Actions Artifact 或 GitHub Release 附件。Windows Runner 只在任务临时目录中构建和测试安装包；验收通过后，流水线通过受限 SSH 将安装包与签名清单直接传到 ThreadForge 服务器。
+
+服务器将制品保存到 `.env` 中 `THREADFORGE_WORKER_RELEASE_DIR` 指定的宿主机目录。API 容器以只读方式挂载该目录，登录用户或已配对设备只能通过以下认证接口获取制品：
+
+- `GET /api/v1/worker/releases/latest`
+- `GET /api/v1/worker/releases/download/{platform}`
+
+公网域名、服务器 IP 和 SSH 端口只存在于服务器 `.env` 与 GitHub Actions Secrets，不写入源码或文档。
 
 ## 信任链
 
-Worker 发布使用独立 Ed25519 密钥：私钥只保存在 GitHub Actions Secret `WORKER_RELEASE_SIGNING_KEY_B64`，公钥固定在 API 与 Worker 代码中。发布清单签名后绑定版本、协议版本、平台、下载 URL、文件名、大小和 SHA-256。
+Worker 发布使用独立 Ed25519 密钥。私钥仅保存为 GitHub Actions Secret `WORKER_RELEASE_SIGNING_KEY_B64` 和受权限保护的离线备份；公钥固定在 API 与 Worker 源码中。
 
-下载流程会执行两次验证：中央 API 验证清单签名并完整下载、校验制品后才向浏览器或 Worker 返回；Worker 自动更新时再次验证清单签名、固定文件名、文件大小和 SHA-256，再静默启动用户级安装器。
+发布清单的签名绑定版本、协议版本、平台、文件名、大小和 SHA-256。API 在返回安装包前验证清单签名，并从与清单版本一致的服务器目录读取文件，再次校验大小和 SHA-256。Worker 下载后还会重复验证清单签名、文件名、大小和 SHA-256。
 
-这套签名保护 ThreadForge 应用内下载和自动更新信任链，但不等于 Windows Authenticode。当前 NSIS 安装器仍可能显示未知发布者；面向非开发者正式发行前，还应使用代码签名证书签署安装器和内含的 Worker EXE。
+这套签名不等同于 Windows Authenticode。面向普通用户正式发布前，仍应使用代码签名证书签署安装器和内部 EXE，避免 Windows 显示未知发布者。
 
-## 一次性 Secret 配置
+## 一次性服务器引导
 
-当前公钥已经进入代码。对应私钥必须作为仓库 Actions Secret 保存，不能提交文件、粘贴到 Issue/PR 或输出到 Actions 日志。
+生产服务器需要安装源码中的受限命令分发器，并允许部署账户仅执行该分发器：
 
-1. 打开仓库 `Settings -> Secrets and variables -> Actions`。
-2. 新建 Repository secret，名称为 `WORKER_RELEASE_SIGNING_KEY_B64`。
-3. 值填写 Ed25519 PEM 私钥文件的 Base64 单行内容。
-4. 保存后删除普通临时副本，只保留受 ACL 保护的离线备份。
+```bash
+install -o root -g root -m 0755 scripts/threadforge-ci-dispatch.sh /usr/local/sbin/threadforge-ci-dispatch
+install -d -o root -g root -m 0755 /var/lib/threadforge/worker-releases
+```
 
-如果 Secret 丢失，不能重新生成私钥后直接沿用当前公钥。密钥轮换必须先发布一个同时信任旧、新公钥的过渡版本，再用旧私钥签署该版本；确认客户端升级后才能改用新私钥。
+部署账户的 `authorized_keys` 固定命令应指向：
+
+```text
+restrict,command="sudo -n --preserve-env=SSH_ORIGINAL_COMMAND /usr/local/sbin/threadforge-ci-dispatch" ssh-ed25519 <PUBLIC_KEY> threadforge-cd
+```
+
+`sudoers` 只允许无密码执行该分发器；分发器只接受空命令（正常 CD）和严格版本格式的 `publish-worker worker-vX.Y.Z`，其他命令全部拒绝。
 
 ## 发布稳定版
 
 1. 同时更新 `local-worker/pyproject.toml` 和 `threadforge_worker.__version__`。
-2. 通过主分支 CI，并确认版本对应代码已经合并到 `main`。
-3. 在该提交创建严格匹配版本的标签：
+2. 合并到 `main` 并等待 CI/CD 成功。
+3. 在该合并提交创建匹配版本标签：
 
 ```bash
-git tag worker-v0.2.1
-git push origin worker-v0.2.1
+git tag worker-v0.2.2
+git push origin worker-v0.2.2
 ```
 
-`Worker Release` 工作流在 Windows Runner 上重新执行 Worker Lint/测试，使用 PyInstaller 封装 Python 与全部运行依赖，再用 NSIS 生成每用户安装器。流水线会静默安装最终 EXE、实际执行 `--help` 和 `status`，通过后才签署 `worker-manifest.json` 并创建 GitHub Release。这条目标系统冒烟测试是发布门禁，不能用“依赖下载成功”代替。
+`Worker Release` 工作流会在 Windows Runner 上重新执行 Ruff、测试、PyInstaller/NSIS 构建和真实静默安装冒烟测试。随后生成签名清单，把两个文件压入临时 ZIP，以 Base64 流经 SSH 直接发送到服务器，最后删除 Runner 上的临时载荷。
 
-发布后验证：
+发布脚本拒绝路径穿越、符号链接、额外文件、版本不一致、大小不一致、摘要不一致，以及用不同字节覆盖已有版本。新清单以原子替换方式生效，旧版本目录保留，避免正在下载的请求读到半个文件。
+
+## 验收
+
+先通过正常登录获取 Cookie，或使用已配对 Worker 的设备令牌，再检查：
 
 ```bash
-curl -fsS https://github.com/sumiim/ThreadForge/releases/latest/download/worker-manifest.json
-curl -fsS https://threadforge.example.com/api/v1/worker/releases/latest
+curl -fsS -H "Authorization: Bearer <DEVICE_TOKEN>" \
+  https://threadforge.example.com/api/v1/worker/releases/latest
 ```
 
-第二个接口需要已登录浏览器 Cookie 或有效 Worker 设备令牌。现有 Companion 在连接成功后空闲检查更新；发现更高版本时验证并启动静默安装，新安装器停止旧进程、替换程序并启动新服务。协议不兼容的旧 Worker 会在前端被标记为必须更新。
+服务器还应确认：
 
-当前稳定清单只发布 `windows-x86_64`。控制面和设备协议允许同一账号绑定任意数量、不同平台的 Worker，并记录每台设备的系统、架构和独立工作区；新增 Linux/macOS 自包含制品时必须分别在对应 Runner 构建和安装验收。macOS 对外发布还必须补 Developer ID 签名与公证，不能把未公证二进制标成稳定版。
+```bash
+find /var/lib/threadforge/worker-releases -maxdepth 2 -type f -printf '%m %p\n'
+```
+
+当前稳定清单只包含 `windows-x86_64`。新增 Linux/macOS 制品时，必须分别在对应目标系统构建和安装验收；macOS 对外发布还需要 Developer ID 签名与公证。

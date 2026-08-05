@@ -22,6 +22,7 @@ def test_defaults_are_valid():
     assert settings.max_steps == 6
     assert settings.sse_heartbeat_seconds == 15
     assert settings.desktop_origin_enabled is False
+    assert str(settings.worker_release_dir) == "worker-releases"
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.5", "example.com"])
@@ -91,6 +92,20 @@ def test_github_oauth_normalizes_allowlist_and_includes_owner():
     )
     assert settings.github_owner_login == "sumiim"
     assert settings.github_allowed_logins == ["sumiim", "guest"]
+    assert settings.github_access_policy == "allowlist"
+
+
+def test_github_oauth_all_authenticated_policy_is_explicit():
+    settings = Settings(
+        **_base(
+            identity_mode="github_oauth",
+            github_oauth_client_id="client-id",
+            github_oauth_client_secret="client-secret",
+            github_owner_login="sumiim",
+            github_access_policy="all_authenticated",
+        )
+    )
+    assert settings.github_access_policy == "all_authenticated"
 
 
 def test_github_oauth_urls_allow_https_and_reject_remote_http():

@@ -51,14 +51,13 @@ class Settings(BaseSettings):
     github_oauth_callback_url: str = "http://127.0.0.1:18000/api/v1/auth/github/callback"
     github_oauth_return_url: str = "http://127.0.0.1:5173/"
     github_owner_login: str = ""
+    github_access_policy: Literal["allowlist", "all_authenticated"] = "allowlist"
     github_allowed_logins: list[str] = Field(default_factory=list)
     auth_session_ttl_seconds: int = 604800
     auth_cookie_secure: bool = False
     worker_pairing_ttl_seconds: int = 600
     worker_message_max_bytes: int = 2 * 1024 * 1024
-    worker_release_manifest_url: str = (
-        "https://github.com/sumiim/ThreadForge/releases/latest/download/worker-manifest.json"
-    )
+    worker_release_dir: Path = Path("worker-releases")
     worker_release_max_bytes: int = 128 * 1024 * 1024
 
     @field_validator("trusted_hosts")
@@ -132,14 +131,6 @@ class Settings(BaseSettings):
     def _validate_worker_message_max_bytes(cls, value: int) -> int:
         if not 64 * 1024 <= value <= 16 * 1024 * 1024:
             raise ValueError("worker_message_max_bytes must be in 64 KiB - 16 MiB")
-        return value
-
-    @field_validator("worker_release_manifest_url")
-    @classmethod
-    def _validate_worker_release_manifest_url(cls, value: str) -> str:
-        parsed = urlsplit(value)
-        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
-            raise ValueError("worker_release_manifest_url must be an HTTPS URL")
         return value
 
     @field_validator("worker_release_max_bytes")

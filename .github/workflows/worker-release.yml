@@ -6,13 +6,14 @@ on:
       - "worker-v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   release:
-    name: Build, verify and sign Windows Worker
+    name: Build, verify and publish Windows Worker
     runs-on: windows-latest
     timeout-minutes: 30
+    environment: production
 
     steps:
       - name: Checkout repository
@@ -94,17 +95,51 @@ jobs:
           python scripts/build-worker-release.py `
             --version "${{ steps.version.outputs.version }}" `
             --tag "$env:GITHUB_REF_NAME" `
-            --repository "$env:GITHUB_REPOSITORY" `
             --artifact threadforge-worker-windows-x86_64.exe `
             --output worker-manifest.json
 
-      - name: Publish GitHub release
+      - name: Package ephemeral deployment payload
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -LiteralPath threadforge-worker-windows-x86_64.exe, worker-manifest.json `
+            -DestinationPath worker-release.zip
+
+      - name: Publish directly to ThreadForge server
         shell: pwsh
         env:
-          GH_TOKEN: ${{ github.token }}
+          SSH_PRIVATE_KEY: ${{ secrets.CD_SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: ${{ secrets.CD_KNOWN_HOSTS }}
+          CD_HOST: ${{ secrets.CD_HOST }}
+          CD_PORT: ${{ secrets.CD_PORT }}
+          CD_USER: ${{ secrets.CD_USER }}
         run: |
-          gh release create "$env:GITHUB_REF_NAME" `
-            --title "ThreadForge Worker ${{ steps.version.outputs.version }}" `
-            --generate-notes `
-            threadforge-worker-windows-x86_64.exe `
-            worker-manifest.json
+          $ErrorActionPreference = "Stop"
+          foreach ($name in "SSH_PRIVATE_KEY", "KNOWN_HOSTS", "CD_HOST", "CD_PORT", "CD_USER") {
+            if (-not (Get-Item "Env:$name").Value) { throw "$name is not configured" }
+          }
+          $sshDir = Join-Path $env:USERPROFILE ".ssh"
+          New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          $keyPath = Join-Path $sshDir "threadforge_cd"
+          [IO.File]::WriteAllText($keyPath, "$env:SSH_PRIVATE_KEY`n", $utf8)
+          [IO.File]::WriteAllText((Join-Path $sshDir "known_hosts"), "$env:KNOWN_HOSTS`n", $utf8)
+          icacls $keyPath /inheritance:r /grant:r "${env:USERNAME}:(R)" | Out-Null
+          $payload = [Convert]::ToBase64String([IO.File]::ReadAllBytes("worker-release.zip"))
+          $payload | ssh `
+            -i $keyPath `
+            -o BatchMode=yes `
+            -o ConnectTimeout=20 `
+            -o IdentitiesOnly=yes `
+            -o StrictHostKeyChecking=yes `
+            -p $env:CD_PORT `
+            "$env:CD_USER@$env:CD_HOST" `
+            "publish-worker $env:GITHUB_REF_NAME"
+          if ($LASTEXITCODE -ne 0) { throw "Worker publish failed" }
+
+      - name: Remove deployment payload and key
+        if: always()
+        shell: pwsh
+        run: |
+          Remove-Item -Force -ErrorAction SilentlyContinue worker-release.zip
+          Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $env:USERPROFILE ".ssh\threadforge_cd")

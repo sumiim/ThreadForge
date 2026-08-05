@@ -101,7 +101,7 @@ Electron 不拥有目录选择、Worker 进程控制或工作区管理的私有 
 - `WS /api/v1/workers/connect`：Worker 通过 `Authorization: Bearer <device token>` 主动连接。
 - `GET /api/v1/devices`：用户只能查看自己的设备。
 - `GET /api/v1/worker/releases/latest`：返回经过 Ed25519 验证的稳定版清单；浏览器 Cookie 或有效设备令牌二选一认证。
-- `GET /api/v1/worker/releases/download/{platform}`：只代理清单中的固定 GitHub Release 制品，并在开始响应前校验签名清单、大小和 SHA-256。
+- `GET /api/v1/worker/releases/download/{platform}`：只读取服务器私有发布目录中的签名制品，并在开始响应前校验清单签名、大小和 SHA-256；二进制不保存到 GitHub。
 - `POST /api/v1/devices/{device_id}/workspace-selection-requests`：为属于当前用户、在线且声明 `workspace_selection` 能力的 Worker 创建两分钟一次性请求。
 - `GET /api/v1/devices/{device_id}/workspace-selection-requests/{request_id}`：查询请求的 pending/completed/cancelled/failed/expired 状态。
 - `PUT /api/v1/devices/{device_id}/model-config`：把模型参数转发给在线 Worker；API Key 不在中央持久化。

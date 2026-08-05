@@ -66,7 +66,7 @@ class AppContainer:
         self.device_store = DeviceStore(settings.data_dir / "devices")
         self.pairing_store = PairingCodeStore(settings.worker_pairing_ttl_seconds)
         self.worker_release_service = WorkerReleaseService(
-            settings.worker_release_manifest_url, settings.worker_release_max_bytes
+            settings.worker_release_dir, settings.worker_release_max_bytes
         )
         self._assign_legacy_ownership()
         self.runs_dir = settings.data_dir / "runs"
