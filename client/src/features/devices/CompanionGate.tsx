@@ -177,10 +177,21 @@ export default function CompanionGate({ onWorkspacesChanged }: CompanionGateProp
   useEffect(() => {
     if (state !== 'download' && state !== 'workspace') return
     const timer = window.setInterval(() => {
-      if (!selecting) void probe().catch(() => undefined)
+      if (selecting) return
+      void probe()
+        .then(({ items, device }) => {
+          if (device || state !== 'workspace' || operationVersion.current === 0) return
+          if (items.length === 0 || items.some((item) => item.online && !item.compatible)) {
+            setState('download')
+            void loadRelease()
+          } else {
+            void wakeAndWait()
+          }
+        })
+        .catch(() => undefined)
     }, 3_000)
     return () => window.clearInterval(timer)
-  }, [probe, selecting, state])
+  }, [loadRelease, probe, selecting, state, wakeAndWait])
 
   const download = async () => {
     try {
