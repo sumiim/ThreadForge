@@ -15,6 +15,7 @@ from pico.providers.clients import FakeModelClient
 from pico.session_store import SessionStore
 
 import threadforge_worker.service as service_module
+from threadforge_worker.auto_update import run_auto_update_loop
 from threadforge_worker.cli import _parse_protocol_uri
 from threadforge_worker.client import (
     WorkerClient,
@@ -153,6 +154,68 @@ def test_frozen_windows_service_uses_a_fresh_pyinstaller_environment(monkeypatch
     assert popen_calls[0][1]["creationflags"] == 3
     assert popen_calls[0][1]["env"]["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
     assert popen_calls[0][1]["env"]["_MEIPASS2"].endswith("_MEIparent")
+
+
+def test_auto_update_checks_immediately_and_stops_after_verified_update(tmp_path):
+    events = []
+
+    class Client:
+        def wait_for_stop(self, timeout):
+            events.append(("wait", timeout))
+            return False
+
+        def begin_update(self):
+            events.append(("begin",))
+            return True
+
+        def end_update(self):
+            events.append(("end",))
+
+        def stop(self):
+            events.append(("stop",))
+
+    run_auto_update_loop(
+        ConfigStore(tmp_path),
+        Client(),
+        apply_update_fn=lambda _store: True,
+    )
+
+    assert events == [("wait", 0.0), ("begin",), ("stop",), ("end",)]
+
+
+def test_auto_update_retries_after_failure_and_can_be_stopped(tmp_path):
+    events = []
+    waits = iter([False, True])
+
+    class Client:
+        def wait_for_stop(self, timeout):
+            events.append(("wait", timeout))
+            return next(waits)
+
+        def begin_update(self):
+            events.append(("begin",))
+            return True
+
+        def end_update(self):
+            events.append(("end",))
+
+        def stop(self):
+            events.append(("stop",))
+
+    run_auto_update_loop(
+        ConfigStore(tmp_path),
+        Client(),
+        check_interval_seconds=10,
+        retry_interval_seconds=20,
+        apply_update_fn=lambda _store: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
+
+    assert events == [
+        ("wait", 0.0),
+        ("begin",),
+        ("end",),
+        ("wait", 20),
+    ]
 
 
 def test_windows_directory_selection_uses_native_picker(monkeypatch):
