@@ -130,7 +130,11 @@ def _parse_protocol_uri(uri: str) -> tuple[str, dict[str, str]]:
     allowed = {"start": set(), "pair": {"server", "code", "name"}}
     if action not in allowed:
         raise ValueError("unsupported ThreadForge action")
-    raw = parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
+    raw = (
+        parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
+        if parsed.query
+        else {}
+    )
     if set(raw) - allowed[action] or any(len(values) != 1 for values in raw.values()):
         raise ValueError("ThreadForge link contains unsupported parameters")
     parameters = {key: values[0] for key, values in raw.items()}
