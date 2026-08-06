@@ -72,6 +72,15 @@ class RunStoreReader:
             "attempts": data.get("attempts"),
             "tool_steps": data.get("tool_steps"),
             "last_tool": data.get("last_tool", ""),
+            "phase": data.get("phase", ""),
+            "next_step": data.get("next_step", ""),
+            "checklist": data.get("checklist", []),
+            "done_when": data.get("done_when", []),
+            "completed_items": data.get("completed_items", []),
+            "read_files": data.get("read_files", 0),
+            "max_tool_steps": data.get("max_tool_steps", 0),
+            "max_read_files": data.get("max_read_files", 0),
+            "max_total_steps": data.get("max_total_steps", 0),
         }
 
     def list_artifacts(self, run_id: str) -> list[dict]:

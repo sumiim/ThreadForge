@@ -39,6 +39,7 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
     skills,
     mcpServers,
     running,
+    agentProgress,
     refreshWorkspaces,
     select,
     createSession,
@@ -149,6 +150,7 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
                 <ChatView
                   session={active}
                   running={running}
+                  agentProgress={agentProgress}
                   onSend={sendMessage}
                   onStop={() => setStopConfirmOpen(true)}
                   onApprove={approveTool}

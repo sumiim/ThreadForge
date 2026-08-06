@@ -100,6 +100,8 @@ class Pico:
         execution_hooks=None,
         shell_output_max_bytes=1048576,
         shell_cleanup_grace_seconds=5.0,
+        max_read_files=4,
+        max_total_steps=None,
     ):
         self.model_client = model_client
         self.workspace = workspace
@@ -112,6 +114,8 @@ class Pico:
         self.shell_output_max_bytes = int(shell_output_max_bytes)
         self.shell_cleanup_grace_seconds = float(shell_cleanup_grace_seconds)
         self.max_steps = max_steps
+        self.max_read_files = max(0, int(max_read_files))
+        self.max_total_steps = max_total_steps
         self.max_new_tokens = max_new_tokens
         self.depth = depth
         self.max_depth = max_depth
@@ -167,6 +171,45 @@ class Pico:
         if self.progress_callback is None:
             return
         self.progress_callback(str(message))
+
+    def emit_agent_state(self, task_state, reason=""):
+        """Publish a small, redacted state projection for API clients."""
+        payload = {
+            "phase": task_state.phase,
+            "next_step": task_state.next_step,
+            "checklist": list(task_state.checklist),
+            "done_when": list(task_state.done_when),
+            "completed_items": list(task_state.completed_items),
+            "tool_steps": task_state.tool_steps,
+            "read_files": task_state.read_files,
+            "max_tool_steps": task_state.max_tool_steps,
+            "max_read_files": task_state.max_read_files,
+            "max_total_steps": task_state.max_total_steps,
+            "reason": str(reason or ""),
+        }
+        self.emit_trace(task_state, "agent_state_changed", payload)
+
+    def summarize_tool_result(self, name, args, result):
+        """Create a bounded working-memory note after every tool result."""
+        metadata = dict(getattr(result, "metadata", {}) or {})
+        status = str(metadata.get("tool_status", "unknown"))
+        paths = [str(path) for path in metadata.get("affected_paths", []) if str(path).strip()]
+        diff = [str(item) for item in metadata.get("diff_summary", []) if str(item).strip()]
+        parts = [f"{name}: {status}"]
+        if paths:
+            parts.append("paths=" + ", ".join(paths[:20]))
+        if diff:
+            parts.append("changes=" + ", ".join(diff[:20]))
+        # Only include content from read-only inspection tools.  Write and
+        # shell output may contain credentials or unrelated host information.
+        if name in {"list_files", "read_file", "search"}:
+            content = self.redact_artifact(clip(getattr(result, "content", ""), 600))
+            if content:
+                parts.append("evidence=" + content)
+        summary = clip("; ".join(parts), 900)
+        self.memory.append_note(summary, tags=("tool-result", name, status), source=f"tool:{name}", kind="observation")
+        self.session["memory"] = self.memory.to_dict()
+        return summary
 
     @classmethod
     def from_session(cls, model_client, workspace, session_store, session_id, **kwargs):

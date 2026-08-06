@@ -67,6 +67,9 @@ def build_prompt_prefix(workspace, tools, built_at=None):
         - Final answers must look like:
           <final>your answer</final>
         - Never invent tool results.
+        - A tool result is never the end of a turn. After every tool call, inspect the returned evidence and continue with another tool call when evidence is incomplete, or return a non-empty <final> answer when the request can be answered.
+        - Never stop silently after reading a file, listing files, or searching. The next response must be another <tool>...</tool> call or a non-empty <final>...</final> that states what was found and what it means for the user's request.
+        - If a tool fails or returns no useful evidence, tell the user in a non-empty <final> answer or choose a different tool; do not emit an empty answer.
         - Keep answers concise and concrete.
         - If the user asks you to create or update a specific file and the path is clear, use write_file or patch_file instead of repeatedly listing files.
         - Before writing tests for existing code, read the implementation first.

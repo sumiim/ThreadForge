@@ -18,6 +18,10 @@ def test_task_state_starts_running_with_empty_progress():
     assert state.last_tool == ""
     assert state.stop_reason == ""
     assert state.final_answer == ""
+    assert state.phase == "UNDERSTAND_REQUEST"
+    assert state.checklist
+    assert state.max_tool_steps == 6
+    assert state.max_read_files == 4
 
 
 def test_task_state_records_success_and_final_answer():
@@ -60,6 +64,7 @@ def test_task_state_snapshot_keeps_final_answer():
 
     assert snapshot["final_answer"] == "Final answer."
     assert snapshot["stop_reason"] == STOP_REASON_FINAL_ANSWER_RETURNED
+    assert snapshot["phase"] == "FINAL"
 
 
 def test_task_state_snapshot_keeps_checkpoint_reference_without_body():
@@ -71,8 +76,21 @@ def test_task_state_snapshot_keeps_checkpoint_reference_without_body():
 
     assert snapshot["checkpoint_id"] == "ckpt_001"
     assert snapshot["resume_status"] == "full-valid"
-    assert "current_goal" not in snapshot
-    assert "next_step" not in snapshot
+    assert snapshot["phase"] == "UNDERSTAND_REQUEST"
+    assert snapshot["next_step"] == "Understand the request and acceptance criteria"
+
+
+def test_task_state_requires_post_tool_reasoning_before_next_decision():
+    state = TaskState.create(run_id="run_008", task_id="task_008", user_request="Inspect files.")
+
+    state.begin_post_tool_reasoning("read_file")
+    assert state.requires_post_tool_reasoning is True
+    assert state.phase == "ANALYZE_CONTEXT"
+    assert "read_file" in state.next_step
+
+    state.finish_post_tool_reasoning()
+    assert state.requires_post_tool_reasoning is False
+    assert state.phase == "ACT_OR_ANSWER"
 
 
 def test_task_state_round_trips_harness_counters_and_affected_paths():

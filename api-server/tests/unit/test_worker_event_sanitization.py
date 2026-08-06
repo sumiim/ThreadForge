@@ -50,3 +50,23 @@ def test_risky_tool_event_drops_arguments_and_result_preview():
 
     assert "args_preview" not in requested
     assert "result_preview" not in completed
+
+
+def test_agent_state_event_is_bounded_and_does_not_expose_evidence():
+    state = _sanitize_event_data(
+        "agent.state",
+        {
+            "phase": "ANALYZE_CONTEXT",
+            "next_step": "read the next file",
+            "checklist": ["one", "two"],
+            "completed_items": ["one"],
+            "tool_steps": "2",
+            "read_files": 1,
+            "secret_output": "must not reach the frontend",
+        },
+    )
+
+    assert state["phase"] == "ANALYZE_CONTEXT"
+    assert state["checklist"] == ["one", "two"]
+    assert state["tool_steps"] == 2
+    assert "secret_output" not in state
