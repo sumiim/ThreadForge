@@ -28,7 +28,7 @@ interface SessionPanelProps {
   onCreate: (workspaceId: string, deviceId?: string) => void
   onNavigate: (view: PanelView) => void
   onOpenSettings: () => void
-  onWorkspacesChanged?: () => Promise<unknown> | unknown
+  onWorkspacesChanged?: () => Promise<Workspace[]> | Workspace[]
   themeMode: ThemeMode
   onToggleTheme: () => void
 }
