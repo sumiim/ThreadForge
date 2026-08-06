@@ -89,6 +89,10 @@ class ConfigStore:
     def __init__(self, root: Path | None = None):
         self.root = Path(root or default_data_dir()).resolve()
         self.path = self.root / "worker.json"
+        # Keep mutable workspace authorization separate from the paired device
+        # record. Windows scanners and installers may briefly lock worker.json;
+        # selecting a directory must not depend on replacing that file.
+        self.workspaces_path = self.root / "workspaces.json"
 
     def load(self) -> WorkerConfig:
         if not self.path.is_file():
@@ -96,7 +100,13 @@ class ConfigStore:
         payload = json.loads(self.path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             raise TypeError("Worker config must be a JSON object")
-        return WorkerConfig.from_dict(payload)
+        config = WorkerConfig.from_dict(payload)
+        if self.workspaces_path.is_file():
+            workspace_payload = json.loads(self.workspaces_path.read_text(encoding="utf-8"))
+            if not isinstance(workspace_payload, list):
+                raise TypeError("Worker workspace config must be a JSON list")
+            config.workspaces = WorkerConfig.from_dict({"workspaces": workspace_payload}).workspaces
+        return config
 
     def save(self, config: WorkerConfig) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -142,7 +152,7 @@ class ConfigStore:
         )
         config.workspaces.append(workspace)
         try:
-            self.save(config)
+            self.save_workspaces(config)
         except Exception as exc:
             config.workspaces.remove(workspace)
             raise WorkspaceConfigWriteError("failed to save Worker workspace") from exc
@@ -153,8 +163,35 @@ class ConfigStore:
         if len(remaining) == len(config.workspaces):
             return False
         config.workspaces = remaining
-        self.save(config)
+        self.save_workspaces(config)
         return True
+
+    def save_workspaces(self, config: WorkerConfig) -> None:
+        """Persist only workspace metadata, avoiding the paired device file."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                delete=False,
+                dir=self.root,
+                prefix="workspaces.json.",
+                suffix=".tmp",
+            ) as handle:
+                temp_path = Path(handle.name)
+                json.dump([workspace.__dict__ for workspace in config.workspaces], handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            _replace_with_retry(temp_path, self.workspaces_path)
+            temp_path = None
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+        if sys.platform != "win32":
+            self.root.chmod(0o700)
+            self.workspaces_path.chmod(0o600)
 
     @property
     def model_env_path(self) -> Path:
