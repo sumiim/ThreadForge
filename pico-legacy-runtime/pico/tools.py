@@ -11,7 +11,7 @@ from functools import partial
 
 from .execution_hooks import ProcessCleanupFailed, RunCancelled
 from .shell_process import ShellProcess
-from .subprocess_utils import hidden_process_creation_flags
+from .subprocess_utils import hidden_process_creation_flags, hidden_process_startupinfo
 from .workspace import IGNORED_PATH_NAMES
 
 BASE_TOOL_SPECS = {
@@ -199,6 +199,7 @@ def tool_search(context, args):
             encoding="utf-8",
             errors="replace",
             creationflags=hidden_process_creation_flags(),
+            startupinfo=hidden_process_startupinfo(),
         )
         return result.stdout.strip() or result.stderr.strip() or "(no matches)"
 

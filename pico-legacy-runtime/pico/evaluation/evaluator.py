@@ -16,6 +16,7 @@ from ..runtime import Pico, SessionStore
 from ..run_store import RunStore
 from ..task_state import STOP_REASON_FINAL_ANSWER_RETURNED
 from ..tools import legal_tool_names
+from ..subprocess_utils import hidden_process_creation_flags, hidden_process_startupinfo
 from ..workspace import WorkspaceContext
 from .backends import build_backend_runner
 from .verifier import VerifierRunner
@@ -352,6 +353,8 @@ def _git_value(args, fallback="", cwd=None):
             text=True,
             check=True,
             timeout=5,
+            creationflags=hidden_process_creation_flags(),
+            startupinfo=hidden_process_startupinfo(),
         )
         return result.stdout.strip() or fallback
     except Exception:
