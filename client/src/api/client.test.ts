@@ -70,6 +70,20 @@ describe('client metadata API', () => {
       return true
     })
   })
+
+  it('retries a transient read timeout once before surfacing it', async () => {
+    let calls = 0
+    globalThis.fetch = async () => {
+      calls += 1
+      if (calls === 1) {
+        throw Object.assign(new Error('timed out'), { name: 'AbortError' })
+      }
+      return response({ model: 'gpt-test' })
+    }
+
+    assert.equal((await getRuntimeConfig()).model, 'gpt-test')
+    assert.equal(calls, 2)
+  })
 })
 
 describe('client authentication API', () => {
@@ -158,6 +172,23 @@ describe('client authentication API', () => {
     assert.equal(result.filename, 'worker.exe')
     assert.equal(result.blob.size, 4)
     assert.deepEqual(progress.at(-1), [4, 4])
+  })
+
+  it('retries a stalled Worker download once', async () => {
+    let calls = 0
+    globalThis.fetch = async () => {
+      calls += 1
+      if (calls === 1) {
+        throw Object.assign(new Error('connection closed'), { name: 'AbortError' })
+      }
+      return new Response(new Uint8Array([1, 2, 3, 4]), {
+        headers: { 'Content-Length': '4' },
+      })
+    }
+
+    const result = await downloadWorkerRelease('windows-x86_64', () => undefined)
+    assert.equal(result.blob.size, 4)
+    assert.equal(calls, 2)
   })
 
   it('requests signed Worker release metadata', async () => {

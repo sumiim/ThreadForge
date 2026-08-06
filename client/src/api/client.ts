@@ -37,9 +37,11 @@ interface ErrorBody {
   error?: { code?: string; message?: string; details?: Record<string, unknown> }
 }
 
-const API_REQUEST_TIMEOUT_MS = 15_000
+const API_REQUEST_TIMEOUT_MS = 30_000
+const API_READ_RETRY_LIMIT = 1
+const API_RETRY_DELAY_MS = 500
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function requestOnce<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response
   const controller = new AbortController()
   const timeout = globalThis.setTimeout(() => controller.abort(), API_REQUEST_TIMEOUT_MS)
@@ -81,8 +83,36 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T
 }
 
+const delay = (milliseconds: number) =>
+  new Promise<void>((resolve) => globalThis.setTimeout(resolve, milliseconds))
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method ?? 'GET').toUpperCase()
+  const readOnly = method === 'GET' || method === 'HEAD' || method === 'OPTIONS'
+  const attempts = readOnly ? API_READ_RETRY_LIMIT + 1 : 1
+  let lastError: unknown
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await requestOnce<T>(path, init)
+    } catch (cause) {
+      lastError = cause
+      if (attempt + 1 >= attempts || !isRetryableReadError(cause)) throw cause
+      await delay(API_RETRY_DELAY_MS * (attempt + 1))
+    }
+  }
+  throw lastError instanceof Error ? lastError : new ApiError('api-server request failed', 'network_error', 0)
+}
+
+function isRetryableReadError(error: unknown): boolean {
+  if (error instanceof ApiError) {
+    return error.code === 'request_timeout' || error.code === 'network_error' || error.status >= 500
+  }
+  return true
+}
+
 // 后端错误码 -> 前端可读文案
 const errorText: Record<string, string> = {
+  worker_release_download_timeout: 'Worker 安装包下载停滞，请检查网络后重试',
   request_timeout: 'api-server 响应超时，请检查公网入口后重试',
   network_error: '无法连接 api-server，请确认后端已启动',
   model_not_configured: '当前执行环境未配置模型，请先完成模型设置',
@@ -203,43 +233,130 @@ export function getLatestWorkerRelease(options?: { force?: boolean }): Promise<W
   return workerReleaseRequest
 }
 
+const WORKER_DOWNLOAD_TIMEOUT_MS = 10 * 60_000
+const WORKER_DOWNLOAD_STALL_TIMEOUT_MS = 45_000
+
 export async function downloadWorkerRelease(
   platformName: string,
   onProgress: (received: number, total: number) => void,
 ): Promise<{ blob: Blob; filename: string }> {
-  const response = await fetch(
-    apiUrl(`/api/v1/worker/releases/download/${encodeURIComponent(platformName)}`),
-    { credentials: 'include' },
-  )
-  if (!response.ok) {
-    let message = `下载失败（HTTP ${response.status}）`
+  const maxAttempts = 2
+  let lastError: unknown
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (attempt > 0) await delay(750)
     try {
-      const body = (await response.json()) as ErrorBody
-      message = body.error?.message ?? message
-    } catch {
-      // Keep the fallback for non-JSON proxy errors.
+      return await downloadWorkerReleaseAttempt(platformName, onProgress)
+    } catch (cause) {
+      lastError = cause
+      if (!isRetryableWorkerDownloadError(cause) || attempt + 1 >= maxAttempts) throw cause
+      // A retry starts a fresh response; reset the progress bar instead of
+      // leaving the user with a percentage that can no longer advance.
+      onProgress(0, 0)
     }
-    throw new ApiError(message, 'worker_release_unavailable', response.status)
   }
-  const total = Number(response.headers.get('Content-Length') ?? 0)
-  const disposition = response.headers.get('Content-Disposition') ?? ''
-  const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? 'threadforge-worker.exe'
-  if (!response.body) {
-    const blob = await response.blob()
-    onProgress(blob.size, total || blob.size)
-    return { blob, filename }
+  throw lastError instanceof Error
+    ? lastError
+    : new ApiError('Worker release download failed', 'worker_release_unavailable', 0)
+}
+
+async function downloadWorkerReleaseAttempt(
+  platformName: string,
+  onProgress: (received: number, total: number) => void,
+): Promise<{ blob: Blob; filename: string }> {
+  const controller = new AbortController()
+  let timedOut = false
+  const timeout = globalThis.setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, WORKER_DOWNLOAD_TIMEOUT_MS)
+  try {
+    let response: Response
+    try {
+      response = await fetch(
+        apiUrl(`/api/v1/worker/releases/download/${encodeURIComponent(platformName)}`),
+        { credentials: 'include', signal: controller.signal },
+      )
+    } catch (cause) {
+      if (timedOut || (cause as { name?: string })?.name === 'AbortError') {
+        throw new ApiError('Worker release download timed out', 'worker_release_download_timeout', 0)
+      }
+      throw new ApiError('Worker release download failed', 'worker_release_unavailable', 0)
+    }
+    if (!response.ok) {
+      let message = `下载失败（HTTP ${response.status}）`
+      try {
+        const body = (await response.json()) as ErrorBody
+        message = body.error?.message ?? message
+      } catch {
+        // Keep the fallback for non-JSON proxy errors.
+      }
+      throw new ApiError(message, 'worker_release_unavailable', response.status)
+    }
+
+    const total = Number(response.headers.get('Content-Length') ?? 0)
+    const disposition = response.headers.get('Content-Disposition') ?? ''
+    const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? 'threadforge-worker.exe'
+    onProgress(0, total)
+    if (!response.body) {
+      const blob = await response.blob()
+      onProgress(blob.size, total || blob.size)
+      return { blob, filename }
+    }
+
+    const reader = response.body.getReader()
+    const chunks: ArrayBuffer[] = []
+    let received = 0
+    for (;;) {
+      let result: ReadableStreamReadResult<Uint8Array>
+      try {
+        result = await readWorkerChunk(reader, controller)
+      } catch (cause) {
+        await reader.cancel().catch(() => undefined)
+        if (cause instanceof ApiError) throw cause
+        if (timedOut || (cause as { name?: string })?.name === 'AbortError') {
+          throw new ApiError('Worker release download timed out', 'worker_release_download_timeout', 0)
+        }
+        throw new ApiError('Worker release download failed', 'worker_release_unavailable', 0)
+      }
+      if (result.done) break
+      if (!result.value?.byteLength) continue
+      chunks.push(Uint8Array.from(result.value).buffer)
+      received += result.value.byteLength
+      onProgress(received, total)
+    }
+    return { blob: new Blob(chunks, { type: 'application/octet-stream' }), filename }
+  } finally {
+    globalThis.clearTimeout(timeout)
   }
-  const reader = response.body.getReader()
-  const chunks: ArrayBuffer[] = []
-  let received = 0
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    chunks.push(Uint8Array.from(value).buffer)
-    received += value.byteLength
-    onProgress(received, total)
+}
+
+function readWorkerChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  controller: AbortController,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  return new Promise((resolve, reject) => {
+    const stallTimer = globalThis.setTimeout(() => {
+      controller.abort()
+      reject(new ApiError('Worker release download stalled', 'worker_release_download_timeout', 0))
+    }, WORKER_DOWNLOAD_STALL_TIMEOUT_MS)
+    reader.read().then(
+      (result) => {
+        globalThis.clearTimeout(stallTimer)
+        resolve(result)
+      },
+      (cause) => {
+        globalThis.clearTimeout(stallTimer)
+        reject(cause)
+      },
+    )
+  })
+}
+
+function isRetryableWorkerDownloadError(error: unknown): boolean {
+  if (error instanceof ApiError) {
+    return error.code === 'worker_release_download_timeout' || error.status === 0 || error.status >= 500
   }
-  return { blob: new Blob(chunks, { type: 'application/octet-stream' }), filename }
+  return true
 }
 
 export function getRuntimeConfig(): Promise<RuntimeConfig> {

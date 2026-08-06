@@ -66,11 +66,14 @@ export default function NewSessionModal({
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null)
   const [downloaded, setDownloaded] = useState(false)
   const [error, setError] = useState('')
+  const [deviceError, setDeviceError] = useState('')
+  const [releaseError, setReleaseError] = useState('')
+  const [downloadStatus, setDownloadStatus] = useState('')
   const [selecting, setSelecting] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const operationVersion = useRef(0)
   const noWorkspace = selectable.length === 0
-  const releaseLoading = devices !== null && release === null && !error
+  const releaseLoading = devices !== null && release === null && !releaseError
   const compatibleDevices = (devices ?? []).filter((device) => workerIsReady(device, release))
   const outdatedDevices = release
     ? (devices ?? []).filter((device) => workerNeedsUpdate(device, release))
@@ -83,20 +86,26 @@ export default function NewSessionModal({
     let active = true
     void listDevices()
       .then(({ items }) => {
-        if (active) setDevices(items)
+        if (active) {
+          setDevices(items)
+          setDeviceError('')
+        }
       })
       .catch((cause: unknown) => {
         if (active) {
           setDevices([])
-          setError(friendlyMessage(cause))
+          setDeviceError(friendlyMessage(cause))
         }
       })
     void getLatestWorkerRelease()
       .then((manifest) => {
-        if (active) setRelease(manifest)
+        if (active) {
+          setRelease(manifest)
+          setReleaseError('')
+        }
       })
       .catch((cause: unknown) => {
-        if (active) setError(friendlyMessage(cause))
+        if (active) setReleaseError(friendlyMessage(cause))
       })
     return () => {
       active = false
@@ -110,6 +119,9 @@ export default function NewSessionModal({
     setRelease(null)
     setDownloadProgress(null)
     setDownloaded(false)
+    setDeviceError('')
+    setReleaseError('')
+    setDownloadStatus('')
     setSelecting(false)
     setConnecting(false)
     setError('')
@@ -125,13 +137,19 @@ export default function NewSessionModal({
     setSelectedDeviceId(null)
     setRelease(null)
     setError('')
+    setDeviceError('')
+    setReleaseError('')
+    setDownloadStatus('')
   }
 
   const download = async () => {
     try {
       setError('')
+      setDownloadStatus('正在连接公网入口…')
       setDownloadProgress(0)
       const result = await downloadWorkerRelease('windows-x86_64', (received, total) => {
+        if (received === 0 && total === 0) setDownloadStatus('下载连接中断，正在自动重试…')
+        else if (received > 0) setDownloadStatus('正在下载 Worker 安装程序…')
         setDownloadProgress(total > 0 ? Math.min(99, Math.round((received / total) * 100)) : 0)
       })
       const url = URL.createObjectURL(result.blob)
@@ -141,9 +159,11 @@ export default function NewSessionModal({
       anchor.click()
       window.setTimeout(() => URL.revokeObjectURL(url), 1_000)
       setDownloadProgress(100)
+      setDownloadStatus('安装程序已下载，请运行它完成安装')
       setDownloaded(true)
     } catch (cause) {
       setDownloadProgress(null)
+      setDownloadStatus('')
       setError(friendlyMessage(cause))
     }
   }
@@ -173,6 +193,7 @@ export default function NewSessionModal({
         const device = items.find((item) => workerIsReady(item, release))
         if (device) {
           setDevices(items)
+          setDeviceError('')
           setSelectedDeviceId(device.device_id)
           await onWorkspacesChanged?.()
           return
@@ -227,6 +248,15 @@ export default function NewSessionModal({
         description="请安装或更新本机 Worker。安装程序自带运行环境，不需要单独安装 Python。"
       />
       {error ? <Alert type="error" showIcon message={error} /> : null}
+      {releaseError ? <Alert type="error" showIcon message={releaseError} /> : null}
+      {deviceError ? (
+        <Alert
+          type="warning"
+          showIcon
+          message="暂时无法刷新本机 Worker 状态"
+          description={`${deviceError}。安装程序下载不受影响，完成安装后可点击“刷新 Worker 状态”重试。`}
+        />
+      ) : null}
       {outdatedDevices.length > 0 && release ? (
         <Alert
           type="warning"
@@ -249,6 +279,7 @@ export default function NewSessionModal({
       {downloadProgress !== null ? (
         <Progress percent={downloadProgress} status={downloadProgress === 100 ? 'success' : 'active'} />
       ) : null}
+      {downloadStatus ? <div className="text-xs text-stone-500">{downloadStatus}</div> : null}
       <Button
         type="primary"
         block
