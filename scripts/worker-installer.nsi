@@ -7,8 +7,8 @@ RequestExecutionLevel user
 !ifndef OUTPUT_FILE
   !error "OUTPUT_FILE is required"
 !endif
-!ifndef WORKER_SERVICE_EXE
-  !error "WORKER_SERVICE_EXE is required"
+!ifndef WORKER_SERVICE_DIR
+  !error "WORKER_SERVICE_DIR is required"
 !endif
 !ifndef WORKER_VERSION
   !error "WORKER_VERSION is required"
@@ -45,7 +45,10 @@ Section "Install"
 install_files:
   SetOutPath "$INSTDIR"
   File "/oname=threadforge-worker.exe" "${WORKER_EXE}"
-  File "/oname=threadforge-worker-service.exe" "${WORKER_SERVICE_EXE}"
+  ; Keep the service executable at the historical root path, but ship its
+  ; PyInstaller dependencies as a directory. This avoids onefile _MEI
+  ; extraction and reduces antivirus false positives for cryptography/rust.pyd.
+  File /r "${WORKER_SERVICE_DIR}\*"
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\ThreadForgeWorker" "DisplayName" "ThreadForge Worker Companion"
@@ -85,7 +88,6 @@ Section "Uninstall"
   DeleteRegKey HKCU "Software\Classes\threadforge"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\ThreadForgeWorker"
   Delete "$INSTDIR\threadforge-worker.exe"
-  Delete "$INSTDIR\threadforge-worker-service.exe"
   Delete "$INSTDIR\uninstall.exe"
-  RMDir "$INSTDIR"
+  RMDir /r "$INSTDIR"
 SectionEnd

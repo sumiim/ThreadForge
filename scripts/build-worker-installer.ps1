@@ -16,6 +16,7 @@ try {
         --clean `
         --noconfirm `
         --onefile `
+        --noupx `
         --name threadforge-worker `
         --paths local-worker/src `
         --paths pico-legacy-runtime `
@@ -35,8 +36,8 @@ try {
     python -m PyInstaller `
         --clean `
         --noconfirm `
-        --onefile `
         --noconsole `
+        --noupx `
         --name threadforge-worker-service `
         --paths local-worker/src `
         --paths pico-legacy-runtime `
@@ -66,10 +67,10 @@ try {
     }
 
     $workerExe = (Resolve-Path "dist/threadforge-worker.exe").Path
-    $serviceExe = (Resolve-Path "dist/threadforge-worker-service.exe").Path
+    $serviceDir = (Resolve-Path "dist/threadforge-worker-service").Path
     & $makensis `
         "/DWORKER_EXE=$workerExe" `
-        "/DWORKER_SERVICE_EXE=$serviceExe" `
+        "/DWORKER_SERVICE_DIR=$serviceDir" `
         "/DOUTPUT_FILE=$outputPath" `
         "/DWORKER_VERSION=$Version" `
         scripts/worker-installer.nsi
