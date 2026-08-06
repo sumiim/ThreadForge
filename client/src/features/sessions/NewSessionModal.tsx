@@ -45,7 +45,7 @@ interface NewSessionModalProps {
   onCreate: () => void
   onCancel: () => void
   onOpenSettings: () => void
-  onWorkspacesChanged?: () => Promise<unknown> | unknown
+  onWorkspacesChanged?: () => Promise<Workspace[]> | Workspace[]
 }
 
 // 新建会话同时负责：选择工作区、绑定多台 Worker、目录授权和首次安装。
@@ -87,6 +87,14 @@ export default function NewSessionModal({
     : []
   const selectedDevice =
     compatibleDevices.find((device) => device.device_id === selectedDeviceId) ?? compatibleDevices[0] ?? null
+  const addWorkspaceTarget = selectable.find(
+    (workspace) =>
+      workspace.execution_environment === 'local_worker' &&
+      workspace.device_id &&
+      workspace.device_id === selected?.device_id,
+  ) ?? selectable.find(
+    (workspace) => workspace.execution_environment === 'local_worker' && workspace.device_id,
+  ) ?? null
 
   useEffect(() => {
     if (!open || !noWorkspace || devices !== null) return
@@ -228,24 +236,29 @@ export default function NewSessionModal({
     }
   }
 
-  const selectWorkspace = async () => {
-    if (!selectedDevice) return
+  const selectWorkspace = async (deviceId = selectedDevice?.device_id) => {
+    if (!deviceId) return
     const operation = operationVersion.current + 1
     operationVersion.current = operation
     setSelecting(true)
     setError('')
     try {
-      let request: WorkspaceSelectionRequest = await requestWorkspaceSelection(selectedDevice.device_id)
+      let request: WorkspaceSelectionRequest = await requestWorkspaceSelection(deviceId)
       let attempts = 0
       while (request.status === 'pending' && attempts < 122) {
         attempts += 1
         await delay(1_000)
         if (operationVersion.current !== operation) return
-        request = await getWorkspaceSelection(selectedDevice.device_id, request.request_id)
+        request = await getWorkspaceSelection(deviceId, request.request_id)
       }
       if (operationVersion.current !== operation) return
       if (request.status === 'completed') {
-        await onWorkspacesChanged?.()
+        const updatedWorkspaces = await onWorkspacesChanged?.()
+        const addedWorkspace = updatedWorkspaces?.find(
+          (workspace) =>
+            workspace.workspace_id === request.workspace_id && workspace.device_id === deviceId,
+        )
+        if (addedWorkspace) onSelect(addedWorkspace)
         return
       }
       if (request.status === 'cancelled') {
@@ -451,6 +464,20 @@ export default function NewSessionModal({
               </Radio>
             ))}
           </Radio.Group>
+          {addWorkspaceTarget ? (
+            <Button
+              className="mt-3"
+              block
+              icon={<FolderOpenOutlined />}
+              loading={selecting}
+              onClick={() => void selectWorkspace(addWorkspaceTarget.device_id)}
+            >
+              {selecting
+                ? '等待本机选择目录'
+                : `向 ${addWorkspaceTarget.device_name ?? '当前 Worker'} 添加工作区`}
+            </Button>
+          ) : null}
+          {error ? <Alert className="mt-3" type="error" showIcon message={error} /> : null}
         </>
       )}
       <p className="mt-3 text-xs text-stone-500">
