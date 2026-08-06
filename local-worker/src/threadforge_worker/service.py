@@ -140,7 +140,9 @@ def _select_directory_windows() -> str | None:
         browse_info = BrowseInfo(
             hwnd_owner=0,
             pidl_root=None,
-            display_name=display_name,
+            # ctypes does not implicitly convert a wchar array to LPWSTR on
+            # Windows; pass the buffer's pointer explicitly.
+            display_name=ctypes.cast(display_name, wintypes.LPWSTR),
             title="ThreadForge 请求添加本地工作区",
             flags=0x0001 | 0x0040,  # BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE
             callback=None,
