@@ -7,7 +7,10 @@ import logging
 import os
 import subprocess
 import sys
+import threading
+import time
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -87,9 +90,13 @@ class ServiceLock:
             self.handle = None
 
 
-def select_directory() -> str | None:
+_DIRECTORY_SELECTION_TIMEOUT_SECONDS = 120.0
+
+
+def select_directory(expires_at: str = "") -> str | None:
+    timeout_seconds = _remaining_selection_seconds(expires_at)
     if sys.platform == "win32":
-        return _select_directory_windows()
+        return _select_directory_windows(timeout_seconds)
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -111,10 +118,18 @@ def select_directory() -> str | None:
         root.destroy()
 
 
-def _select_directory_windows() -> str | None:
+def _select_directory_windows(timeout_seconds: float) -> str | None:
     """Open a folder picker without relying on bundled Tcl/Tk files."""
     import ctypes
     from ctypes import wintypes
+
+    browse_callback = ctypes.WINFUNCTYPE(
+        ctypes.c_int,
+        wintypes.HWND,
+        wintypes.UINT,
+        wintypes.LPARAM,
+        wintypes.LPARAM,
+    )
 
     class BrowseInfo(ctypes.Structure):
         _fields_ = [
@@ -123,19 +138,75 @@ def _select_directory_windows() -> str | None:
             ("display_name", wintypes.LPWSTR),
             ("title", wintypes.LPCWSTR),
             ("flags", wintypes.UINT),
-            ("callback", ctypes.c_void_p),
+            ("callback", browse_callback),
             ("lparam", wintypes.LPARAM),
             ("image", ctypes.c_int),
         ]
 
     shell32 = ctypes.windll.shell32
     ole32 = ctypes.windll.ole32
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
     shell32.SHBrowseForFolderW.argtypes = [ctypes.POINTER(BrowseInfo)]
     shell32.SHBrowseForFolderW.restype = ctypes.c_void_p
     shell32.SHGetPathFromIDListW.argtypes = [ctypes.c_void_p, wintypes.LPWSTR]
     shell32.SHGetPathFromIDListW.restype = wintypes.BOOL
     ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.PostMessageW.restype = wintypes.BOOL
+    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    user32.SetForegroundWindow.restype = wintypes.BOOL
+    user32.BringWindowToTop.argtypes = [wintypes.HWND]
+    user32.BringWindowToTop.restype = wintypes.BOOL
+    user32.GetForegroundWindow.argtypes = []
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.c_void_p]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+    user32.AttachThreadInput.restype = wintypes.BOOL
+    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.ShowWindow.restype = wintypes.BOOL
+    user32.SetWindowPos.argtypes = [
+        wintypes.HWND,
+        wintypes.HWND,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.UINT,
+    ]
+    user32.SetWindowPos.restype = wintypes.BOOL
+    kernel32.GetCurrentThreadId.argtypes = []
+    kernel32.GetCurrentThreadId.restype = wintypes.DWORD
     with _ole_apartment(ole32):
+        dialog_ready = threading.Event()
+        dialog_closed = threading.Event()
+        dialog_hwnd = 0
+
+        @browse_callback
+        def on_browse_event(hwnd, message, _lparam, _data):
+            nonlocal dialog_hwnd
+            if message == 1:  # BFFM_INITIALIZED
+                dialog_hwnd = int(hwnd)
+                _bring_window_to_front(user32, kernel32, hwnd)
+                dialog_ready.set()
+            return 0
+
+        def close_when_expired() -> None:
+            deadline = time.monotonic() + timeout_seconds
+            while not dialog_ready.wait(0.05):
+                if dialog_closed.is_set():
+                    return
+            remaining = max(0.0, deadline - time.monotonic())
+            if not dialog_closed.wait(remaining) and dialog_hwnd:
+                user32.PostMessageW(dialog_hwnd, 0x0010, 0, 0)  # WM_CLOSE
+
+        watchdog = threading.Thread(
+            target=close_when_expired,
+            name="workspace-picker-timeout",
+            daemon=True,
+        )
+        watchdog.start()
         display_name = ctypes.create_unicode_buffer(260)
         browse_info = BrowseInfo(
             hwnd_owner=0,
@@ -145,11 +216,14 @@ def _select_directory_windows() -> str | None:
             display_name=ctypes.cast(display_name, wintypes.LPWSTR),
             title="ThreadForge 请求添加本地工作区",
             flags=0x0001 | 0x0040,  # BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE
-            callback=None,
+            callback=on_browse_event,
             lparam=0,
             image=0,
         )
-        item_id_list = shell32.SHBrowseForFolderW(ctypes.byref(browse_info))
+        try:
+            item_id_list = shell32.SHBrowseForFolderW(ctypes.byref(browse_info))
+        finally:
+            dialog_closed.set()
         if not item_id_list:
             return None
         try:
@@ -159,6 +233,45 @@ def _select_directory_windows() -> str | None:
             return selected_path.value or None
         finally:
             ole32.CoTaskMemFree(item_id_list)
+
+
+def _bring_window_to_front(user32, kernel32, hwnd) -> None:
+    """Present a prompt created by a detached background Worker."""
+    foreground = user32.GetForegroundWindow()
+    current_thread = int(kernel32.GetCurrentThreadId())
+    foreground_thread = (
+        int(user32.GetWindowThreadProcessId(foreground, None)) if foreground else 0
+    )
+    attached = bool(
+        foreground_thread
+        and foreground_thread != current_thread
+        and user32.AttachThreadInput(current_thread, foreground_thread, True)
+    )
+    try:
+        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        # Toggle topmost so the prompt is visibly raised without leaving it
+        # permanently above every other application.
+        flags = 0x0001 | 0x0002 | 0x0040  # NOMOVE | NOSIZE | SHOWWINDOW
+        user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, flags)  # HWND_TOPMOST
+        user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, flags)  # HWND_NOTOPMOST
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+    finally:
+        if attached:
+            user32.AttachThreadInput(current_thread, foreground_thread, False)
+
+
+def _remaining_selection_seconds(expires_at: str) -> float:
+    if not expires_at:
+        return _DIRECTORY_SELECTION_TIMEOUT_SECONDS
+    try:
+        expires = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        if expires.tzinfo is None:
+            raise ValueError("selection expiry must include a timezone")
+        remaining = (expires - datetime.now(timezone.utc)).total_seconds()
+    except (TypeError, ValueError):
+        return _DIRECTORY_SELECTION_TIMEOUT_SECONDS
+    return max(1.0, min(_DIRECTORY_SELECTION_TIMEOUT_SECONDS, remaining))
 
 
 @contextmanager
@@ -233,3 +346,20 @@ def start_service_background(data_dir: str | None = None) -> None:
     else:
         kwargs["start_new_session"] = True
     subprocess.Popen(command, **kwargs)
+
+
+def start_uninstaller() -> None:
+    if sys.platform != "win32" or not bool(getattr(sys, "frozen", False)):
+        raise RuntimeError("worker_uninstaller_unavailable")
+    uninstaller = Path(sys.executable).resolve().with_name("uninstall.exe")
+    if not uninstaller.is_file():
+        raise RuntimeError("worker_uninstaller_unavailable")
+    subprocess.Popen(
+        [str(uninstaller)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
+        env={**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"},
+    )

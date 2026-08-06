@@ -11,6 +11,7 @@ import threading
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pico.security import redact_artifact
@@ -57,7 +58,7 @@ class WorkerClient:
         store: ConfigStore,
         config: WorkerConfig,
         *,
-        workspace_selector: Callable[[], str | None] | None = None,
+        workspace_selector: Callable[[str], str | None] | None = None,
         status_callback: Callable[[str], None] | None = None,
         ready_callback: Callable[[], None] | None = None,
     ):
@@ -209,7 +210,10 @@ class WorkerClient:
                     str(message.get("args_digest", "")),
                 )
         elif message_type == "workspace.select":
-            self._start_workspace_selection(str(message.get("request_id", "")))
+            self._start_workspace_selection(
+                str(message.get("request_id", "")),
+                str(message.get("expires_at", "")),
+            )
         elif message_type == "session.history.get":
             self._start_history_read(message)
         elif message_type == "model.configure":
@@ -235,13 +239,13 @@ class WorkerClient:
         elif message_type == "protocol.error":
             raise RuntimeError(f"Worker protocol rejected: {message.get('code', 'unknown')}")
 
-    def _start_workspace_selection(self, request_id: str) -> None:
+    def _start_workspace_selection(self, request_id: str, expires_at: str) -> None:
         if not request_id or self._workspace_selector is None:
             self._send_workspace_selection_result(request_id, "failed", error="companion_required")
             return
         thread = threading.Thread(
             target=self._select_workspace,
-            args=(request_id,),
+            args=(request_id, expires_at),
             name=f"workspace-selection-{request_id}",
             daemon=True,
         )
@@ -379,14 +383,19 @@ class WorkerClient:
             }
         self._send(response)
 
-    def _select_workspace(self, request_id: str) -> None:
+    def _select_workspace(self, request_id: str, expires_at: str) -> None:
         if not self._workspace_lock.acquire(blocking=False):
             self._send_workspace_selection_result(request_id, "failed", error="selection_busy")
             return
         try:
-            selected_path = self._workspace_selector() if self._workspace_selector else None
+            selected_path = self._workspace_selector(expires_at) if self._workspace_selector else None
             if not selected_path:
                 self._send_workspace_selection_result(request_id, "cancelled")
+                return
+            if _timestamp_expired(expires_at):
+                self._send_workspace_selection_result(
+                    request_id, "failed", error="selection_expired"
+                )
                 return
             # Reuse the configuration that was loaded by this live service.
             # Reading worker.json again here races with installer/reconnect
@@ -589,6 +598,18 @@ def _stable_failure_reason(exc: Exception) -> str:
     if isinstance(exc, RuntimeError) and "not configured" in str(exc):
         return "model_not_configured"
     return "worker_runtime_error"
+
+
+def _timestamp_expired(value: str) -> bool:
+    if not value:
+        return False
+    try:
+        expires = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if expires.tzinfo is None:
+            return False
+        return expires <= datetime.now(timezone.utc)
+    except (TypeError, ValueError):
+        return False
 
 
 def _clip_utf8(value: str, max_bytes: int) -> str:

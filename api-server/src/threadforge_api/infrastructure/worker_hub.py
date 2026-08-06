@@ -29,7 +29,6 @@ from ..domain.errors import (
     PersistenceUnavailableError,
     WorkerCapabilityUnavailableError,
     WorkerCommandFailedError,
-    WorkerCommandPendingError,
     WorkerOfflineError,
     WorkerProtocolError,
 )
@@ -375,10 +374,9 @@ class WorkerHub:
                 None,
             )
             if existing is not None:
-                raise WorkerCommandPendingError(
-                    "a directory selection request is already pending",
-                    {"request_id": existing.request_id},
-                )
+                # Browser refreshes and transient retries must resume the
+                # existing native prompt instead of creating a dead-end 409.
+                return existing.to_dict()
             now = datetime.now(timezone.utc)
             request = WorkspaceSelectionRequest(
                 request_id="wsel_" + uuid.uuid4().hex,

@@ -67,8 +67,9 @@ def test_companion_workspace_selection_roundtrip(client):
         duplicate = client.post(
             f"/api/v1/devices/{paired['device_id']}/workspace-selection-requests"
         )
-        assert duplicate.status_code == 409
-        assert duplicate.json()["error"]["code"] == "worker_command_pending"
+        assert duplicate.status_code == 202
+        assert duplicate.json()["request_id"] == selection["request_id"]
+        assert duplicate.json()["status"] == "pending"
 
         selected_workspace_id = "ws_" + "b" * 32
         socket.send_json(

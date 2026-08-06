@@ -20,10 +20,11 @@ from websockets.http11 import Response
 import threadforge_worker.config as config_module
 import threadforge_worker.service as service_module
 from threadforge_worker.auto_update import run_auto_update_loop
-from threadforge_worker.cli import _parse_protocol_uri
+from threadforge_worker.cli import _parse_protocol_uri, main as worker_main
 from threadforge_worker.client import (
     WorkerClient,
     _stable_failure_reason,
+    _timestamp_expired,
     _validated_server_url,
     _websocket_url,
 )
@@ -43,9 +44,12 @@ from threadforge_worker.runtime import (
 from threadforge_worker.service import (
     ServiceAlreadyRunningError,
     ServiceLock,
+    _bring_window_to_front,
+    _remaining_selection_seconds,
     run_service,
     select_directory,
     start_service_background,
+    start_uninstaller,
 )
 
 
@@ -59,10 +63,12 @@ def test_protocol_links_are_strict_and_support_automatic_pairing():
         "code": "ABCD-1234-EF56-7890",
     }
     assert _parse_protocol_uri("threadforge://worker/start") == ("start", {})
+    assert _parse_protocol_uri("threadforge://worker/uninstall") == ("uninstall", {})
 
     invalid_links = [
         "threadforge://worker/run?command=whoami",
         "threadforge://worker/start?path=C%3A%5CUsers",
+        "threadforge://worker/uninstall?keep_data=false",
         "threadforge://worker/pair?server=https%3A%2F%2Fthreadforge.example&code=bad",
         "threadforge://worker/pair?server=https%3A%2F%2Fthreadforge.example&server=https%3A%2F%2Fevil.example&code=ABCD-1234-EF56-7890",
         "threadforge://other/start",
@@ -70,6 +76,19 @@ def test_protocol_links_are_strict_and_support_automatic_pairing():
     for link in invalid_links:
         with pytest.raises(ValueError):
             _parse_protocol_uri(link)
+
+
+def test_uninstall_protocol_does_not_require_readable_worker_config(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        config_module.ConfigStore,
+        "load",
+        lambda _store: (_ for _ in ()).throw(AssertionError("config must not be loaded")),
+    )
+    monkeypatch.setattr(service_module, "start_uninstaller", lambda: calls.append("uninstall"))
+
+    assert worker_main(["protocol", "threadforge://worker/uninstall"]) == 0
+    assert calls == ["uninstall"]
 
 
 def test_config_roundtrip_does_not_store_plaintext_token(tmp_path):
@@ -282,6 +301,31 @@ def test_frozen_windows_service_uses_a_fresh_pyinstaller_environment(monkeypatch
     assert popen_calls[0][1]["env"]["_MEIPASS2"].endswith("_MEIparent")
 
 
+def test_frozen_windows_worker_launches_sibling_uninstaller(monkeypatch, tmp_path):
+    popen_calls = []
+    executable = tmp_path / "threadforge-worker-service.exe"
+    executable.write_bytes(b"worker")
+    uninstaller = tmp_path / "uninstall.exe"
+    uninstaller.write_bytes(b"uninstaller")
+
+    monkeypatch.setattr(service_module.sys, "platform", "win32")
+    monkeypatch.setattr(service_module.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(service_module.sys, "executable", str(executable))
+    monkeypatch.setattr(service_module.subprocess, "CREATE_NO_WINDOW", 1, raising=False)
+    monkeypatch.setattr(service_module.subprocess, "DETACHED_PROCESS", 2, raising=False)
+    monkeypatch.setattr(
+        service_module.subprocess,
+        "Popen",
+        lambda command, **kwargs: popen_calls.append((command, kwargs)),
+    )
+
+    start_uninstaller()
+
+    assert popen_calls[0][0] == [str(uninstaller.resolve())]
+    assert popen_calls[0][1]["creationflags"] == 3
+    assert popen_calls[0][1]["env"]["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
+
+
 def test_auto_update_checks_immediately_and_stops_after_verified_update(tmp_path):
     events = []
 
@@ -346,9 +390,64 @@ def test_auto_update_retries_after_failure_and_can_be_stopped(tmp_path):
 
 def test_windows_directory_selection_uses_native_picker(monkeypatch):
     monkeypatch.setattr(service_module.sys, "platform", "win32")
-    monkeypatch.setattr(service_module, "_select_directory_windows", lambda: r"C:\repo")
+    timeouts = []
+    monkeypatch.setattr(
+        service_module,
+        "_select_directory_windows",
+        lambda timeout: timeouts.append(timeout) or r"C:\repo",
+    )
 
-    assert select_directory() == r"C:\repo"
+    assert select_directory("invalid") == r"C:\repo"
+    assert timeouts == [120.0]
+
+
+def test_directory_selection_timeout_is_bounded():
+    assert _remaining_selection_seconds("") == 120.0
+    assert _remaining_selection_seconds("invalid") == 120.0
+    assert _remaining_selection_seconds("2000-01-01T00:00:00Z") == 1.0
+    assert _timestamp_expired("2000-01-01T00:00:00Z") is True
+    assert _timestamp_expired("") is False
+
+
+def test_windows_directory_picker_is_raised_without_staying_topmost():
+    calls = []
+
+    class User32:
+        def GetForegroundWindow(self):
+            return 100
+
+        def GetWindowThreadProcessId(self, hwnd, _process_id):
+            calls.append(("foreground_thread", hwnd))
+            return 20
+
+        def AttachThreadInput(self, source, target, attach):
+            calls.append(("attach", source, target, attach))
+            return True
+
+        def ShowWindow(self, hwnd, command):
+            calls.append(("show", hwnd, command))
+
+        def SetWindowPos(self, hwnd, position, *_args):
+            calls.append(("position", hwnd, position))
+
+        def BringWindowToTop(self, hwnd):
+            calls.append(("raise", hwnd))
+
+        def SetForegroundWindow(self, hwnd):
+            calls.append(("foreground", hwnd))
+
+    class Kernel32:
+        @staticmethod
+        def GetCurrentThreadId():
+            return 10
+
+    _bring_window_to_front(User32(), Kernel32(), 200)
+
+    assert ("attach", 10, 20, True) in calls
+    assert ("position", 200, -1) in calls
+    assert ("position", 200, -2) in calls
+    assert ("foreground", 200) in calls
+    assert calls[-1] == ("attach", 10, 20, False)
 
 
 def test_ole_apartment_is_released_after_directory_selection():
@@ -380,6 +479,7 @@ def test_companion_selection_registers_workspace_without_sending_local_path(tmp_
     workspace_root = tmp_path / "private" / "repo"
     workspace_root.mkdir(parents=True)
     messages = []
+    expiries = []
 
     class Socket:
         def send(self, raw):
@@ -388,10 +488,16 @@ def test_companion_selection_registers_workspace_without_sending_local_path(tmp_
     client = WorkerClient(
         store,
         config,
-        workspace_selector=lambda: str(workspace_root),
+        workspace_selector=lambda expires_at: expiries.append(expires_at) or str(workspace_root),
     )
     client._socket = Socket()
-    client._handle({"type": "workspace.select", "request_id": "wsel_test"})
+    client._handle(
+        {
+            "type": "workspace.select",
+            "request_id": "wsel_test",
+            "expires_at": "2099-08-06T09:00:00Z",
+        }
+    )
     deadline = time.monotonic() + 1
     while not messages and time.monotonic() < deadline:
         time.sleep(0.01)
@@ -402,6 +508,40 @@ def test_companion_selection_registers_workspace_without_sending_local_path(tmp_
     assert result["workspace_id"].startswith("ws_")
     assert result["workspaces"][0]["name"] == "repo"
     assert str(workspace_root) not in json.dumps(result)
+    assert expiries == ["2099-08-06T09:00:00Z"]
+
+
+def test_companion_does_not_save_workspace_after_selection_expires(tmp_path):
+    workspace_root = tmp_path / "private" / "repo"
+    workspace_root.mkdir(parents=True)
+    messages = []
+
+    class Socket:
+        def send(self, raw):
+            messages.append(json.loads(raw))
+
+    store = ConfigStore(tmp_path / "state")
+    config = WorkerConfig()
+    client = WorkerClient(
+        store,
+        config,
+        workspace_selector=lambda _expires_at: str(workspace_root),
+    )
+    client._socket = Socket()
+    client._handle(
+        {
+            "type": "workspace.select",
+            "request_id": "wsel_expired",
+            "expires_at": "2000-01-01T00:00:00Z",
+        }
+    )
+    deadline = time.monotonic() + 1
+    while not messages and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert messages[0]["status"] == "failed"
+    assert messages[0]["error"] == "selection_expired"
+    assert config.workspaces == []
 
 
 def test_companion_selection_reuses_live_config_when_store_reload_is_unavailable(tmp_path, monkeypatch):
@@ -415,7 +555,11 @@ def test_companion_selection_reuses_live_config_when_store_reload_is_unavailable
         def send(self, raw):
             messages.append(json.loads(raw))
 
-    client = WorkerClient(store, config, workspace_selector=lambda: str(workspace_root))
+    client = WorkerClient(
+        store,
+        config,
+        workspace_selector=lambda _expires_at: str(workspace_root),
+    )
     client._socket = Socket()
     monkeypatch.setattr(store, "load", lambda: (_ for _ in ()).throw(RuntimeError("reload race")))
     client._handle({"type": "workspace.select", "request_id": "wsel_live_config"})
@@ -449,7 +593,11 @@ def test_companion_selection_reports_stable_workspace_errors(
         "add_workspace",
         lambda _config, _path: (_ for _ in ()).throw(exception),
     )
-    client = WorkerClient(store, WorkerConfig(), workspace_selector=lambda: str(tmp_path))
+    client = WorkerClient(
+        store,
+        WorkerConfig(),
+        workspace_selector=lambda _expires_at: str(tmp_path),
+    )
     client._socket = Socket()
     client._handle({"type": "workspace.select", "request_id": "wsel_error"})
 

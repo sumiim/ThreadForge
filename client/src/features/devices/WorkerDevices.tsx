@@ -25,7 +25,7 @@ import { workerIsReady } from './worker-version'
 const delay = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds))
 
 const selectionErrors: Record<string, string> = {
-  selection_busy: '本机已有目录选择窗口等待处理',
+  selection_busy: '上一次目录选择窗口仍在等待处理；请切回桌面完成操作，窗口超时后会自动关闭',
   selection_expired: '目录选择请求已过期',
   selection_failed: '本机目录选择失败，请重新下载安装最新 Worker',
   worker_disconnected: 'Worker 已断开连接',
@@ -111,6 +111,15 @@ export default function WorkerDevices() {
     setNotice('已请求系统启动 ThreadForge Worker')
     window.location.href = 'threadforge://worker/start'
     await delay(1500)
+    await refresh()
+  }
+
+  const uninstallLocalWorker = async () => {
+    operationVersion.current += 1
+    setError('')
+    setNotice('已请求系统打开 ThreadForge Worker 卸载程序')
+    window.location.href = 'threadforge://worker/uninstall'
+    await delay(2_000)
     await refresh()
   }
 
@@ -264,6 +273,18 @@ export default function WorkerDevices() {
       <Button className="mt-3" block icon={<LinkOutlined />} onClick={() => void createCode()}>
         绑定新设备
       </Button>
+      <Popconfirm
+        title="卸载本机 Worker？"
+        description="仅移除这台电脑上的 Worker 程序和自启动项；本地会话、工作区与模型配置会保留。"
+        okText="打开卸载程序"
+        okButtonProps={{ danger: true }}
+        cancelText="取消"
+        onConfirm={() => void uninstallLocalWorker()}
+      >
+        <Button className="mt-2" danger block icon={<DeleteOutlined />}>
+          卸载本机 Worker
+        </Button>
+      </Popconfirm>
       {pairing ? (
         <div className="mt-3 rounded-xl bg-stone-100 p-3">
           <div className="text-xs text-stone-500">

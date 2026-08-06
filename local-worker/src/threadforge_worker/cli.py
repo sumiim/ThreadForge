@@ -40,6 +40,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "protocol":
+        action, parameters = _parse_protocol_uri(args.uri)
+        if action == "uninstall":
+            from .service import start_uninstaller
+
+            start_uninstaller()
+            return 0
+
     store = ConfigStore(args.data_dir)
     config = store.load()
     if args.command == "pair":
@@ -50,7 +58,6 @@ def main(argv=None) -> int:
         start_service_background(args.data_dir)
         return 0
     if args.command == "protocol":
-        action, parameters = _parse_protocol_uri(args.uri)
         from .service import start_service_background
 
         if action == "pair":
@@ -127,7 +134,11 @@ def _parse_protocol_uri(uri: str) -> tuple[str, dict[str, str]]:
     ):
         raise ValueError("unsupported ThreadForge link")
     action = parsed.path.strip("/").lower()
-    allowed = {"start": set(), "pair": {"server", "code", "name"}}
+    allowed = {
+        "start": set(),
+        "pair": {"server", "code", "name"},
+        "uninstall": set(),
+    }
     if action not in allowed:
         raise ValueError("unsupported ThreadForge action")
     raw = (
@@ -138,8 +149,8 @@ def _parse_protocol_uri(uri: str) -> tuple[str, dict[str, str]]:
     if set(raw) - allowed[action] or any(len(values) != 1 for values in raw.values()):
         raise ValueError("ThreadForge link contains unsupported parameters")
     parameters = {key: values[0] for key, values in raw.items()}
-    if action == "start" and parameters:
-        raise ValueError("start link must not contain parameters")
+    if action in {"start", "uninstall"} and parameters:
+        raise ValueError(f"{action} link must not contain parameters")
     if action == "pair":
         if set(parameters) not in ({"server", "code"}, {"server", "code", "name"}):
             raise ValueError("pair link is incomplete")
