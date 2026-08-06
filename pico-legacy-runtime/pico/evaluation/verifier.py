@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 from ..security import redact_text
+from ..subprocess_utils import hidden_process_creation_flags, hidden_process_startupinfo
 from ..workspace import clip
 
 DEFAULT_VERIFIER_TIMEOUT_S = 10
@@ -63,6 +64,8 @@ class VerifierRunner:
                 capture_output=True,
                 text=True,
                 timeout=timeout_s,
+                creationflags=hidden_process_creation_flags(),
+                startupinfo=hidden_process_startupinfo(),
             )
         except subprocess.TimeoutExpired as exc:
             return VerifierResult(

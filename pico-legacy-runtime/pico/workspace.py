@@ -11,7 +11,7 @@ import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .subprocess_utils import hidden_process_creation_flags
+from .subprocess_utils import hidden_process_creation_flags, hidden_process_startupinfo
 
 MAX_TOOL_OUTPUT = 4000
 MAX_HISTORY = 12000
@@ -69,6 +69,7 @@ class WorkspaceContext:
                     check=True,
                     timeout=5,
                     creationflags=hidden_process_creation_flags(),
+                    startupinfo=hidden_process_startupinfo(),
                 )
                 return result.stdout.strip() or fallback
             except Exception:
