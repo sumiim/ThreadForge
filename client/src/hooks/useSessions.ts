@@ -239,12 +239,22 @@ export function useSessions(): UseSessions {
         }
       }
       // 运行中出现的新工具卡（tool.requested 先于 approval.required 到达）
-      const ensureToolCard = (toolCallId: string, toolName: string) => {
+      const ensureToolCard = (toolCallId: string, toolName: string, args?: Record<string, unknown>) => {
         updateSessionMessages(sessionId, (messages) =>
           messages.map((m) => {
             if (m.id !== assistantId) return m
-            if ((m.toolCalls ?? []).some((t) => t.id === toolCallId)) return m
-            return { ...m, toolCalls: [...(m.toolCalls ?? []), { id: toolCallId, toolName, status: 'running' }] }
+            const existing = (m.toolCalls ?? []).find((t) => t.id === toolCallId)
+            if (existing) {
+              if (!args || Object.keys(args).length === 0 || existing.args) return m
+              return {
+                ...m,
+                toolCalls: (m.toolCalls ?? []).map((t) => (t.id === toolCallId ? { ...t, args } : t)),
+              }
+            }
+            return {
+              ...m,
+              toolCalls: [...(m.toolCalls ?? []), { id: toolCallId, toolName, args, status: 'running' }],
+            }
           }),
         )
       }
@@ -291,7 +301,10 @@ export function useSessions(): UseSessions {
           case 'tool.requested': {
             const toolCallId = String(data.tool_call_id ?? '')
             const toolName = String(data.tool_name ?? '')
-            if (toolCallId) ensureToolCard(toolCallId, toolName)
+            const args = data.args_preview && typeof data.args_preview === 'object'
+              ? data.args_preview as Record<string, unknown>
+              : undefined
+            if (toolCallId) ensureToolCard(toolCallId, toolName, args)
             return
           }
           case 'tool.started': {
@@ -309,11 +322,17 @@ export function useSessions(): UseSessions {
             const toolCallId = String(data.tool_call_id ?? '')
             const toolName = String(data.tool_name ?? '')
             const paths = (data.affected_paths ?? []) as string[]
+            const resultPreview = typeof data.result_preview === 'string' ? data.result_preview : ''
+            const result = resultPreview
+              ? `${resultPreview}${data.result_truncated === true ? '\n\n[预览已截断]' : ''}`
+              : paths.length > 0
+                ? `影响路径：${paths.join('、')}`
+                : undefined
             markToolByEvent(
               type === 'tool.completed' ? 'completed' : 'error',
               toolCallId,
               toolName,
-              paths.length > 0 ? `影响路径：${paths.join('、')}` : undefined,
+              result,
             )
             return
           }

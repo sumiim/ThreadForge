@@ -74,6 +74,10 @@ def test_sse_tool_events_identify_exact_call(client, session_id, model_outputs):
         if event["type"] in ("tool.completed", "tool.failed"):
             assert event["data"].get("tool_name"), f"tool event without name: {event}"
             assert event["data"].get("tool_call_id"), f"tool event without call id: {event}"
+    requested = next(event for event in events if event["type"] == "tool.requested")
+    assert requested["data"]["args_preview"] == {"path": "README.md", "start": 1, "end": 5}
+    completed = next(event for event in events if event["type"] == "tool.completed")
+    assert "README.md" in completed["data"]["result_preview"]
 
 
 def test_session_refresh_shows_messages_after_run(client, session_id, model_outputs):

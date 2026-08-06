@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import WebSocket
 from pico.features.memory import default_memory_state
-from pico.security import redact_artifact
+from pico.security import public_tool_args_preview, public_tool_result_preview, redact_artifact
 
 from ..domain.entities import Approval, canonical_json, utc_now
 from ..domain.enums import ApprovalStatus, TaskStatus
@@ -1296,6 +1296,16 @@ def _sanitize_event_data(event_type: str, data: dict) -> dict:
             for item in paths[:100] if isinstance(paths, list)
             if (path := _safe_relative_path(item)) is not None
         ] if isinstance(paths, list) else []
+        result_preview, result_truncated = public_tool_result_preview(
+            safe["tool_name"], data.get("result_preview", "")
+        )
+        if result_preview:
+            safe["result_preview"] = result_preview
+            safe["result_truncated"] = result_truncated or bool(data.get("result_truncated", False))
+    if event_type == "tool.requested":
+        args_preview = public_tool_args_preview(safe["tool_name"], data.get("args_preview", {}))
+        if args_preview:
+            safe["args_preview"] = args_preview
     if event_type == "policy.violation":
         safe["policy_code"] = str(data.get("policy_code", ""))[:100]
     return redact_artifact(safe)

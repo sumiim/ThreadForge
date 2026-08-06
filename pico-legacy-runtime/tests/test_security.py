@@ -1,6 +1,8 @@
 from pico.runtime import DEFAULT_SHELL_ENV_ALLOWLIST
 from pico.security import (
     REDACTED_VALUE,
+    public_tool_args_preview,
+    public_tool_result_preview,
     detected_secret_env_items,
     looks_sensitive_env_name,
     redact_artifact,
@@ -55,3 +57,20 @@ def test_default_shell_env_allowlist_includes_windows_runtime_requirements():
     required = {"COMSPEC", "PATHEXT", "SYSTEMROOT", "WINDIR"}
 
     assert required <= set(DEFAULT_SHELL_ENV_ALLOWLIST)
+
+
+def test_public_tool_args_preview_allowlists_read_only_fields():
+    preview = public_tool_args_preview(
+        "read_file",
+        {"path": "README.md", "start": 2, "end": 8, "content": "must not leave Worker"},
+    )
+
+    assert preview == {"path": "README.md", "start": 2, "end": 8}
+
+
+def test_public_tool_result_preview_is_bounded_and_excludes_risky_tools():
+    preview, truncated = public_tool_result_preview("read_file", "x" * 9000)
+    assert truncated is True
+    assert len(preview) <= 8000
+
+    assert public_tool_result_preview("run_shell", "secret command output") == ("", False)

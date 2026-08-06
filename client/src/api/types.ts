@@ -238,8 +238,10 @@ export type RunEvent = RunEventEnvelope & {
     tool_status?: string
     tool_error_code?: string
     affected_paths?: string[]
-    approval_id?: string
     args_preview?: Record<string, unknown>
+    result_preview?: string
+    result_truncated?: boolean
+    approval_id?: string
     created_at?: string
     expires_at?: string
     status?: string

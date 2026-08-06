@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from pico.execution_hooks import RunCancelled
+from pico.security import public_tool_args_preview, public_tool_result_preview
 
 from .run_gate import RunGate
 
@@ -44,11 +45,19 @@ class ExecutionBoundary:
     def tool_requested(self, task_state, tool_call: dict) -> None:
         with self._gate:
             self._check()
+            tool_name = str(tool_call.get("name", ""))
+            payload = {
+                "tool_call_id": tool_call.get("id", ""),
+                "tool_name": tool_name,
+            }
+            args_preview = public_tool_args_preview(tool_name, tool_call.get("args", {}))
+            if args_preview:
+                payload["args_preview"] = args_preview
             self._publisher.publish(
                 self._task_id,
                 self._run_id,
                 "tool.requested",
-                {"tool_call_id": tool_call.get("id", ""), "tool_name": tool_call.get("name", "")},
+                payload,
             )
 
     def before_tool(self, task_state, tool_call: dict) -> None:
@@ -71,19 +80,26 @@ class ExecutionBoundary:
         # accepted by before_tool until its matching result is published.
         tool_name = self._active_tool_name or getattr(task_state, "last_tool", "") or ""
         tool_call_id = self._active_tool_call_id
+        result_preview, result_truncated = public_tool_result_preview(
+            tool_name, getattr(result, "content", "")
+        )
+        payload = {
+            "tool_call_id": tool_call_id,
+            "tool_name": tool_name,
+            "tool_status": tool_status,
+            "tool_error_code": metadata.get("tool_error_code", ""),
+            "affected_paths": metadata.get("affected_paths", []),
+        }
+        if result_preview:
+            payload["result_preview"] = result_preview
+            payload["result_truncated"] = result_truncated
         with self._gate:
             self._check()
             self._publisher.publish(
                 self._task_id,
                 self._run_id,
                 event_type,
-                {
-                    "tool_call_id": tool_call_id,
-                    "tool_name": tool_name,
-                    "tool_status": tool_status,
-                    "tool_error_code": metadata.get("tool_error_code", ""),
-                    "affected_paths": metadata.get("affected_paths", []),
-                },
+                payload,
             )
             self._active_tool_call_id = ""
             self._active_tool_name = ""

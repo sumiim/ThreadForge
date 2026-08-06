@@ -13,6 +13,7 @@ from pico.approval import ApprovalOutcome, ApprovalRequest
 from pico.features.memory import default_memory_state
 from pico.providers.clients import FakeModelClient
 from pico.session_store import SessionStore
+from pico.tool_executor import ToolExecutionResult
 from websockets.datastructures import Headers
 from websockets.exceptions import InvalidStatus
 from websockets.http11 import Response
@@ -40,6 +41,7 @@ from threadforge_worker.runtime import (
     ActiveRun,
     CancellationToken,
     RemoteApprovalStrategy,
+    RemoteExecutionHooks,
     run_task,
 )
 from threadforge_worker.service import (
@@ -674,6 +676,44 @@ def test_remote_approval_blocks_until_exact_decision():
     strategy.resolve("call_1", "approved", sent[0]["args_digest"])
     thread.join(timeout=1)
     assert result == [ApprovalOutcome.APPROVED]
+
+
+def test_remote_execution_hooks_publish_read_only_preview_and_hide_risky_result():
+    events = []
+    hooks = RemoteExecutionHooks(lambda event_type, data: events.append((event_type, data)), CancellationToken())
+
+    hooks.tool_requested(
+        None,
+        {
+            "id": "call_read",
+            "name": "read_file",
+            "args": {"path": "README.md", "start": 1, "end": 4},
+        },
+    )
+    hooks.before_tool(
+        None,
+        {"id": "call_read", "name": "read_file", "args": {"path": "README.md"}},
+    )
+    hooks.after_tool(
+        None,
+        ToolExecutionResult(content="# README.md\nhello", metadata={"tool_status": "ok"}),
+    )
+
+    assert events[0][1]["args_preview"] == {"path": "README.md", "start": 1, "end": 4}
+    assert events[1][1]["result_preview"] == "# README.md\nhello"
+
+    events.clear()
+    hooks.tool_requested(
+        None,
+        {"id": "call_shell", "name": "run_shell", "args": {"command": "whoami"}},
+    )
+    hooks.before_tool(None, {"id": "call_shell", "name": "run_shell", "args": {}})
+    hooks.after_tool(
+        None,
+        ToolExecutionResult(content="private output", metadata={"tool_status": "ok"}),
+    )
+    assert "args_preview" not in events[0][1]
+    assert "result_preview" not in events[1][1]
 
 
 def test_runtime_completes_with_fake_model_without_provider_call(tmp_path):

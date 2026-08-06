@@ -19,7 +19,11 @@ from pico.execution_hooks import RunCancelled
 from pico.providers.clients import OpenAICompatibleModelClient
 from pico.run_lifecycle import finalize_failed_run
 from pico.run_store import RunStore
-from pico.security import redact_artifact
+from pico.security import (
+    public_tool_args_preview,
+    public_tool_result_preview,
+    redact_artifact,
+)
 from pico.session_store import SessionStore
 from pico.task_state import (
     STATUS_COMPLETED,
@@ -121,9 +125,17 @@ class RemoteExecutionHooks:
 
     def tool_requested(self, task_state, tool_call: dict) -> None:
         self._check()
+        tool_name = str(tool_call.get("name", ""))
+        payload = {
+            "tool_call_id": tool_call.get("id", ""),
+            "tool_name": tool_name,
+        }
+        args_preview = public_tool_args_preview(tool_name, tool_call.get("args", {}))
+        if args_preview:
+            payload["args_preview"] = args_preview
         self._send(
             "tool.requested",
-            {"tool_call_id": tool_call.get("id", ""), "tool_name": tool_call.get("name", "")},
+            payload,
         )
 
     def before_tool(self, task_state, tool_call: dict) -> None:
@@ -140,15 +152,22 @@ class RemoteExecutionHooks:
         metadata = dict(getattr(result, "metadata", {}) or {})
         status = metadata.get("tool_status", "ok")
         event_type = "tool.completed" if status in {"ok", "partial_success"} else "tool.failed"
+        result_preview, result_truncated = public_tool_result_preview(
+            self._active_tool_name, getattr(result, "content", "")
+        )
+        payload = {
+            "tool_call_id": self._active_tool_call_id,
+            "tool_name": self._active_tool_name,
+            "tool_status": status,
+            "tool_error_code": metadata.get("tool_error_code", ""),
+            "affected_paths": metadata.get("affected_paths", []),
+        }
+        if result_preview:
+            payload["result_preview"] = result_preview
+            payload["result_truncated"] = result_truncated
         self._send(
             event_type,
-            {
-                "tool_call_id": self._active_tool_call_id,
-                "tool_name": self._active_tool_name,
-                "tool_status": status,
-                "tool_error_code": metadata.get("tool_error_code", ""),
-                "affected_paths": metadata.get("affected_paths", []),
-            },
+            payload,
         )
         self._active_tool_call_id = ""
         self._active_tool_name = ""
