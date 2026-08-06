@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { ReactNode } from 'react'
-import { Button, Input } from 'antd'
+import { Button, Collapse, Input } from 'antd'
 import {
   ApiOutlined,
   MoonOutlined,
@@ -15,6 +15,7 @@ import Logo from '../../components/Logo'
 import type { Session, Workspace } from '../../api/types'
 import type { ThemeMode } from '../../hooks/useTheme'
 import NewSessionModal from './NewSessionModal'
+import { sessionWorkspaceKey, workspaceDeviceKey, workspaceDeviceLabel, workspaceKey } from './workspaceIdentity'
 
 export type PanelView = 'chat' | 'skills' | 'mcp'
 
@@ -24,7 +25,7 @@ interface SessionPanelProps {
   activeView: PanelView
   workspaces: Workspace[]
   onSelect: (id: string) => void
-  onCreate: (workspaceId: string) => void
+  onCreate: (workspaceId: string, deviceId?: string) => void
   onNavigate: (view: PanelView) => void
   onOpenSettings: () => void
   onWorkspacesChanged?: () => Promise<unknown> | unknown
@@ -32,7 +33,7 @@ interface SessionPanelProps {
   onToggleTheme: () => void
 }
 
-// 侧边栏：搜索 + 新建会话 + Skills/MCP 导航（点击切换主区域子页面）
+// 侧边栏：设备/Worker -> 工作区 -> 会话，并保留搜索和扩展导航。
 export default function SessionPanel({
   sessions,
   activeId,
@@ -49,21 +50,20 @@ export default function SessionPanel({
   const [query, setQuery] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
   const available = workspaces.find((w) => w.available)
-  const [selectedWorkspace, setSelectedWorkspace] = useState<string | null>(
-    () => available?.workspace_id ?? null,
+  const [selectedWorkspaceKey, setSelectedWorkspaceKey] = useState<string | null>(
+    () => (available ? workspaceKey(available) : null),
   )
-  const effectiveWorkspace = workspaces.some(
-    (workspace) => workspace.available && workspace.workspace_id === selectedWorkspace,
-  )
-    ? selectedWorkspace
-    : (available?.workspace_id ?? null)
+  const effectiveWorkspace = workspaces.find(
+    (workspace) => workspace.available && workspaceKey(workspace) === selectedWorkspaceKey,
+  ) ?? available ?? null
 
   const filtered = query.trim()
     ? sessions.filter((s) => s.title.toLowerCase().includes(query.trim().toLowerCase()))
     : sessions
+  const deviceGroups = buildDeviceGroups(workspaces, filtered, !query.trim())
 
   const handleCreate = () => {
-    if (effectiveWorkspace) onCreate(effectiveWorkspace)
+    if (effectiveWorkspace) onCreate(effectiveWorkspace.workspace_id, effectiveWorkspace.device_id)
     setModalOpen(false)
   }
 
@@ -124,47 +124,77 @@ export default function SessionPanel({
         </span>
         <span className="h-px min-w-0 flex-1 bg-stone-200" aria-hidden />
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-4">
-        {sessions.length === 0 ? (
+      {/* 会话树：设备/Worker -> 工作区 -> 会话 */}
+      <div className="min-h-0 flex-1 overflow-y-auto px-2">
+        {deviceGroups.length === 0 ? (
           <div className="px-3 py-4 text-center text-xs text-stone-400">
-            暂无会话，点击上方「新建会话」开始
+            {sessions.length === 0 ? '暂无会话，点击上方「新建会话」开始' : '未找到匹配的会话'}
           </div>
-        ) : filtered.length === 0 ? (
-          <div className="px-3 py-4 text-center text-xs text-stone-400">未找到匹配的会话</div>
         ) : (
-          filtered.map((session) => {
-            const active = session.id === activeId
-            return (
-              <button
-                key={session.id}
-                type="button"
-                onClick={() => {
-                  onSelect(session.id)
-                  onNavigate('chat')
-                }}
-                className={`relative flex h-10 w-full items-center rounded-xl px-3 text-left transition-all ${
-                  active ? 'bg-white shadow-[0_1px_3px_rgba(28,25,23,0.1)]' : 'hover:bg-white/70'
-                }`}
-              >
-                <span className="min-w-0 flex-1">
-                  <span
-                    className={`block truncate text-sm ${
-                      active ? 'font-semibold text-stone-900' : 'font-medium text-stone-700'
-                    }`}
-                  >
-                    {session.title}
-                  </span>
-                  <span className="mt-px block font-mono text-[11px] text-stone-500">
-                    {formatTime(session.createdAt)}
-                  </span>
-                </span>
-              </button>
-            )
-          })
+          <Collapse
+            ghost
+            className="[&_.ant-collapse-header]:!px-2 [&_.ant-collapse-content-box]:!px-2 [&_.ant-collapse-content-box]:!py-1"
+            defaultActiveKey={deviceGroups.map((group) => group.key)}
+            items={deviceGroups.map((device) => ({
+              key: device.key,
+              label: <span className="text-xs font-semibold text-stone-700">{device.label}</span>,
+              children: (
+                <Collapse
+                  ghost
+                  className="[&_.ant-collapse-header]:!px-2 [&_.ant-collapse-content-box]:!px-0 [&_.ant-collapse-content-box]:!py-0"
+                  defaultActiveKey={device.workspaces.map((group) => group.key)}
+                  items={device.workspaces.map((workspace) => ({
+                    key: workspace.key,
+                    label: (
+                      <span className="flex min-w-0 items-center gap-2 text-xs text-stone-600">
+                        <span className="min-w-0 flex-1 truncate">{workspace.label}</span>
+                        <span className="font-mono text-[10px] text-stone-400">{workspace.sessions.length}</span>
+                      </span>
+                    ),
+                    children: workspace.sessions.length > 0 ? (
+                      <div className="space-y-0.5">
+                        {workspace.sessions.map((session) => {
+                          const active = session.id === activeId
+                          return (
+                            <button
+                              key={session.id}
+                              type="button"
+                              onClick={() => {
+                                onSelect(session.id)
+                                onNavigate('chat')
+                              }}
+                              className={`relative flex h-10 w-full items-center rounded-xl px-3 text-left transition-all ${
+                                active ? 'bg-white shadow-[0_1px_3px_rgba(28,25,23,0.1)]' : 'hover:bg-white/70'
+                              }`}
+                            >
+                              <span className="min-w-0 flex-1">
+                                <span
+                                  className={`block truncate text-sm ${
+                                    active ? 'font-semibold text-stone-900' : 'font-medium text-stone-700'
+                                  }`}
+                                >
+                                  {session.title}
+                                </span>
+                                <span className="mt-px block font-mono text-[11px] text-stone-500">
+                                  {formatTime(session.createdAt)}
+                                </span>
+                              </span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    ) : (
+                      <div className="px-3 pb-2 text-[11px] text-stone-400">暂无会话</div>
+                    ),
+                  }))}
+                />
+              ),
+            }))}
+          />
         )}
       </div>
 
-      {/* 底部：设置入口 + 主题切换（设置右侧） */}
+      {/* 底部：设置入口 + 主题切换 */}
       <div className="border-t border-stone-200 p-2">
         <div className="flex items-center gap-1">
           <button
@@ -192,7 +222,7 @@ export default function SessionPanel({
         open={modalOpen}
         workspaces={workspaces}
         selected={effectiveWorkspace}
-        onSelect={setSelectedWorkspace}
+        onSelect={(workspace) => setSelectedWorkspaceKey(workspaceKey(workspace))}
         onCreate={handleCreate}
         onCancel={() => setModalOpen(false)}
         onOpenSettings={onOpenSettings}
@@ -200,6 +230,71 @@ export default function SessionPanel({
       />
     </div>
   )
+}
+
+interface WorkspaceGroup {
+  key: string
+  label: string
+  sessions: Session[]
+}
+
+interface DeviceGroup {
+  key: string
+  label: string
+  workspaces: WorkspaceGroup[]
+}
+
+function buildDeviceGroups(workspaces: Workspace[], sessions: Session[], includeEmpty: boolean): DeviceGroup[] {
+  const devices = new Map<string, DeviceGroup>()
+  const workspaceGroups = new Map<string, WorkspaceGroup>()
+
+  const addWorkspace = (workspace: Workspace) => {
+    const deviceKey = workspaceDeviceKey(workspace)
+    let device = devices.get(deviceKey)
+    if (!device) {
+      device = { key: deviceKey, label: workspaceDeviceLabel(workspace), workspaces: [] }
+      devices.set(deviceKey, device)
+    }
+    const key = workspaceKey(workspace)
+    let group = workspaceGroups.get(key)
+    if (!group) {
+      group = { key, label: workspace.name || workspace.display_path || workspace.workspace_id, sessions: [] }
+      workspaceGroups.set(key, group)
+      device.workspaces.push(group)
+    }
+    return group
+  }
+
+  if (includeEmpty) {
+    workspaces.forEach(addWorkspace)
+  }
+
+  sessions.forEach((session) => {
+    const known = workspaces.find(
+      (workspace) => workspaceKey(workspace) === sessionWorkspaceKey(session),
+    )
+    const group = addWorkspace(
+      known ?? {
+        workspace_id: session.workspaceId,
+        name: session.workspaceId,
+        display_path: session.workspaceId,
+        available: false,
+        is_git: false,
+        execution_environment: session.executionEnvironment || 'backend_process',
+        container_sandbox_enabled: false,
+        device_id: session.deviceId,
+        device_name: session.deviceId ? 'Worker' : undefined,
+      },
+    )
+    group.sessions.push(session)
+  })
+
+  return Array.from(devices.values())
+    .map((device) => ({
+      ...device,
+      workspaces: device.workspaces.filter((workspace) => includeEmpty || workspace.sessions.length > 0),
+    }))
+    .filter((device) => device.workspaces.length > 0)
 }
 
 function NavItem({

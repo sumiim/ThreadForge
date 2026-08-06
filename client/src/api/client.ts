@@ -380,10 +380,10 @@ export interface CreateSessionResult {
   device_id: string
 }
 
-export function createSession(workspaceId: string, title?: string): Promise<CreateSessionResult> {
+export function createSession(workspaceId: string, title?: string, deviceId?: string): Promise<CreateSessionResult> {
   return request('/api/v1/sessions', {
     method: 'POST',
-    body: JSON.stringify({ workspace_id: workspaceId, title: title ?? null }),
+    body: JSON.stringify({ workspace_id: workspaceId, device_id: deviceId ?? null, title: title ?? null }),
   })
 }
 

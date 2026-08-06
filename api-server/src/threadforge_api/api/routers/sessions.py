@@ -21,7 +21,12 @@ def create_session(
     actor: Actor = Depends(get_actor),
     session_service: SessionService = Depends(get_session_service),
 ) -> dict:
-    session = session_service.create_session(body.workspace_id, body.title, actor.owner_id)
+    session = session_service.create_session(
+        workspace_id=body.workspace_id,
+        title=body.title,
+        owner_id=actor.owner_id,
+        device_id=body.device_id,
+    )
     return session
 
 

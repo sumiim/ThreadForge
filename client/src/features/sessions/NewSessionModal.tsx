@@ -19,6 +19,7 @@ import {
 } from '../../api/client'
 import type { Device, Workspace, WorkspaceSelectionRequest, WorkerReleaseManifest } from '../../api/types'
 import { workerIsReady, workerNeedsUpdate } from '../devices/worker-version'
+import { workspaceKey } from './workspaceIdentity'
 
 const delay = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 
@@ -39,8 +40,8 @@ const selectionErrors: Record<string, string> = {
 interface NewSessionModalProps {
   open: boolean
   workspaces: Workspace[]
-  selected: string | null
-  onSelect: (workspaceId: string) => void
+  selected: Workspace | null
+  onSelect: (workspace: Workspace) => void
   onCreate: () => void
   onCancel: () => void
   onOpenSettings: () => void
@@ -59,7 +60,9 @@ export default function NewSessionModal({
   onWorkspacesChanged,
 }: NewSessionModalProps) {
   const selectable = workspaces.filter((w) => w.available)
-  const value = selected && selectable.some((w) => w.workspace_id === selected) ? selected : undefined
+  const value = selected && selectable.some((w) => workspaceKey(w) === workspaceKey(selected))
+    ? workspaceKey(selected)
+    : undefined
   const [devices, setDevices] = useState<Device[] | null>(null)
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null)
   const [release, setRelease] = useState<WorkerReleaseManifest | null>(null)
@@ -71,8 +74,12 @@ export default function NewSessionModal({
   const [downloadStatus, setDownloadStatus] = useState('')
   const [selecting, setSelecting] = useState(false)
   const [connecting, setConnecting] = useState(false)
+  const [refreshingWorkspaces, setRefreshingWorkspaces] = useState(false)
   const operationVersion = useRef(0)
-  const noWorkspace = selectable.length === 0
+  // An existing but offline Worker still has valid workspace choices. Keep
+  // those entries visible so the user can see which device needs reconnecting;
+  // only an empty catalog should enter the install/pairing flow.
+  const noWorkspace = workspaces.length === 0
   const releaseLoading = devices !== null && release === null && !releaseError
   const compatibleDevices = (devices ?? []).filter((device) => workerIsReady(device, release))
   const outdatedDevices = release
@@ -124,6 +131,7 @@ export default function NewSessionModal({
     setDownloadStatus('')
     setSelecting(false)
     setConnecting(false)
+    setRefreshingWorkspaces(false)
     setError('')
   }
 
@@ -140,6 +148,19 @@ export default function NewSessionModal({
     setDeviceError('')
     setReleaseError('')
     setDownloadStatus('')
+  }
+
+  const refreshWorkspaces = async () => {
+    if (!onWorkspacesChanged) return
+    setRefreshingWorkspaces(true)
+    setError('')
+    try {
+      await onWorkspacesChanged()
+    } catch (cause) {
+      setError(friendlyMessage(cause))
+    } finally {
+      setRefreshingWorkspaces(false)
+    }
   }
 
   const download = async () => {
@@ -387,28 +408,50 @@ export default function NewSessionModal({
           renderDownloadPanel()
         )
       ) : (
-        <Radio.Group
-          value={value}
-          onChange={(event) => onSelect(event.target.value as string)}
-          className="flex w-full flex-col gap-2"
-        >
-          {selectable.map((workspace) => (
-            <Radio
-              key={workspace.workspace_id}
-              value={workspace.workspace_id}
-              className="w-full rounded-lg border border-stone-200 px-3 py-2"
-            >
-              <span className="flex min-w-0 flex-col">
-                <span className="truncate font-mono text-xs text-stone-700">{workspace.display_path}</span>
-                <span className="text-[11px] text-stone-400">
-                  {workspace.execution_environment === 'local_worker'
-                    ? `${workspace.device_name ?? '本地 Worker'}${workspace.device_platform ? ` · ${workspace.device_platform}` : ''}${workspace.model_configured ? '' : ' · 模型未配置'}`
-                    : '服务器工作区'}
+        <>
+          {selectable.length === 0 ? (
+            <Alert
+              className="mb-3"
+              type="warning"
+              showIcon
+              message="当前没有在线 Worker"
+              description="请启动对应设备上的 Worker 后刷新页面；离线工作区仍会保留在列表中。"
+              action={
+                onWorkspacesChanged ? (
+                  <Button size="small" loading={refreshingWorkspaces} onClick={() => void refreshWorkspaces()}>
+                    刷新工作区
+                  </Button>
+                ) : undefined
+              }
+            />
+          ) : null}
+          <Radio.Group
+            value={value}
+            onChange={(event) => {
+              const workspace = workspaces.find((item) => workspaceKey(item) === event.target.value)
+              if (workspace) onSelect(workspace)
+            }}
+            className="flex w-full flex-col gap-2"
+          >
+            {workspaces.map((workspace) => (
+              <Radio
+                key={workspaceKey(workspace)}
+                value={workspaceKey(workspace)}
+                disabled={!workspace.available}
+                className="w-full rounded-lg border border-stone-200 px-3 py-2"
+              >
+                <span className="flex min-w-0 flex-col">
+                  <span className="truncate font-mono text-xs text-stone-700">{workspace.display_path}</span>
+                  <span className="text-[11px] text-stone-400">
+                    {workspace.execution_environment === 'local_worker'
+                      ? `${workspace.device_name ?? '本地 Worker'}${workspace.device_platform ? ` · ${workspace.device_platform}` : ''}${workspace.available ? '' : ' · Worker 离线'}${workspace.model_configured ? '' : ' · 模型未配置'}`
+                      : '服务器工作区'}
+                  </span>
                 </span>
-              </span>
-            </Radio>
-          ))}
-        </Radio.Group>
+              </Radio>
+            ))}
+          </Radio.Group>
+        </>
       )}
       <p className="mt-3 text-xs text-stone-500">
         本地 Worker 工作区的真实路径只保存在对应设备；Agent 工具调用仅限所选目录。

@@ -235,8 +235,19 @@ class DeviceStore:
             write_json_atomic(self.root / f"{device_id}.json", device.to_dict())
             return device
 
-    def find_workspace(self, owner_id: str, workspace_id: str) -> tuple[Device, WorkerWorkspace] | None:
-        for device in self.list_for_owner(owner_id):
+    def find_workspace(
+        self,
+        owner_id: str,
+        workspace_id: str,
+        *,
+        device_id: str | None = None,
+    ) -> tuple[Device, WorkerWorkspace] | None:
+        devices = (
+            [self.get_for_owner(device_id, owner_id)]
+            if device_id
+            else self.list_for_owner(owner_id)
+        )
+        for device in devices:
             for workspace in device.workspaces:
                 if workspace.workspace_id == workspace_id:
                     return device, workspace
