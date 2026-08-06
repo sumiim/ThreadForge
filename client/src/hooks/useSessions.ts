@@ -22,6 +22,7 @@ import type {
   RuntimeConfig,
   Session,
   SessionDetail,
+  SessionMessage,
   SkillMetadata,
   ToolCall,
   Workspace,
@@ -430,7 +431,9 @@ export function useSessions(): UseSessions {
         loadedRef.current.add(activeId)
 
         const messages: Message[] = detail.messages
-          .filter((m) => m.role === 'user' || m.role === 'assistant')
+          .filter(
+            (m): m is SessionMessage => m.role === 'user' || m.role === 'assistant',
+          )
           .map((m, i) => ({
             id: `m-${detail.session_id}-${i}`,
             role: m.role,
