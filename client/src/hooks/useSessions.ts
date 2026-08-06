@@ -28,6 +28,7 @@ import type {
   Workspace,
 } from '../api/types'
 import { getFinalAnswer, getLatestTask } from './session-state.ts'
+import { workspaceKey } from '../features/sessions/workspaceIdentity'
 
 let idCounter = 0
 const nextId = (prefix: string) => `${prefix}-${Date.now()}-${idCounter++}`
@@ -37,8 +38,20 @@ const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'failed'])
 const RUNNING_STATUSES = new Set(['queued', 'running', 'waiting_for_approval', 'cancel_requested'])
 const TERMINAL_EVENTS = new Set(['task.completed', 'task.cancelled', 'task.failed'])
 
-function sessionModel(workspaceId: string, workspaces: Workspace[], serverModel: string): string {
-  const workspace = workspaces.find((item) => item.workspace_id === workspaceId)
+function sessionModel(
+  workspaceId: string,
+  deviceId: string | undefined,
+  executionEnvironment: string | undefined,
+  workspaces: Workspace[],
+  serverModel: string,
+): string {
+  const workspace = workspaces.find(
+    (item) => workspaceKey(item) === workspaceKey({
+      workspace_id: workspaceId,
+      device_id: deviceId,
+      execution_environment: executionEnvironment,
+    }),
+  )
   if (workspace?.execution_environment === 'local_worker') {
     return workspace.model_configured ? (workspace.model ?? '本地模型') : '本地模型未配置'
   }
@@ -64,7 +77,7 @@ export interface UseSessions {
   running: boolean
   refreshWorkspaces: () => Promise<Workspace[]>
   select: (id: string) => void
-  createSession: (workspaceId: string) => void
+  createSession: (workspaceId: string, deviceId?: string) => void
   sendMessage: (content: string) => void
   approveTool: (messageId: string, toolCallId: string) => void
   rejectTool: (messageId: string, toolCallId: string) => void
@@ -403,7 +416,13 @@ export function useSessions(): UseSessions {
             workspaceId: item.workspace_id,
             executionEnvironment: item.execution_environment,
             deviceId: item.device_id,
-            model: sessionModel(item.workspace_id, wsRes.items, configRes.model),
+            model: sessionModel(
+              item.workspace_id,
+              item.device_id,
+              item.execution_environment,
+              wsRes.items,
+              configRes.model,
+            ),
             messages: [],
           }))
         setSessions(items)
@@ -450,7 +469,13 @@ export function useSessions(): UseSessions {
           workspaceId: detail.workspace_id,
           executionEnvironment: detail.execution_environment,
           deviceId: detail.device_id,
-          model: sessionModel(detail.workspace_id, workspaces, runtimeConfig?.model ?? '未配置'),
+          model: sessionModel(
+            detail.workspace_id,
+            detail.device_id,
+            detail.execution_environment,
+            workspaces,
+            runtimeConfig?.model ?? '未配置',
+          ),
           messages,
           lastTaskId: lastTask?.task_id,
           lastRunId: lastTask?.run_id,
@@ -504,10 +529,10 @@ export function useSessions(): UseSessions {
   const select = useCallback((id: string) => setActiveId(id), [])
 
   const createSession = useCallback(
-    (workspaceId: string) => {
+    (workspaceId: string, deviceId?: string) => {
       ;(async () => {
         try {
-          const res = await apiCreateSession(workspaceId)
+          const res = await apiCreateSession(workspaceId, undefined, deviceId)
           const session: Session = {
             id: res.session_id,
             title: res.title,
@@ -515,7 +540,13 @@ export function useSessions(): UseSessions {
             workspaceId: res.workspace_id,
             executionEnvironment: res.execution_environment,
             deviceId: res.device_id,
-            model: sessionModel(res.workspace_id, workspaces, runtimeConfig?.model ?? '未配置'),
+            model: sessionModel(
+              res.workspace_id,
+              res.device_id,
+              res.execution_environment,
+              workspaces,
+              runtimeConfig?.model ?? '未配置',
+            ),
             messages: [],
           }
           loadedRef.current.add(session.id)

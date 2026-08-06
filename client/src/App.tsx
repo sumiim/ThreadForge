@@ -17,6 +17,7 @@ import SkillsView from './features/skills/SkillsView'
 import McpView from './features/mcp/McpView'
 import WorkerDevices from './features/devices/WorkerDevices'
 import { getLatestWorkerRelease } from './api/client'
+import { workspaceKey } from './features/sessions/workspaceIdentity'
 
 const { Header, Sider, Content } = Layout
 
@@ -54,10 +55,18 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
   const hasRun = active?.lastRunId != null
   const pageTitle = view === 'chat' ? (active?.title ?? 'ThreadForge') : view === 'skills' ? 'Skills' : 'MCP'
   const activePath = active
-    ? (workspaces.find((w) => w.workspace_id === active.workspaceId)?.display_path ?? active.workspaceId)
+    ? (workspaces.find((w) => workspaceKey(w) === workspaceKey({
+        workspace_id: active.workspaceId,
+        device_id: active.deviceId,
+        execution_environment: active.executionEnvironment,
+      }))?.display_path ?? active.workspaceId)
     : ''
   const activeWorkspace = active
-    ? workspaces.find((workspace) => workspace.workspace_id === active.workspaceId)
+    ? workspaces.find((workspace) => workspaceKey(workspace) === workspaceKey({
+        workspace_id: active.workspaceId,
+        device_id: active.deviceId,
+        execution_environment: active.executionEnvironment,
+      }))
     : undefined
   const executionLabel = activeWorkspace?.execution_environment === 'local_worker'
     ? `${activeWorkspace.device_name ?? '本地设备'} · 本地 Worker`

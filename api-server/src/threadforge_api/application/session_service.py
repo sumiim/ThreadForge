@@ -55,10 +55,16 @@ class SessionService:
         self._worker_hub = worker_hub
         self._allow_backend_workspaces = allow_backend_workspaces
 
-    def create_session(self, workspace_id: str, title: str | None, owner_id: str) -> dict:
+    def create_session(
+        self,
+        workspace_id: str,
+        title: str | None,
+        owner_id: str,
+        device_id: str | None = None,
+    ) -> dict:
         owner_id = canonical_owner_id(owner_id)
         local_workspace = (
-            self._device_store.find_workspace(owner_id, workspace_id)
+            self._device_store.find_workspace(owner_id, workspace_id, device_id=device_id)
             if self._device_store is not None
             else None
         )
@@ -70,6 +76,8 @@ class SessionService:
             execution_environment = "local_worker"
             device_id = device.device_id
         else:
+            if device_id:
+                raise WorkspaceNotFoundError(workspace_id)
             if not self._allow_backend_workspaces:
                 raise WorkspaceNotFoundError(workspace_id)
             entry = self._workspace_catalog.recheck(workspace_id)

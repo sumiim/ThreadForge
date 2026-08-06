@@ -138,6 +138,45 @@ def test_online_worker_pool_supports_multiple_connections_and_capability_filter(
             ]
 
 
+def test_session_creation_uses_selected_worker_for_duplicate_workspace_id(client):
+    first = _pair(client, "First laptop")
+    second = _pair(client, "Second laptop")
+    first_headers = {"Authorization": f"Bearer {first['device_token']}"}
+    second_headers = {"Authorization": f"Bearer {second['device_token']}"}
+    shared_workspace_id = "ws_" + "c" * 32
+
+    with client.websocket_connect(
+        "/api/v1/workers/connect", headers=first_headers
+    ) as first_socket:
+        _hello(first_socket, workspace_id=shared_workspace_id)
+        with client.websocket_connect(
+            "/api/v1/workers/connect", headers=second_headers
+        ) as second_socket:
+            _hello(second_socket, workspace_id=shared_workspace_id)
+
+            workspaces = client.get("/api/v1/workspaces").json()["items"]
+            matching = [
+                item
+                for item in workspaces
+                if item["workspace_id"] == shared_workspace_id
+            ]
+            assert {item["device_id"] for item in matching} == {
+                first["device_id"],
+                second["device_id"],
+            }
+
+            created = client.post(
+                "/api/v1/sessions",
+                json={
+                    "workspace_id": shared_workspace_id,
+                    "device_id": second["device_id"],
+                    "title": "Second worker session",
+                },
+            )
+            assert created.status_code == 201
+            assert created.json()["device_id"] == second["device_id"]
+
+
 def test_workspace_selection_requires_online_companion(client):
     paired = _pair(client)
     endpoint = f"/api/v1/devices/{paired['device_id']}/workspace-selection-requests"
