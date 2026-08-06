@@ -52,6 +52,14 @@ class AgentLoop:
         agent.current_task_state = task_state
         agent.current_run_dir = agent.run_store.start_run(task_state)
         agent.emit_progress(f"run {task_state.run_id} started")
+        agent.emit_trace(
+            task_state,
+            "run_started",
+            {
+                "task_id": task_state.task_id,
+                "user_request": clip(user_message, 300),
+            },
+        )
         task_state.set_phase(
             PHASE_UNDERSTAND_REQUEST,
             next_step="Gather the minimum workspace context",
@@ -62,14 +70,6 @@ class AgentLoop:
         task_state.set_phase(PHASE_GATHER_CONTEXT, next_step="Inspect the workspace only when evidence is needed")
         agent.run_store.write_task_state(task_state)
         agent.emit_agent_state(task_state, "context_requested")
-        agent.emit_trace(
-            task_state,
-            "run_started",
-            {
-                "task_id": task_state.task_id,
-                "user_request": clip(user_message, 300),
-            },
-        )
 
         try:
             return self._run_loop(

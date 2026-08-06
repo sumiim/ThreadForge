@@ -130,7 +130,12 @@ class ContextManager:
         if hasattr(self.agent, "render_checkpoint_text"):
             checkpoint_text = str(self.agent.render_checkpoint_text() or "").strip()
         if checkpoint_text:
-            section_texts["prefix"] = section_texts["prefix"] + "\n\n" + checkpoint_text
+            # Resume state is control-plane context, not optional prompt
+            # decoration. Keep it with the untrimmed current request so a
+            # larger stable prefix cannot silently remove the checkpoint.
+            section_texts[CURRENT_REQUEST_SECTION] = (
+                checkpoint_text + "\n\n" + section_texts[CURRENT_REQUEST_SECTION]
+            )
         selected_notes = []
         if memory_enabled and relevant_memory_enabled and hasattr(self.agent, "memory") and hasattr(self.agent.memory, "retrieval_candidates"):
             selected_notes = self.agent.memory.retrieval_candidates(user_message, limit=RELEVANT_MEMORY_LIMIT)
