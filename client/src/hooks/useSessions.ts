@@ -432,7 +432,8 @@ export function useSessions(): UseSessions {
 
         const messages: Message[] = detail.messages
           .filter(
-            (m): m is SessionMessage => m.role === 'user' || m.role === 'assistant',
+            (m): m is SessionMessage & { role: Message['role'] } =>
+              m.role === 'user' || m.role === 'assistant',
           )
           .map((m, i) => ({
             id: `m-${detail.session_id}-${i}`,
