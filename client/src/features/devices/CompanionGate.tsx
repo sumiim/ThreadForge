@@ -28,7 +28,7 @@ interface ProbeResult {
 const selectionErrors: Record<string, string> = {
   native_directory_picker_failed: '本机无法打开目录选择窗口，请重启 Worker 后重试',
   native_directory_picker_unavailable: '本机缺少目录选择组件，请重新安装最新 Worker',
-  selection_busy: '本机已有目录选择窗口等待处理',
+  selection_busy: '上一次目录选择窗口仍在等待处理；请切回桌面完成操作，窗口超时后会自动关闭',
   selection_expired: '目录选择请求已过期',
   selection_failed: '本机目录选择失败，请从“新建会话”窗口重新下载安装最新 Worker',
   workspace_path_unavailable: '所选目录不存在或当前用户无权访问，请重新选择',

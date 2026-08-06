@@ -21,6 +21,8 @@ import threading
 import time
 from contextlib import suppress
 
+from .subprocess_utils import hidden_process_creation_flags
+
 
 class ProcessContainmentUnavailable(RuntimeError):
     """Raised when platform process containment cannot be initialized."""
@@ -263,6 +265,7 @@ class _WindowsJobProcess:
                 win32process.CREATE_SUSPENDED
                 | win32process.CREATE_NEW_PROCESS_GROUP
                 | win32process.CREATE_UNICODE_ENVIRONMENT
+                | hidden_process_creation_flags()
             )
             # 与 subprocess.run(shell=True) 语义一致，经 cmd.exe /c 执行命令串。  # noqa: RUF003
             comspec = env.get("COMSPEC") or os.environ.get("COMSPEC") or "cmd.exe"
