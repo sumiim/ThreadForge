@@ -429,13 +429,15 @@ export function useSessions(): UseSessions {
         if (cancelled) return
         loadedRef.current.add(activeId)
 
-        const messages: Message[] = detail.messages.map((m, i) => ({
-          id: `m-${detail.session_id}-${i}`,
-          role: m.role === 'assistant' ? 'assistant' : 'user',
-          content: m.content,
-          createdAt: m.created_at,
-          status: 'done' as const,
-        }))
+        const messages: Message[] = detail.messages
+          .filter((m) => m.role === 'user' || m.role === 'assistant')
+          .map((m, i) => ({
+            id: `m-${detail.session_id}-${i}`,
+            role: m.role,
+            content: m.content,
+            createdAt: m.created_at,
+            status: 'done' as const,
+          }))
         const lastTask = getLatestTask(detail.tasks)
         const loaded: Session = {
           id: detail.session_id,

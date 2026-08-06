@@ -144,7 +144,7 @@ export interface SessionSummary {
 }
 
 export interface SessionMessage {
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'tool'
   name: string
   content: string
   created_at: string

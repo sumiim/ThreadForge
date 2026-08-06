@@ -20,7 +20,8 @@ from websockets.http11 import Response
 import threadforge_worker.config as config_module
 import threadforge_worker.service as service_module
 from threadforge_worker.auto_update import run_auto_update_loop
-from threadforge_worker.cli import _parse_protocol_uri, main as worker_main
+from threadforge_worker.cli import _parse_protocol_uri
+from threadforge_worker.cli import main as worker_main
 from threadforge_worker.client import (
     WorkerClient,
     _stable_failure_reason,
