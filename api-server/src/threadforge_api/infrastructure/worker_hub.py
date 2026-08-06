@@ -16,7 +16,11 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import WebSocket
 from pico.features.memory import default_memory_state
-from pico.security import public_tool_args_preview, public_tool_result_preview, redact_artifact
+from pico.security import (
+    public_tool_args_preview,
+    public_tool_result_preview,
+    redact_artifact,
+)
 
 from ..domain.entities import Approval, canonical_json, utc_now
 from ..domain.enums import ApprovalStatus, TaskStatus
