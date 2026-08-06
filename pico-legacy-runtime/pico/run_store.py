@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from contextlib import suppress
 from pathlib import Path
 
@@ -112,7 +113,7 @@ class RunStore:
                 handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
-            temp_path.replace(path)
+            self._replace_with_retry(temp_path, path)
             temp_path = None
         finally:
             if temp_path is not None:
@@ -121,3 +122,16 @@ class RunStore:
         if sys.platform != "win32":
             path.chmod(0o600)
         self._fsync_directory(path.parent)
+
+    @staticmethod
+    def _replace_with_retry(temp_path, path):
+        """Retry transient Windows sharing violations during atomic replace."""
+        delays = (0.01, 0.02, 0.04, 0.08, 0.16)
+        for attempt in range(len(delays) + 1):
+            try:
+                temp_path.replace(path)
+                return
+            except PermissionError:
+                if attempt >= len(delays):
+                    raise
+                time.sleep(delays[attempt])
