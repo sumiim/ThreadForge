@@ -700,7 +700,7 @@ def test_remote_execution_hooks_publish_read_only_preview_and_hide_risky_result(
     )
 
     assert events[0][1]["args_preview"] == {"path": "README.md", "start": 1, "end": 4}
-    assert events[1][1]["result_preview"] == "# README.md\nhello"
+    assert events[-1][1]["result_preview"] == "# README.md\nhello"
 
     events.clear()
     hooks.tool_requested(
@@ -713,7 +713,7 @@ def test_remote_execution_hooks_publish_read_only_preview_and_hide_risky_result(
         ToolExecutionResult(content="private output", metadata={"tool_status": "ok"}),
     )
     assert "args_preview" not in events[0][1]
-    assert "result_preview" not in events[1][1]
+    assert "result_preview" not in events[-1][1]
 
 
 def test_runtime_completes_with_fake_model_without_provider_call(tmp_path):

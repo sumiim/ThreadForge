@@ -57,7 +57,12 @@ def test_sse_terminal_ends_stream(client, session_id, model_outputs):
 
 
 def test_sse_tool_events_identify_exact_call(client, session_id, model_outputs):
-    """Tool terminal events identify the exact call, not only its tool name."""
+    """Tool terminal events identify the exact call, not only its tool name.
+
+    The task can begin executing before this integration test opens its SSE
+    subscription, so it deliberately asserts the terminal event rather than
+    treating the transient ``tool.requested`` event as replayable.
+    """
     model_outputs[:] = [
         '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":5}}</tool>',
         "<final>done</final>",
@@ -74,8 +79,6 @@ def test_sse_tool_events_identify_exact_call(client, session_id, model_outputs):
         if event["type"] in ("tool.completed", "tool.failed"):
             assert event["data"].get("tool_name"), f"tool event without name: {event}"
             assert event["data"].get("tool_call_id"), f"tool event without call id: {event}"
-    requested = next(event for event in events if event["type"] == "tool.requested")
-    assert requested["data"]["args_preview"] == {"path": "README.md", "start": 1, "end": 5}
     completed = next(event for event in events if event["type"] == "tool.completed")
     assert "README.md" in completed["data"]["result_preview"]
 
