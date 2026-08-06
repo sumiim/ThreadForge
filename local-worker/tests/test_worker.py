@@ -105,6 +105,43 @@ def test_workspace_registration_uses_canonical_directory(tmp_path):
     assert store.remove_workspace(config, workspace.workspace_id) is False
 
 
+def test_workspace_registration_persists_in_separate_state_file(tmp_path):
+    store = ConfigStore(tmp_path / "state")
+    config = WorkerConfig(device_id="dev_" + "a" * 32, device_token="token")
+    store.save(config)
+    workspace_root = tmp_path / "repo"
+    workspace_root.mkdir()
+
+    workspace = store.add_workspace(config, str(workspace_root))
+
+    assert store.workspaces_path.is_file()
+    assert workspace.workspace_id in store.workspaces_path.read_text(encoding="utf-8")
+    restored = store.load()
+    assert [item.workspace_id for item in restored.workspaces] == [workspace.workspace_id]
+    assert restored.device_id == config.device_id
+
+
+def test_workspace_load_prefers_separate_state_file(tmp_path):
+    store = ConfigStore(tmp_path / "state")
+    workspace_root = tmp_path / "repo"
+    workspace_root.mkdir()
+    legacy = WorkerConfig(
+        device_id="dev_" + "a" * 32,
+        device_token="token",
+        workspaces=[LocalWorkspace("ws_" + "a" * 32, "legacy", str(workspace_root))],
+    )
+    store.save(legacy)
+    current = WorkerConfig(
+        device_id=legacy.device_id,
+        device_token=legacy.device_token,
+        workspaces=[LocalWorkspace("ws_" + "b" * 32, "current", str(workspace_root))],
+    )
+    store.save_workspaces(current)
+
+    restored = store.load()
+    assert [item.name for item in restored.workspaces] == ["current"]
+
+
 def test_config_save_retries_a_transient_replace_lock(tmp_path, monkeypatch):
     store = ConfigStore(tmp_path / "state")
     original_replace = config_module.Path.replace
@@ -131,7 +168,7 @@ def test_workspace_registration_rolls_back_after_config_write_failure(tmp_path, 
     config = WorkerConfig()
     workspace_root = tmp_path / "repo"
     workspace_root.mkdir()
-    monkeypatch.setattr(store, "save", lambda _config: (_ for _ in ()).throw(PermissionError()))
+    monkeypatch.setattr(store, "save_workspaces", lambda _config: (_ for _ in ()).throw(PermissionError()))
 
     with pytest.raises(WorkspaceConfigWriteError):
         store.add_workspace(config, str(workspace_root))
