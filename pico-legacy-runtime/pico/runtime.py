@@ -864,6 +864,28 @@ class Pico:
         return "retry", Pico.retry_notice("model returned an empty response")
 
     @staticmethod
+    def is_deferred_action_answer(answer):
+        """Reject short final answers that only announce future work."""
+        text = " ".join(str(answer or "").strip().split())
+        if not text or len(text) > 600:
+            return False
+        return bool(
+            re.match(
+                r"^(?:好的[，,。.!！\s]*)?"
+                r"(?:我(?:会|将|再|先|继续)|接下来(?:我)?(?:会|将)?|下一步(?:我)?(?:会|将)?|先)"
+                r"(?:重新|继续|先|从|去|来|开始|检查|读取|读|定位|确认|查看|分析|排查|调查|沿着)",
+                text,
+            )
+            or re.match(
+                r"^(?:okay[,.!:\s]*)?"
+                r"(?:i(?:'ll| will| am going to)|let me|next(?: i(?:'ll| will))?|first(?: i(?:'ll| will))?)\s+"
+                r"(?:re-?read|continue|start|check|inspect|read|locate|confirm|review|analy[sz]e|investigate|trace)",
+                text,
+                re.I,
+            )
+        )
+
+    @staticmethod
     def retry_notice(problem=None):
         prefix = "Runtime notice"
         if problem:

@@ -162,6 +162,43 @@ def test_agent_retries_after_malformed_tool_payload(tmp_path):
     assert agent.current_task_state.malformed_output_recovered == 1
 
 
+def test_agent_retries_when_final_only_announces_future_work(tmp_path):
+    (tmp_path / "hello.txt").write_text("alpha\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [
+            "<final>我会重新沿着实际代码读一遍，先定位模型调用和工具循环。</final>",
+            '<tool>{"name":"read_file","args":{"path":"hello.txt","start":1,"end":1}}</tool>',
+            "<final>检查完成：hello.txt 的第一行是 alpha。</final>",
+        ],
+    )
+
+    answer = agent.ask("重新读取代码并说明结论")
+
+    assert answer == "检查完成：hello.txt 的第一行是 alpha。"
+    assert any(
+        item["role"] == "tool" and item["name"] == "read_file"
+        for item in agent.session["history"]
+    )
+    assert agent.current_task_state.malformed_output_recovered == 1
+
+
+def test_agent_retries_when_unwrapped_answer_only_announces_future_work(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [
+            "I will continue to inspect the runtime before answering.",
+            "<final>The runtime requires an explicit tool or final decision.</final>",
+        ],
+    )
+
+    assert (
+        agent.ask("Inspect the runtime")
+        == "The runtime requires an explicit tool or final decision."
+    )
+    assert agent.current_task_state.malformed_output_recovered == 1
+
+
 def test_agent_accepts_xml_write_file_tool(tmp_path):
     agent = build_agent(
         tmp_path,

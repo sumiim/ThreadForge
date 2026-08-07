@@ -28,7 +28,7 @@ import type {
   ToolCall,
   Workspace,
 } from '../api/types'
-import { getFinalAnswer, getLatestTask } from './session-state.ts'
+import { getFinalAnswer, getLatestTask, reconcileToolCalls } from './session-state.ts'
 import { workspaceKey } from '../features/sessions/workspaceIdentity'
 
 let idCounter = 0
@@ -121,7 +121,6 @@ export function useSessions(): UseSessions {
   const activeRunRef = useRef<ActiveRun | null>(null)
   const esRef = useRef<EventSource | null>(null)
   const postToolWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const reconnectStreamRef = useRef<(taskId: string, sessionId: string, assistantId: string) => void>(() => undefined)
   // approval_id -> tool call（approval.required 建立，resolved 时回查）
   const approvalMapRef = useRef<Map<string, string>>(new Map())
   // 事件回调里需要读到最新 sessions（在 effect 中同步，避免 render 期间改 ref）
@@ -187,7 +186,7 @@ export function useSessions(): UseSessions {
   }, [])
 
   // 当前运行的会话消息流关闭：清运行态、封口 placeholder、结束事件流
-  const finishRun = useCallback(() => {
+  const finishRun = useCallback((terminalStatus = 'completed') => {
     const run = activeRunRef.current
     if (!run) return
     activeRunRef.current = null
@@ -204,13 +203,7 @@ export function useSessions(): UseSessions {
           ? {
               ...m,
               status: 'done' as const,
-              toolCalls: m.toolCalls?.map((t) =>
-                t.status === 'running'
-                  ? { ...t, status: 'error' as const, result: '任务已停止，工具未完成' }
-                  : t.status === 'pending'
-                    ? { ...t, status: 'rejected' as const, result: '任务已结束，未执行' }
-                    : t,
-              ),
+              toolCalls: reconcileToolCalls(m.toolCalls, terminalStatus),
             }
           : m,
       ),
@@ -318,7 +311,7 @@ export function useSessions(): UseSessions {
               )
             }
             if (TERMINAL_STATUSES.has(status)) {
-              finishRun()
+              finishRun(status)
               return
             }
             if (data.pending_approval) {
@@ -328,6 +321,10 @@ export function useSessions(): UseSessions {
           }
           case 'agent.state': {
             setAgentProgress(parseAgentProgress(data))
+            return
+          }
+          case 'model.started':
+          case 'model.completed': {
             return
           }
           case 'tool.requested': {
@@ -425,7 +422,7 @@ export function useSessions(): UseSessions {
             if (!run || run.taskId !== taskId) return
             setAgentProgress((current) => ({
               phase: current?.phase || 'ANALYZE_CONTEXT',
-              nextStep: '工具结果后的推理事件超时，正在重新连接任务流',
+              nextStep: '模型仍在结合工具结果推理，可以继续等待或停止任务',
               checklist: current?.checklist ?? [],
               doneWhen: current?.doneWhen ?? [],
               completedItems: current?.completedItems ?? [],
@@ -434,19 +431,21 @@ export function useSessions(): UseSessions {
               maxToolSteps: current?.maxToolSteps ?? 0,
               maxReadFiles: current?.maxReadFiles ?? 0,
               maxTotalSteps: current?.maxTotalSteps ?? 0,
-              reason: 'post_tool_timeout',
+              reason: 'post_tool_waiting',
             }))
-            es.close()
-            reconnectStreamRef.current(taskId, sessionId, assistantId)
-          }, 15_000)
+          }, 45_000)
         }
-        if (TERMINAL_EVENTS.has(envelope.type)) finishRun()
+        if (TERMINAL_EVENTS.has(envelope.type)) {
+          finishRun(envelope.type.slice('task.'.length))
+        }
       }
 
       // 命名事件 + 兜底 message 事件（后端帧均带 event 名）
       const NAMED = [
         'task.snapshot',
         'agent.state',
+        'model.started',
+        'model.completed',
         'tool.requested',
         'tool.started',
         'tool.completed',
@@ -464,10 +463,6 @@ export function useSessions(): UseSessions {
     },
     [ensureApprovalCard, findLatestToolByName, findTool, finishRun, updateSessionMessages, updateTool],
   )
-
-  useEffect(() => {
-    reconnectStreamRef.current = attachEventStream
-  }, [attachEventStream])
 
   // ---- 初始加载 ---------------------------------------------------------------
 
@@ -729,7 +724,7 @@ export function useSessions(): UseSessions {
         const snapshot = await cancelTask(run.taskId)
         if (TERMINAL_STATUSES.has(snapshot.status)) {
           // 后端直接返回终态（任务已结束），事件流可能已断：本地收尾
-          finishRun()
+          finishRun(snapshot.status)
         }
         // 否则等待 task.cancelled 事件收尾
       } catch (err) {

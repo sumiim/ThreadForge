@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import type { SessionTask } from '../api/types'
-import { getFinalAnswer, getLatestTask } from './session-state.ts'
+import { getFinalAnswer, getLatestTask, reconcileToolCalls } from './session-state.ts'
 
 function task(taskId: string): SessionTask {
   return {
@@ -26,5 +26,25 @@ describe('session task recovery', () => {
     assert.equal(getFinalAnswer({ status: 'completed', final_answer: 'done' }), 'done')
     assert.equal(getFinalAnswer({ status: 'cancelled', final_answer: '' }), null)
     assert.equal(getFinalAnswer({ status: 'failed' }), null)
+  })
+
+  it('reconciles a missed tool completion when the task completed normally', () => {
+    const tools = reconcileToolCalls(
+      [{ id: 'call-1', toolName: 'read_file', status: 'running' }],
+      'completed',
+    )
+
+    assert.equal(tools?.[0].status, 'completed')
+    assert.equal(tools?.[0].result, '工具已执行完成')
+  })
+
+  it('keeps unfinished tools as errors when the task failed', () => {
+    const tools = reconcileToolCalls(
+      [{ id: 'call-1', toolName: 'read_file', status: 'running' }],
+      'failed',
+    )
+
+    assert.equal(tools?.[0].status, 'error')
+    assert.equal(tools?.[0].result, '任务已停止，工具未完成')
   })
 })

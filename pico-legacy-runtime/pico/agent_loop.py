@@ -225,6 +225,11 @@ class AgentLoop:
             token.raise_if_cancelled()
             hooks.after_model(task_state, completion_metadata)
             kind, payload = agent.parse(raw)
+            if kind == "final" and agent.is_deferred_action_answer(payload):
+                kind = "retry"
+                payload = agent.retry_notice(
+                    "model announced future work instead of performing it"
+                )
             agent.emit_progress(f"step {attempts}: model returned {kind}")
             agent.emit_trace(
                 task_state,
