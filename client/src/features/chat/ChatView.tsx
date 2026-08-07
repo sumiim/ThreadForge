@@ -48,7 +48,7 @@ export default function ChatView({ session, running, agentProgress, onSend, onSt
         <div className="border-b border-stone-100 bg-white px-5 py-3 text-xs text-stone-600">
           <div className="flex items-center gap-2">
             <span
-              className={`h-2 w-2 rounded-full ${agentProgress.reason === 'post_tool_timeout' ? 'bg-amber-500' : running ? 'bg-blue-500' : 'bg-emerald-500'}`}
+              className={`h-2 w-2 rounded-full ${agentProgress.reason === 'post_tool_waiting' ? 'bg-amber-500' : running ? 'bg-blue-500' : 'bg-emerald-500'}`}
               aria-hidden
             />
             <span className="font-medium text-stone-800">阶段：{phaseLabels[agentProgress.phase] ?? agentProgress.phase}</span>
@@ -58,8 +58,8 @@ export default function ChatView({ session, running, agentProgress, onSend, onSt
             </span>
           </div>
           {agentProgress.nextStep ? <div className="mt-1 truncate text-stone-500">下一步：{agentProgress.nextStep}</div> : null}
-          {agentProgress.reason === 'post_tool_timeout' ? (
-            <div className="mt-1 text-amber-700">工具已返回，但后续推理事件长时间未到达，任务流已自动重连。</div>
+          {agentProgress.reason === 'post_tool_waiting' ? (
+            <div className="mt-1 text-amber-700">工具已返回，模型仍在继续推理；你可以等待或停止当前任务。</div>
           ) : null}
           {agentProgress.checklist.length > 0 ? (
             <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-stone-400">
