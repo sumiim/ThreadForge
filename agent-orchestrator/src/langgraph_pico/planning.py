@@ -21,6 +21,17 @@ READ_TOOLS = {"list_files", "read_file", "search"}
 WRITE_TOOLS = {"write_file", "patch_file", "run_shell"}
 RISK_LEVELS = {"low", "medium", "high"}
 
+# The planner cannot know the exact tokenized prompt size or how much context
+# later answer/review nodes will need. These runtime-owned floors prevent a
+# model estimate from making a valid plan immediately unusable.
+PLAN_MINIMUM_BUDGETS = {
+    "model_rounds": MIN_PLAN_MODEL_ROUNDS,
+    "tool_calls": 0,
+    "input_tokens": 20_000,
+    "output_tokens": 2_000,
+    "elapsed_seconds": 120,
+}
+
 
 class PlanValidationError(ValueError):
     def __init__(self, code: str, message: str):
@@ -39,6 +50,7 @@ def build_plan_prompt(
     previous_plan=None,
     replan_reason="",
     validation_error="",
+    minimum_budgets=None,
 ):
     payload = json.dumps(
         {
@@ -46,6 +58,7 @@ def build_plan_prompt(
             "recent_context": str(context),
             "available_tools": sorted(str(item) for item in available_tools),
             "maximum_budgets": dict(budgets),
+            "minimum_budgets": dict(minimum_budgets or PLAN_MINIMUM_BUDGETS),
             "expected_revision": int(expected_revision),
             "previous_plan": dict(previous_plan or {}),
             "replan_reason": str(replan_reason),
@@ -67,8 +80,9 @@ def build_plan_prompt(
         "acceptance, dependencies, required_tools, required_evidence, and done_when must be JSON arrays "
         "of non-empty strings, even when they contain only one item. Empty arrays are allowed for "
         "dependencies, required_tools, and required_evidence. Dependencies must be acyclic. Use only "
-        "available tools. Budgets are integer limits; tool_calls may be 0 when no tool is needed, while "
-        "every other budget must be at least 1. "
+        "available tools. Budgets are integer limits. Runtime minimum_budgets are authoritative; "
+        "never return a lower value. tool_calls may be 0 when no tool is needed, while every other "
+        "budget must be at least 1. "
         "A request that changes files or runs a potentially mutating shell command is code_change. "
         "Use expected_revision exactly. For a revision, preserve the previous plan_id. "
         "Budgets cover the whole run, including planning and review. model_rounds must be at least "
@@ -84,6 +98,7 @@ def parse_and_validate_plan(
     maximum_budgets,
     expected_revision=1,
     expected_plan_id="",
+    minimum_budgets=None,
 ):
     try:
         value = json.loads(str(text).strip())
@@ -130,7 +145,20 @@ def parse_and_validate_plan(
         set(step["required_tools"]) & WRITE_TOOLS for step in steps
     ):
         raise PlanValidationError("plan_write_step_missing", "code_change plan needs a write step")
-    budgets = _validate_budgets(value["budgets"], maximum_budgets)
+    minimum_budgets = {
+        **PLAN_MINIMUM_BUDGETS,
+        **dict(minimum_budgets or {}),
+    }
+    budgets = _validate_budgets(value["budgets"], maximum_budgets, minimum_budgets)
+    required_tool_calls = sum(len(step["required_tools"]) for step in steps)
+    required_tool_floor = int(minimum_budgets["tool_calls"]) + required_tool_calls
+    required_round_floor = int(minimum_budgets["model_rounds"]) + required_tool_calls
+    if required_tool_floor > int(maximum_budgets["tool_calls"]):
+        raise PlanValidationError("plan_budget_exceeded", "required tools exceed tool-call budget")
+    if required_round_floor > int(maximum_budgets["model_rounds"]):
+        raise PlanValidationError("plan_budget_exceeded", "required tools exceed model-round budget")
+    budgets["tool_calls"] = max(budgets["tool_calls"], required_tool_floor)
+    budgets["model_rounds"] = max(budgets["model_rounds"], required_round_floor)
     if budgets["model_rounds"] < MIN_PLAN_MODEL_ROUNDS:
         raise PlanValidationError(
             "plan_budget_too_small",
@@ -220,20 +248,25 @@ def _elevated_intent(intent, steps):
     return intent
 
 
-def _validate_budgets(value, maximum):
+def _validate_budgets(value, maximum, minimum):
     keys = {"model_rounds", "tool_calls", "input_tokens", "output_tokens", "elapsed_seconds"}
     if not isinstance(value, dict) or set(value) != keys:
         raise PlanValidationError("plan_budgets_invalid", "invalid plan budgets")
     result = {}
     for key in sorted(keys):
         raw = value[key]
-        minimum = 0 if key == "tool_calls" else 1
-        if isinstance(raw, bool) or not isinstance(raw, int) or raw < minimum:
+        raw_minimum = 0 if key == "tool_calls" else 1
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < raw_minimum:
             raise PlanValidationError("plan_budget_invalid", f"invalid {key} budget")
         limit = int(maximum[key])
         if raw > limit:
             raise PlanValidationError("plan_budget_exceeded", f"{key} exceeds maximum")
-        result[key] = raw
+        floor = minimum.get(key, 0 if key == "tool_calls" else 1)
+        if isinstance(floor, bool) or not isinstance(floor, int) or floor < 0:
+            raise PlanValidationError("plan_budget_invalid", f"invalid minimum {key} budget")
+        if floor > limit:
+            raise PlanValidationError("plan_budget_exceeded", f"minimum {key} exceeds maximum")
+        result[key] = max(raw, floor)
     return result
 
 
