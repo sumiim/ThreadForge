@@ -18,7 +18,7 @@ function formatTime(iso: string): string {
 export default function MessageItem({ message, onApprove, onReject }: MessageItemProps) {
   if (message.role === 'user') {
     return (
-      <div className="message-enter flex justify-end">
+      <div id={`message-${message.id}`} data-message-created-at={message.createdAt} className="message-enter flex justify-end">
         <div className="max-w-[75%]">
           <div className="rounded-2xl rounded-tr-sm bg-blue-50 px-4 py-2.5 text-sm leading-relaxed text-stone-800">
             {message.content}
@@ -32,8 +32,27 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
   }
 
   return (
-    <div className="message-enter flex justify-start">
+    <div
+      id={`message-${message.id}`}
+      data-message-created-at={message.createdAt}
+      className="message-enter flex justify-start"
+    >
       <div className="min-w-0 max-w-[85%]">
+        {message.activity && message.activity.length > 0 ? (
+          <details className="mb-2 max-w-full rounded-lg border border-stone-100 bg-stone-50/70 px-3 py-2 text-xs text-stone-500" open={message.status === 'streaming'}>
+            <summary className="cursor-pointer select-none text-[11px] text-stone-500">
+              已完成 {message.activity.length} 个过程步骤
+            </summary>
+            <div className="mt-2 space-y-1.5 border-l border-stone-200 pl-2">
+              {message.activity.map((activity) => (
+                <div key={activity.id}>
+                  <div className="font-medium text-stone-600">{activity.label}</div>
+                  {activity.detail ? <div className="mt-0.5 whitespace-pre-wrap text-stone-400">{activity.detail}</div> : null}
+                </div>
+              ))}
+            </div>
+          </details>
+        ) : null}
         {message.content && (
           <div className="py-1">
             <Markdown content={message.content} />

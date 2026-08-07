@@ -1094,7 +1094,7 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
             next_state = _failed_state(
                 updated,
                 "review_retry_limit_reached",
-                review["text"],
+                "自动审查未通过，已达到重试上限。请查看运行详情中的审查记录后重试。",
             )
         else:
             next_state = {
@@ -1155,7 +1155,7 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 next_state = _failed_state(
                     updated,
                     "review_retry_limit_reached",
-                    review["text"],
+                    "自动审查未通过，已达到重试上限。请查看运行详情中的审查记录后重试。",
                 )
             else:
                 next_state = {

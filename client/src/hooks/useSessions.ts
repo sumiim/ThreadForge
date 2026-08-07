@@ -70,6 +70,7 @@ function terminalFailureMessage(data: Record<string, unknown>): string {
   const code = String(data.error_code ?? '')
   if (code && modelFailureMessages[code]) return modelFailureMessages[code]
   const status = String(data.status ?? '')
+  if (status === 'cancelled') return '已停止当前任务。'
   if (status === 'interrupted') return '运行因服务重启或连接中断而终止，请重新执行。'
   if (status === 'blocked') return '运行未通过完成门禁，请根据当前提示调整后重试。'
   return status === 'failed' ? 'Agent 运行失败，请稍后重试。' : ''
@@ -148,7 +149,9 @@ export interface UseSessions {
   skills: SkillMetadata[]
   mcpServers: McpServerMetadata[]
   loading: boolean
+  historyLoading: boolean
   running: boolean
+  stopping: boolean
   agentProgress: AgentProgress | null
   refreshWorkspaces: () => Promise<Workspace[]>
   select: (id: string) => void
@@ -160,6 +163,7 @@ export interface UseSessions {
   approveTool: (messageId: string, toolCallId: string) => void
   rejectTool: (messageId: string, toolCallId: string) => void
   stopRun: () => void
+  selectRun: (runId: string) => void
 }
 
 // Session 列表、选中与运行状态：数据源为 api-server REST + SSE 事件流
@@ -171,13 +175,18 @@ export function useSessions(): UseSessions {
   const [skills, setSkills] = useState<SkillMetadata[]>([])
   const [mcpServers, setMcpServers] = useState<McpServerMetadata[]>([])
   const [loading, setLoading] = useState(true)
+  const [historyLoading, setHistoryLoading] = useState(false)
   const [running, setRunning] = useState(false)
+  const [stopping, setStopping] = useState(false)
   const [agentProgress, setAgentProgress] = useState<AgentProgress | null>(null)
+  const [syncVersion, setSyncVersion] = useState(0)
 
   // 已从后端拉过完整消息的会话（避免选中时重复请求覆盖本地流式状态）
   const loadedRef = useRef<Set<string>>(new Set())
   // 当前在跑的任务（后端单活跃任务）
   const activeRunRef = useRef<ActiveRun | null>(null)
+  const cancelRequestedRef = useRef(false)
+  const channelRef = useRef<BroadcastChannel | null>(null)
   const esRef = useRef<EventSource | null>(null)
   const postToolWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // approval_id -> tool call（approval.required 建立，resolved 时回查）
@@ -187,6 +196,26 @@ export function useSessions(): UseSessions {
   useEffect(() => {
     sessionsRef.current = sessions
   }, [sessions])
+
+  const broadcastSessionChange = useCallback((sessionId?: string) => {
+    channelRef.current?.postMessage({ type: 'session.changed', session_id: sessionId ?? null })
+  }, [])
+
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return
+    const channel = new BroadcastChannel('threadforge-session-sync-v1')
+    channelRef.current = channel
+    channel.onmessage = (event) => {
+      const payload = event.data as { type?: string; session_id?: string | null } | null
+      if (payload?.type !== 'session.changed') return
+      if (payload.session_id) loadedRef.current.delete(payload.session_id)
+      setSyncVersion((value) => value + 1)
+    }
+    return () => {
+      channel.close()
+      channelRef.current = null
+    }
+  }, [])
 
   useEffect(
     () => () => {
@@ -254,6 +283,9 @@ export function useSessions(): UseSessions {
       postToolWatchdogRef.current = null
     }
     setRunning(false)
+    setStopping(false)
+    setAgentProgress(null)
+    cancelRequestedRef.current = false
     esRef.current?.close()
     esRef.current = null
     updateSessionMessages(run.sessionId, (messages) =>
@@ -267,7 +299,8 @@ export function useSessions(): UseSessions {
           : m,
       ),
     )
-  }, [updateSessionMessages])
+    broadcastSessionChange(run.sessionId)
+  }, [broadcastSessionChange, updateSessionMessages])
 
   // 审批卡就位：approval.required 事件（无 tool_call_id，按 tool_name 匹配最近的卡）
   const ensureApprovalCard = useCallback(
@@ -366,6 +399,7 @@ export function useSessions(): UseSessions {
           'tool.started': '工具开始',
           'tool.completed': '工具完成',
           'tool.failed': '工具失败',
+          'task.cancel_requested': '正在停止',
           'task.completed': '运行完成',
           'task.cancelled': '运行已取消',
           'task.failed': '运行失败',
@@ -420,6 +454,23 @@ export function useSessions(): UseSessions {
             activeRunId: envelope.run_id,
           }
         })
+      }
+
+      const appendActivity = (envelope: RunEventEnvelope, label: string, detail?: string) => {
+        updateSessionMessages(sessionId, (messages) => messages.map((message) =>
+          message.id === assistantId
+            ? {
+                ...message,
+                activity: [...(message.activity ?? []), {
+                  id: envelope.event_id,
+                  type: envelope.type,
+                  label,
+                  detail: detail?.trim() || undefined,
+                  createdAt: envelope.timestamp,
+                }].slice(-50),
+              }
+            : message,
+        ))
       }
 
       const handleEnvelope = (envelope: RunEventEnvelope) => {
@@ -482,27 +533,22 @@ export function useSessions(): UseSessions {
               maxReadFiles: 0,
               maxTotalSteps: 0,
             })
+            appendActivity(envelope, '计划已创建', String(data.summary ?? ''))
             return
           }
           case 'assistant.commentary': {
             const text = String(data.text ?? '').trim()
-            if (text) {
-              updateSessionMessages(sessionId, (messages) =>
-                messages.map((message) =>
-                  message.id === assistantId
-                    ? { ...message, content: [message.content, text].filter(Boolean).join('\n\n') }
-                    : message,
-                ),
-              )
-            }
+            if (text) appendActivity(envelope, '过程更新', text)
             return
           }
           case 'review.started': {
             setAgentProgress((progress) => progress ? { ...progress, phase: 'REVIEW', nextStep: '正在审查结果' } : progress)
+            appendActivity(envelope, '开始审查')
             return
           }
           case 'review.completed': {
             setAgentProgress((progress) => progress ? { ...progress, nextStep: `审查结果：${String(data.status ?? '')}` } : progress)
+            appendActivity(envelope, '审查完成', `结果：${String(data.status ?? '')}`)
             return
           }
           case 'tool.requested': {
@@ -522,6 +568,7 @@ export function useSessions(): UseSessions {
               : findLatestToolByName(sessionId, assistantId, toolName)
             if (!tool) return
             updateTool(sessionId, assistantId, tool.id, (t) => ({ ...t, status: 'running' }))
+            appendActivity(envelope, '工具执行中', toolName)
             return
           }
           case 'tool.completed':
@@ -541,6 +588,7 @@ export function useSessions(): UseSessions {
               toolName,
               result,
             )
+            appendActivity(envelope, type === 'tool.completed' ? '工具完成' : '工具失败', toolName)
             return
           }
           case 'approval.required': {
@@ -575,15 +623,27 @@ export function useSessions(): UseSessions {
           case 'task.failed':
           case 'task.interrupted':
           case 'task.blocked': {
-            const finalAnswer = getFinalAnswer(data) ?? terminalFailureMessage({
+            const status = type.slice('task.'.length)
+            const finalAnswer = getFinalAnswer({ ...data, status }) ?? terminalFailureMessage({
               ...data,
-              status: type.slice('task.'.length),
+              status,
             })
             if (finalAnswer) {
               updateSessionMessages(sessionId, (messages) =>
                 messages.map((m) => (m.id === assistantId ? { ...m, content: finalAnswer } : m)),
               )
             }
+            return
+          }
+          case 'task.cancel_requested': {
+            setStopping(true)
+            setAgentProgress((current) => current ? {
+              ...current,
+              phase: 'FINAL',
+              nextStep: '正在停止任务并清理运行资源',
+              reason: 'cancel_requested',
+            } : current)
+            appendActivity(envelope, '正在停止', '已发送取消请求，等待 Worker 清理')
             return
           }
           default:
@@ -641,6 +701,7 @@ export function useSessions(): UseSessions {
         'approval.resolved',
         'message.completed',
         'task.completed',
+        'task.cancel_requested',
         'task.cancelled',
         'task.failed',
         'task.interrupted',
@@ -678,6 +739,7 @@ export function useSessions(): UseSessions {
             id: item.session_id,
             title: item.title,
             createdAt: item.created_at,
+            updatedAt: item.updated_at ?? item.created_at,
             displayNameSource: item.display_name_source,
             displayNameUpdatedAt: item.display_name_updated_at ?? item.created_at,
             draft: item.has_started === false,
@@ -716,8 +778,12 @@ export function useSessions(): UseSessions {
   // ---- 会话选中：按需拉取详情；未结束的任务续接事件流 -------------------------
 
   useEffect(() => {
-    if (!activeId || loadedRef.current.has(activeId)) return
+    if (!activeId || loadedRef.current.has(activeId)) {
+      setHistoryLoading(false)
+      return
+    }
     let cancelled = false
+    setHistoryLoading(true)
     ;(async () => {
       try {
         const detail: SessionDetail = await getSession(activeId, 200)
@@ -752,6 +818,7 @@ export function useSessions(): UseSessions {
           id: detail.session_id,
           title: detail.title,
           createdAt: detail.created_at,
+          updatedAt: detail.updated_at ?? detail.created_at,
           displayNameSource: detail.display_name_source,
           displayNameUpdatedAt: detail.display_name_updated_at ?? detail.created_at,
           draft: detail.has_started === false,
@@ -816,12 +883,75 @@ export function useSessions(): UseSessions {
         }
       } catch (err) {
         if (!cancelled) notify.error(friendlyMessage(err))
+      } finally {
+        if (!cancelled) setHistoryLoading(false)
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [activeId, attachEventStream, runtimeConfig, workspaces])
+  }, [activeId, attachEventStream, runtimeConfig, syncVersion, workspaces])
+
+  // SSE 只覆盖当前窗口的任务；索引轮询负责把其他窗口的创建、重命名和完成状态带过来。
+  useEffect(() => {
+    let disposed = false
+    const refresh = async () => {
+      try {
+        const response = await listSessions()
+        if (disposed) return
+        setSessions((current) => {
+          const existing = new Map(current.map((session) => [session.id, session]))
+          const next = response.items.map((item) => {
+            const currentSession = existing.get(item.session_id)
+            const updatedAt = item.updated_at ?? item.created_at
+            const displayNameUpdatedAt = item.display_name_updated_at ?? item.created_at
+            if (currentSession?.displayNameUpdatedAt === displayNameUpdatedAt && currentSession?.createdAt === item.created_at && currentSession?.title === item.title && currentSession.updatedAt === updatedAt) {
+              return currentSession
+            }
+            if (currentSession && activeRunRef.current?.sessionId !== item.session_id) {
+              loadedRef.current.delete(item.session_id)
+            }
+            return {
+              ...(currentSession ?? {
+                id: item.session_id,
+                messages: [],
+                model: runtimeConfig?.model ?? '未配置',
+                modelOptions: [{
+                  id: runtimeConfig?.model ?? '未配置',
+                  display_name: runtimeConfig?.model ?? '未配置',
+                  reasoning_efforts: ['none'] as ReasoningEffort[],
+                }],
+              }),
+              id: item.session_id,
+              title: item.title,
+              createdAt: item.created_at,
+              displayNameSource: item.display_name_source,
+              displayNameUpdatedAt,
+              draft: item.has_started === false,
+              workspaceId: item.workspace_id,
+              executionEnvironment: item.execution_environment,
+              deviceId: item.device_id,
+              updatedAt,
+            } as Session & { updatedAt?: string }
+          })
+          return next
+        })
+        setSyncVersion((value) => value + 1)
+      } catch {
+        // Keep the current UI when the control plane is temporarily unavailable.
+      }
+    }
+    const onFocus = () => void refresh()
+    window.addEventListener('focus', onFocus)
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void refresh()
+    }, 5000)
+    return () => {
+      disposed = true
+      window.removeEventListener('focus', onFocus)
+      window.clearInterval(timer)
+    }
+  }, [runtimeConfig?.model])
 
   // ---- 用户操作 ---------------------------------------------------------------
 
@@ -836,6 +966,7 @@ export function useSessions(): UseSessions {
             id: res.session_id,
             title: res.title,
             createdAt: res.created_at,
+            updatedAt: res.created_at,
             displayNameSource: res.display_name_source,
             displayNameUpdatedAt: res.display_name_updated_at ?? res.created_at,
             draft: true,
@@ -861,12 +992,13 @@ export function useSessions(): UseSessions {
           loadedRef.current.add(session.id)
           setSessions((prev) => [session, ...prev])
           setActiveId(session.id)
+          broadcastSessionChange(session.id)
         } catch (err) {
           notify.error(friendlyMessage(err))
         }
       })()
     },
-    [runtimeConfig, workspaces],
+    [broadcastSessionChange, runtimeConfig, workspaces],
   )
 
   const sendMessage = useCallback(
@@ -874,6 +1006,8 @@ export function useSessions(): UseSessions {
       const sessionId = activeId
       if (!sessionId || !content.trim() || running) return
       setRunning(true)
+      setStopping(false)
+      cancelRequestedRef.current = false
       setAgentProgress(null)
 
       const now = new Date().toISOString()
@@ -893,6 +1027,7 @@ export function useSessions(): UseSessions {
         draft: false,
         title: firstRequestTitle ?? session.title,
       }))
+      broadcastSessionChange(sessionId)
 
       ;(async () => {
         try {
@@ -928,8 +1063,19 @@ export function useSessions(): UseSessions {
             activeRunId: queued.run_id,
           }))
           attachEventStream(queued.task_id, sessionId, assistantId)
+          broadcastSessionChange(sessionId)
+          if (cancelRequestedRef.current) {
+            try {
+              await cancelTask(queued.task_id)
+            } catch (error) {
+              setStopping(false)
+              notify.error(friendlyMessage(error))
+            }
+          }
         } catch (err) {
           setRunning(false)
+          setStopping(false)
+          cancelRequestedRef.current = false
           activeRunRef.current = null
           // 任务未创建成功：移除占位 assistant 消息，保留用户消息
           updateSessionMessages(sessionId, (messages) => messages.filter((m) => m.id !== assistantId))
@@ -937,7 +1083,7 @@ export function useSessions(): UseSessions {
         }
       })()
     },
-    [activeId, attachEventStream, running, updateSession, updateSessionMessages],
+    [activeId, attachEventStream, broadcastSessionChange, running, updateSession, updateSessionMessages],
   )
 
   const approveTool = useCallback(
@@ -982,8 +1128,18 @@ export function useSessions(): UseSessions {
   )
 
   const stopRun = useCallback(() => {
+    cancelRequestedRef.current = true
+    setStopping(true)
     const run = activeRunRef.current
-    if (!run) return
+    if (!run) {
+      setAgentProgress((current) => current ? {
+        ...current,
+        phase: 'FINAL',
+        nextStep: '正在停止任务',
+        reason: 'cancel_requested',
+      } : current)
+      return
+    }
     ;(async () => {
       try {
         const snapshot = await cancelTask(run.taskId)
@@ -993,10 +1149,17 @@ export function useSessions(): UseSessions {
         }
         // 否则等待 task.cancelled 事件收尾
       } catch (err) {
+        setStopping(false)
+        cancelRequestedRef.current = false
         notify.error(friendlyMessage(err))
       }
     })()
   }, [finishRun])
+
+  const selectRun = useCallback((runId: string) => {
+    if (!activeId) return
+    updateSession(activeId, (session) => ({ ...session, activeRunId: runId }))
+  }, [activeId, updateSession])
 
   const renameDevice = useCallback(async (deviceId: string, displayName: string) => {
     try {
@@ -1061,11 +1224,12 @@ export function useSessions(): UseSessions {
         displayNameSource: result.display_name_source,
         displayNameUpdatedAt: result.display_name_updated_at,
       }))
+      broadcastSessionChange(sessionId)
     } catch (error) {
       notify.error(friendlyMessage(error))
       throw error
     }
-  }, [updateSession])
+  }, [broadcastSessionChange, updateSession])
 
   return {
     sessions,
@@ -1076,7 +1240,9 @@ export function useSessions(): UseSessions {
     skills,
     mcpServers,
     loading,
+    historyLoading,
     running,
+    stopping,
     agentProgress,
     refreshWorkspaces,
     select,
@@ -1088,5 +1254,6 @@ export function useSessions(): UseSessions {
     approveTool,
     rejectTool,
     stopRun,
+    selectRun,
   }
 }

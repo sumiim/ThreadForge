@@ -216,14 +216,14 @@ export default function WorkerDevices() {
                   </span>
                   <Tag color={device.online ? 'green' : 'default'}>{device.online ? '在线' : '离线'}</Tag>
                   <Popconfirm
-                    title="撤销这台设备？"
+                    title="解绑这台设备？"
                     description="设备将立即断开，正在执行的任务会失败。"
-                    okText="撤销"
+                    okText="解绑"
                     okButtonProps={{ danger: true }}
                     cancelText="取消"
                     onConfirm={() => void revoke(device.device_id)}
                   >
-                    <Button type="text" danger size="small" icon={<DeleteOutlined />} />
+                    <Button type="text" danger size="small">解绑设备</Button>
                   </Popconfirm>
                 </div>
                 <div className="mt-2 text-[11px] text-stone-500">

@@ -1,4 +1,4 @@
-import { Button } from 'antd'
+import { Button, Spin } from 'antd'
 import Logo from '../../components/Logo'
 import type { AgentProgress, Session } from '../../api/types'
 import ApprovalNotice from './ApprovalNotice'
@@ -8,10 +8,13 @@ import RunMinimap from './RunMinimap'
 
 interface ChatViewProps {
   session: Session
+  historyLoading: boolean
   running: boolean
+  stopping: boolean
   agentProgress: AgentProgress | null
   onSend: Parameters<typeof Composer>[0]['onSend']
   onStop: () => void
+  onSelectRun: (runId: string) => void
   onApprove: (messageId: string, toolCallId: string) => void
   onReject: (messageId: string, toolCallId: string) => void
 }
@@ -19,15 +22,17 @@ interface ChatViewProps {
 const suggestions = ['分析当前项目结构', 'Review 最近一次提交', '实现一个 HTTP 服务示例']
 
 const phaseLabels: Record<string, string> = {
+  PLANNING: '规划任务',
   UNDERSTAND_REQUEST: '理解需求',
   GATHER_CONTEXT: '收集上下文',
   ANALYZE_CONTEXT: '分析证据',
   ACT_OR_ANSWER: '执行或回答',
   VERIFY: '验证结果',
+  REVIEW: '审查结果',
   FINAL: '已完成',
 }
 
-export default function ChatView({ session, running, agentProgress, onSend, onStop, onApprove, onReject }: ChatViewProps) {
+export default function ChatView({ session, historyLoading, running, stopping, agentProgress, onSend, onStop, onSelectRun, onApprove, onReject }: ChatViewProps) {
   const empty = session.messages.length === 0
 
   // 待审批的工具调用（per_call_only，逐次审批）
@@ -74,7 +79,18 @@ export default function ChatView({ session, running, agentProgress, onSend, onSt
         </div>
       ) : null}
       <div className="flex min-h-0 flex-1">
-      {empty ? (
+      <RunMinimap
+        runs={session.runs ?? []}
+        activeRunId={session.activeRunId ?? session.lastRunId}
+        onSelectRun={onSelectRun}
+      />
+      {historyLoading && !session.draft ? (
+        <div id="run-scroll-container" className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-sm text-stone-500" role="status">
+          <Spin size="large" />
+          <span>正在读取历史记录...</span>
+          <span className="text-xs text-stone-400">正在加载会话消息和运行记录</span>
+        </div>
+      ) : empty ? (
         // 空态：引导用户开始，无装饰元素
         <div id="run-scroll-container" className="flex min-h-0 flex-1 flex-col items-center justify-center gap-5 px-6">
           <div className="flex items-center gap-2.5">
@@ -101,10 +117,6 @@ export default function ChatView({ session, running, agentProgress, onSend, onSt
       ) : (
         <MessageList messages={session.messages} onApprove={onApprove} onReject={onReject} />
       )}
-      <RunMinimap
-        runs={session.runs ?? []}
-        activeRunId={session.activeRunId ?? session.lastRunId}
-      />
       </div>
 
       <ApprovalNotice count={pendingApprovals.length} onLocate={locatePending} />
@@ -113,6 +125,7 @@ export default function ChatView({ session, running, agentProgress, onSend, onSt
         model={session.model}
         modelOptions={session.modelOptions}
         running={running}
+        stopping={stopping}
         onSend={onSend}
         onStop={onStop}
       />

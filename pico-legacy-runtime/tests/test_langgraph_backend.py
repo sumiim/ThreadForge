@@ -216,6 +216,8 @@ def test_langgraph_review_retry_limit_has_stable_terminal_reason(tmp_path):
     result, _ = _run_task(tmp_path, task, outputs)
 
     assert result.task_state.stop_reason == "review_retry_limit_reached"
+    assert result.final_answer == "自动审查未通过，已达到重试上限。请查看运行详情中的审查记录后重试。"
+    assert "status: needs_fix" not in result.final_answer
     assert sum(event.get("event") == "review_retry_started" for event in result.events) == 2
 
 

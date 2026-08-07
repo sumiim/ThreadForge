@@ -6,7 +6,11 @@ export function getLatestTask(tasks: SessionTask[]): SessionTask | undefined {
 }
 
 export function getFinalAnswer(data: Record<string, unknown>): string | null {
-  return typeof data.final_answer === 'string' && data.final_answer.length > 0
+  const status = String(data.status ?? '')
+  // Failed runs may carry internal review diagnostics. Only completed runs
+  // can promote final_answer into the visible conversation.
+  if (status && status !== 'completed') return null
+  return typeof data.final_answer === 'string' && data.final_answer.trim().length > 0
     ? data.final_answer
     : null
 }

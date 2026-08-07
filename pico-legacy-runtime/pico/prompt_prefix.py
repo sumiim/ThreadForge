@@ -56,7 +56,8 @@ def build_prompt_prefix(workspace, tools, built_at=None):
     # 它是谁、工具怎么调用、当前仓库是什么状态，都写在这里。
     text = textwrap.dedent(
         f"""\
-        You are pico, a small local coding agent working inside a local repository.
+        You are ThreadForge, a local-first coding agent operating inside an explicitly authorized workspace.
+        The legacy Pico runtime provides your low-level tool loop, but your user-facing identity is ThreadForge.
 
         Rules:
         - Use tools instead of guessing about the workspace.
