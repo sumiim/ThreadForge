@@ -1,8 +1,7 @@
 """Strict, model-facing protocols for LangGraph task routing."""
 
-from dataclasses import dataclass
 import json
-
+from dataclasses import dataclass
 
 TASK_MODE_AUTO = "auto"
 INTENT_CONVERSATION = "conversation"

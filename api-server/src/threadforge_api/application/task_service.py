@@ -71,6 +71,8 @@ class TaskService:
         if len(input_text) > self._settings.task_input_max_chars:
             raise InputTooLongError(self._settings.task_input_max_chars)
         session = self._session_service.load_raw(session_id, owner_id)  # 404 session_not_found
+        input_text = input_text.strip()
+        session = self._session_service.initialize_from_first_request(session, input_text)
         workspace_id = session.get("workspace_id", "")
         execution_environment = session.get("execution_environment", "backend_process")
         device_id = session.get("device_id", "")
@@ -110,7 +112,6 @@ class TaskService:
                 raise WorkerCapabilityUnavailableError(
                     "server-side execution does not advertise the selected model settings"
                 )
-        input_text = input_text.strip()
         task_id = "task_" + uuid.uuid4().hex
         run_id = "run_" + uuid.uuid4().hex
         task = Task(
@@ -265,6 +266,10 @@ class TaskService:
                 else redact_artifact(task.final_answer)
             ),
             "stop_reason": task.stop_reason,
+            "error_stage": task.error_stage,
+            "error_code": task.error_code,
+            "error_retryable": task.error_retryable,
+            "error_attempts": task.error_attempts,
             "attempts": progress.get("attempts"),
             "tool_steps": progress.get("tool_steps"),
             "phase": progress.get("phase", ""),

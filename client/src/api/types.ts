@@ -16,7 +16,11 @@ export interface Workspace {
   model?: string
   model_configured?: boolean
   display_name?: string
+  display_name_source?: 'auto' | 'user'
+  display_name_updated_at?: string
   device_display_name?: string
+  device_display_name_source?: 'auto' | 'user'
+  device_display_name_updated_at?: string
   model_capabilities?: ModelCapabilities
 }
 
@@ -37,6 +41,8 @@ export interface WorkerWorkspace {
   workspace_id: string
   name: string
   is_git: boolean
+  display_name_source?: 'auto' | 'user'
+  display_name_updated_at?: string
 }
 
 export interface Device {
@@ -52,11 +58,13 @@ export interface Device {
   compatible: boolean
   capabilities: string[]
   display_name?: string
+  display_name_source?: 'auto' | 'user'
   orchestration_backend?: string
   model_capabilities?: ModelCapabilities
   update_status?: WorkerUpdateStatus
   created_at: string
   last_seen_at: string
+  display_name_updated_at?: string
   workspaces: WorkerWorkspace[]
 }
 
@@ -168,6 +176,10 @@ export interface SessionSummary {
   workspace_id: string
   title: string
   created_at: string
+  updated_at?: string
+  display_name_source?: 'auto' | 'user'
+  display_name_updated_at?: string
+  has_started?: boolean
   message_total: number
   execution_environment: string
   device_id: string
@@ -187,6 +199,10 @@ export interface SessionTask {
   input: string
   final_answer: string | null
   stop_reason: string | null
+  error_stage?: string
+  error_code?: string
+  error_retryable?: boolean
+  error_attempts?: number
   created_at: string
   updated_at: string
   model_id?: string
@@ -200,6 +216,10 @@ export interface SessionDetail {
   workspace_id: string
   title: string
   created_at: string
+  updated_at?: string
+  display_name_source?: 'auto' | 'user'
+  display_name_updated_at?: string
+  has_started?: boolean
   message_total: number
   has_more: boolean
   messages: SessionMessage[]
@@ -229,6 +249,10 @@ export interface TaskSnapshot {
   input: string
   final_answer: string | null
   stop_reason: string | null
+  error_stage?: string
+  error_code?: string
+  error_retryable?: boolean
+  error_attempts?: number
   attempts: number | null
   tool_steps: number | null
   phase?: string
@@ -261,6 +285,16 @@ export interface RunIndexItem {
   intent?: string
   step_count?: number
   status?: string
+  run_id?: string
+}
+
+export interface SessionRun {
+  taskId: string
+  runId: string
+  status: string
+  startedAt: string
+  updatedAt: string
+  items: RunIndexItem[]
 }
 
 // POST /api/v1/tasks 响应（202）
@@ -351,6 +385,9 @@ export interface Session {
   id: string
   title: string
   createdAt: string
+  displayNameSource?: 'auto' | 'user'
+  displayNameUpdatedAt?: string
+  draft?: boolean
   /** 后端 workspace_id，显示路径由 Workspace.display_path 映射 */
   workspaceId: string
   executionEnvironment?: string
@@ -358,6 +395,8 @@ export interface Session {
   model: string
   modelOptions: ModelCapability[]
   runIndex?: RunIndexItem[]
+  runs?: SessionRun[]
+  activeRunId?: string
   messages: Message[]
   lastTaskId?: string
   lastRunId?: string

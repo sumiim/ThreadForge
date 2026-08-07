@@ -67,6 +67,22 @@ def test_task_state_snapshot_keeps_final_answer():
     assert snapshot["phase"] == "FINAL"
 
 
+def test_task_state_persists_plan_revisions_and_safe_error_metadata():
+    state = TaskState.create(run_id="run_plan", task_id="task_plan", user_request="plan")
+    state.plan_id = "plan_1"
+    state.plan_revision = 2
+    state.plan_history = [{"plan_id": "plan_1", "revision": 1}]
+    state.replan_reasons = ["review needs a fix"]
+    state.record_error(stage="planning", code="model_timeout", retryable=True, attempts=3)
+
+    snapshot = state.to_dict()
+
+    assert snapshot["plan_history"] == [{"plan_id": "plan_1", "revision": 1}]
+    assert snapshot["replan_reasons"] == ["review needs a fix"]
+    assert snapshot["error_code"] == "model_timeout"
+    assert TaskState.from_dict(snapshot).plan_revision == 2
+
+
 def test_task_state_snapshot_keeps_checkpoint_reference_without_body():
     state = TaskState.create(run_id="run_006", task_id="task_006", user_request="Resume the task.")
     state.checkpoint_id = "ckpt_001"

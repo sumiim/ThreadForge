@@ -55,6 +55,14 @@ def test_v11_plan_is_strict_json_and_validates_available_tools():
     assert plan["intent"] == "read_only"
     assert plan["steps"][0]["id"] == "inspect"
 
+    numeric_schema = _plan(schema_version=1)
+    parsed_numeric_schema = parse_and_validate_plan(
+        json.dumps(numeric_schema),
+        available_tools={"read_file"},
+        maximum_budgets=MAXIMUM_BUDGETS,
+    )
+    assert parsed_numeric_schema["schema_version"] == "1"
+
     unavailable = _plan()
     unavailable["steps"][0]["required_tools"] = ["run_shell"]
     with pytest.raises(PlanValidationError, match="unavailable"):
@@ -83,6 +91,15 @@ def test_v11_plan_rejects_cycles_and_excessive_budgets():
     with pytest.raises(PlanValidationError, match="exceeds"):
         parse_and_validate_plan(
             json.dumps(excessive),
+            available_tools={"read_file"},
+            maximum_budgets=MAXIMUM_BUDGETS,
+        )
+
+    incomplete_run = _plan()
+    incomplete_run["budgets"]["model_rounds"] = 2
+    with pytest.raises(PlanValidationError, match="at least 3"):
+        parse_and_validate_plan(
+            json.dumps(incomplete_run),
             available_tools={"read_file"},
             maximum_budgets=MAXIMUM_BUDGETS,
         )

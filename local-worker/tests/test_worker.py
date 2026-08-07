@@ -772,7 +772,7 @@ def test_runtime_completes_with_fake_model_without_provider_call(tmp_path):
                         "acceptance": ["the answer is returned"],
                         "risk_level": "low",
                         "budgets": {
-                            "model_rounds": 2,
+                            "model_rounds": 3,
                             "tool_calls": 1,
                             "input_tokens": 1000,
                             "output_tokens": 256,
@@ -781,6 +781,7 @@ def test_runtime_completes_with_fake_model_without_provider_call(tmp_path):
                     }
                 ),
                 '{"answer":"done"}',
+                "status: pass\nissues: none",
             ]
         ),
     )

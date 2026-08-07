@@ -139,6 +139,7 @@ const errorText: Record<string, string> = {
   worker_command_failed: '本地 Worker 未能完成请求，请检查配置后重试',
   worker_protocol_error: '本地 Worker 协议错误，请检查版本',
   worker_release_unavailable: 'Worker 安装包暂时不可用，请稍后重试',
+  rename_conflict: '名称已在其他页面被修改，已保留对方的版本，请刷新后重试',
 }
 
 export function friendlyMessage(error: unknown): string {
@@ -376,6 +377,9 @@ export interface CreateSessionResult {
   workspace_id: string
   title: string
   created_at: string
+  display_name_source?: 'auto' | 'user'
+  display_name_updated_at?: string
+  has_started?: boolean
   execution_environment: string
   device_id: string
 }
@@ -414,10 +418,20 @@ export function createTask(
   })
 }
 
-export function renameDevice(deviceId: string, displayName: string): Promise<{ display_name: string }> {
+interface RenameResult {
+  display_name: string
+  display_name_source?: 'auto' | 'user'
+  display_name_updated_at: string
+}
+
+export function renameDevice(
+  deviceId: string,
+  displayName: string,
+  expectedUpdatedAt?: string,
+): Promise<RenameResult> {
   return request(`/api/v1/devices/${encodeURIComponent(deviceId)}`, {
     method: 'PATCH',
-    body: JSON.stringify({ display_name: displayName }),
+    body: JSON.stringify({ display_name: displayName, expected_updated_at: expectedUpdatedAt ?? null }),
   })
 }
 
@@ -425,17 +439,25 @@ export function renameWorkspace(
   deviceId: string,
   workspaceId: string,
   displayName: string,
-): Promise<{ display_name: string }> {
+  expectedUpdatedAt?: string,
+): Promise<RenameResult> {
   return request(
     `/api/v1/devices/${encodeURIComponent(deviceId)}/workspaces/${encodeURIComponent(workspaceId)}`,
-    { method: 'PATCH', body: JSON.stringify({ display_name: displayName }) },
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ display_name: displayName, expected_updated_at: expectedUpdatedAt ?? null }),
+    },
   )
 }
 
-export function renameSession(sessionId: string, displayName: string): Promise<{ display_name: string }> {
+export function renameSession(
+  sessionId: string,
+  displayName: string,
+  expectedUpdatedAt?: string,
+): Promise<RenameResult> {
   return request(`/api/v1/sessions/${encodeURIComponent(sessionId)}`, {
     method: 'PATCH',
-    body: JSON.stringify({ display_name: displayName }),
+    body: JSON.stringify({ display_name: displayName, expected_updated_at: expectedUpdatedAt ?? null }),
   })
 }
 

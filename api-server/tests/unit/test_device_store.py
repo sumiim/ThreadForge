@@ -10,8 +10,13 @@ from threadforge_api.domain.errors import (
     AuthorizationDeniedError,
     DeviceNotFoundError,
     PairingCodeInvalidError,
+    RenameConflictError,
 )
-from threadforge_api.infrastructure.device_store import DeviceStore, PairingCodeStore
+from threadforge_api.infrastructure.device_store import (
+    DeviceStore,
+    PairingCodeStore,
+    WorkerWorkspace,
+)
 
 OWNER_A = "11111111-1111-4111-8111-111111111111"
 OWNER_B = "22222222-2222-4222-8222-222222222222"
@@ -79,3 +84,49 @@ def test_worker_update_status_is_persisted(tmp_path):
     store.update_worker_status(device.device_id, update_status)
 
     assert DeviceStore(tmp_path).get(device.device_id).update_status == update_status
+
+
+def test_display_name_version_is_independent_from_worker_presence(tmp_path):
+    store = DeviceStore(tmp_path)
+    device, _ = store.create(OWNER_A, "Laptop")
+    workspace = WorkerWorkspace("ws_" + "a" * 32, "Original", True)
+    store.update_presence(
+        device.device_id,
+        model="model",
+        model_configured=True,
+        version="0.3.2",
+        protocol_version=1,
+        platform="windows",
+        architecture="x86_64",
+        capabilities=[],
+        workspaces=[workspace],
+    )
+    current = store.get(device.device_id)
+    renamed_at = current.workspaces[0].display_name_updated_at
+    store.set_workspace_display_name(device.device_id, OWNER_A, workspace.workspace_id, "My repo")
+
+    store.update_presence(
+        device.device_id,
+        model="model",
+        model_configured=True,
+        version="0.3.2",
+        protocol_version=1,
+        platform="windows",
+        architecture="x86_64",
+        capabilities=[],
+        workspaces=[WorkerWorkspace(workspace.workspace_id, "Original", True)],
+    )
+    refreshed = store.get(device.device_id)
+    assert refreshed.workspaces[0].name == "My repo"
+    assert refreshed.workspaces[0].display_name_source == "user"
+    assert refreshed.workspaces[0].display_name_updated_at != renamed_at
+
+
+def test_device_rename_uses_optimistic_display_name_version(tmp_path):
+    store = DeviceStore(tmp_path)
+    device, _ = store.create(OWNER_A, "Laptop")
+    version = device.display_name_updated_at
+    store.rename(device.device_id, OWNER_A, "Desk", expected_updated_at=version)
+
+    with pytest.raises(RenameConflictError):
+        store.rename(device.device_id, OWNER_A, "Other", expected_updated_at=version)

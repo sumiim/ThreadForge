@@ -17,7 +17,7 @@ def test_harness_model_adapter_classifies_without_exposing_message():
         adapter.complete("prompt", 10)
 
     assert caught.value.stop_reason == "model_error"
-    assert str(caught.value) == "model call failed: RuntimeError"
+    assert str(caught.value) == "model_call_failed"
     assert "outputs" not in str(caught.value)
 
 

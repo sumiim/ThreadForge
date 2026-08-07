@@ -1,9 +1,13 @@
-import os
+import io
 import json
+import os
 import subprocess
 import sys
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 import pico as pico_pkg
 from pico import cli as cli_module
@@ -508,6 +512,111 @@ def test_openai_compatible_reasoning_omits_temperature_and_records_effort():
         "stream": False,
         "reasoning": {"effort": "high"},
     }
+
+
+def test_openai_compatible_reasoning_none_is_explicit_and_keeps_temperature():
+    captured = {}
+
+    class FakeResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"output_text": "<final>ok</final>"}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    client = OpenAICompatibleModelClient(
+        model="gpt-5.5",
+        base_url="https://api.openai.com/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+        reasoning_effort="none",
+        supported_reasoning_efforts=("none", "low"),
+    )
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        assert client.complete("hello", 42) == "<final>ok</final>"
+
+    assert captured["body"]["reasoning"] == {"effort": "none"}
+    assert captured["body"]["temperature"] == 0.2
+
+
+def test_openai_compatible_client_retries_rate_limit_without_leaking_provider_body():
+    calls = 0
+
+    class FakeResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"output_text": "<final>recovered</final>"}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise urllib.error.HTTPError(
+                request.full_url,
+                429,
+                "too many",
+                {"Retry-After": "0"},
+                io.BytesIO(b"private provider response"),
+            )
+        return FakeResponse()
+
+    client = OpenAICompatibleModelClient(
+        model="gpt-5.5",
+        base_url="https://api.openai.com/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+        max_attempts=3,
+    )
+
+    with patch("urllib.request.urlopen", fake_urlopen), patch("time.sleep"):
+        assert client.complete("hello", 42) == "<final>recovered</final>"
+    assert calls == 2
+
+
+def test_openai_compatible_client_does_not_retry_auth_error_or_expose_body():
+    def fake_urlopen(request, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url,
+            401,
+            "unauthorized",
+            {},
+            io.BytesIO(b"secret response body"),
+        )
+
+    client = OpenAICompatibleModelClient(
+        model="gpt-5.5",
+        base_url="https://api.openai.com/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+        max_attempts=3,
+    )
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        with pytest.raises(Exception) as caught:
+            client.complete("hello", 42)
+    assert getattr(caught.value, "code", "") == "model_auth_error"
+    assert getattr(caught.value, "attempts", 0) == 1
+    assert "secret response body" not in str(caught.value)
 
 
 def test_openai_compatible_client_sends_prompt_cache_fields_and_records_usage():

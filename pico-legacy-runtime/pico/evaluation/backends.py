@@ -1,8 +1,8 @@
 """Execution backends shared by the benchmark harness."""
 
+import time
 from copy import deepcopy
 from dataclasses import dataclass, field
-import time
 from typing import Protocol
 
 from ..event_sink import CompositeSink, EventCollector, JsonlSink
@@ -22,9 +22,26 @@ def default_event_sink_factory(run_store):
 
 
 class ModelBoundaryError(RuntimeError):
-    def __init__(self, message, stop_reason=STOP_REASON_MODEL_ERROR):
-        super().__init__(message)
+    def __init__(
+        self,
+        code="model_call_failed",
+        *,
+        retryable=False,
+        attempts=1,
+        stage="",
+        stop_reason=STOP_REASON_MODEL_ERROR,
+    ):
+        super().__init__(str(code))
+        self.code = str(code)
+        self.retryable = bool(retryable)
+        self.attempts = max(1, int(attempts))
+        self.stage = str(stage)
         self.stop_reason = stop_reason
+
+    def at_stage(self, stage):
+        if not self.stage:
+            self.stage = str(stage)
+        return self
 
 
 class HarnessModelClientAdapter:
@@ -39,7 +56,11 @@ class HarnessModelClientAdapter:
         except ModelBoundaryError:
             raise
         except Exception as exc:
-            raise ModelBoundaryError(f"model call failed: {type(exc).__name__}") from exc
+            raise ModelBoundaryError(
+                getattr(exc, "code", "model_call_failed"),
+                retryable=getattr(exc, "retryable", False),
+                attempts=getattr(exc, "attempts", 1),
+            ) from exc
 
     def __getattr__(self, name):
         return getattr(self.delegate, name)

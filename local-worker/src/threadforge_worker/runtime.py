@@ -254,7 +254,15 @@ def run_task(
             raise RuntimeError("local session workspace does not match the task")
         # Ownership belongs to the currently paired control plane. History and
         # memory remain local when a user switches API servers.
-        for key in ("owner_id", "title", "device_id", "execution_environment"):
+        for key in (
+            "owner_id",
+            "title",
+            "display_name_source",
+            "display_name_updated_at",
+            "first_request_at",
+            "device_id",
+            "execution_environment",
+        ):
             if key in incoming_session:
                 session[key] = incoming_session[key]
     else:
@@ -280,11 +288,9 @@ def run_task(
             api_key=_required_env("PICO_OPENAI_API_KEY"),
             temperature=0.2,
             timeout=int(settings.get("model_timeout_seconds", 120)),
-            max_attempts=1,
-            reasoning_effort="" if requested_effort == "none" else requested_effort,
-            supported_reasoning_efforts=tuple(
-                effort for effort in supported_efforts if effort != "none"
-            ),
+            max_attempts=max(1, min(5, int(settings.get("model_max_attempts", 3)))),
+            reasoning_effort=requested_effort,
+            supported_reasoning_efforts=supported_efforts,
         )
     )
     def send_runtime_event(event_type: str, data: dict) -> None:
@@ -327,6 +333,7 @@ def run_task(
             enable_planning=True,
             task_id=task["task_id"],
             run_id=task["run_id"],
+            workspace_id=task.get("workspace_id", ""),
         )
     except Exception as exc:
         if pico.current_task_state is not None and pico.current_task_state.status == STATUS_RUNNING:
@@ -339,22 +346,41 @@ def run_task(
                 stop_reason=stop_reason,
             )
     state = pico.current_task_state
-    if state is not None and state.status == STATUS_COMPLETED and state.stop_reason == STOP_REASON_FINAL_ANSWER_RETURNED:
+    stop_reason = getattr(state, "stop_reason", "") or STOP_REASON_RUNTIME_ERROR
+    if state is not None and state.status == STATUS_COMPLETED and stop_reason == STOP_REASON_FINAL_ANSWER_RETURNED:
         status = "completed"
-    elif state is not None and state.status == STATUS_STOPPED and state.stop_reason == STOP_REASON_USER_CANCELLED:
+    elif state is not None and state.status == STATUS_STOPPED and stop_reason == STOP_REASON_USER_CANCELLED:
         status = "cancelled"
+    elif stop_reason in {"service_restarted", "service_shutdown_timeout"}:
+        status = "interrupted"
+    elif stop_reason in {
+        "approval_denied",
+        "budget_exhausted",
+        "no_changes_to_review",
+        "retry_limit_reached",
+        "review_retry_limit_reached",
+        "step_limit_reached",
+    }:
+        status = "blocked"
     else:
         status = "failed"
+    error = {
+        "stage": getattr(state, "error_stage", ""),
+        "code": getattr(state, "error_code", ""),
+        "retryable": bool(getattr(state, "error_retryable", False)),
+        "attempts": max(0, int(getattr(state, "error_attempts", 0))),
+    }
     send(
         {
             "type": "terminal",
             "task_id": task["task_id"],
             "status": status,
-            "stop_reason": getattr(state, "stop_reason", "") or STOP_REASON_RUNTIME_ERROR,
+            "stop_reason": stop_reason,
             "final_answer": redact_artifact(getattr(state, "final_answer", "") or ""),
             "message_total": len(pico.session.get("history", [])),
             "session_updated_at": pico.session.get("updated_at", ""),
             "session_persisted": True,
+            "error": error if error["code"] else {},
         }
     )
 

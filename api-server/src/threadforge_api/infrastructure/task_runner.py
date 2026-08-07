@@ -281,9 +281,23 @@ class TaskRunner:
             public_status = TaskStatus.CANCELLED
             terminal_event = "task.cancelled"
         else:
-            public_status = TaskStatus.FAILED
-            terminal_event = "task.failed"
             stop_reason = stop_reason or STOP_REASON_RUNTIME_ERROR
+            if stop_reason in {"service_restarted", "service_shutdown_timeout"}:
+                public_status = TaskStatus.INTERRUPTED
+                terminal_event = "task.interrupted"
+            elif stop_reason in {
+                "approval_denied",
+                "budget_exhausted",
+                "no_changes_to_review",
+                "retry_limit_reached",
+                "review_retry_limit_reached",
+                "step_limit_reached",
+            }:
+                public_status = TaskStatus.BLOCKED
+                terminal_event = "task.blocked"
+            else:
+                public_status = TaskStatus.FAILED
+                terminal_event = "task.failed"
         if stop_reason == STOP_REASON_PROCESS_CLEANUP_FAILED:
             run.process_cleanup_succeeded = False
             self.mark_degraded()
@@ -414,14 +428,14 @@ class TaskRunner:
                 converge_run_artifacts(
                     self._settings.data_dir,
                     task,
-                    status=TaskStatus.FAILED,
+                    status=TaskStatus.INTERRUPTED,
                     stop_reason="service_shutdown_timeout",
                 )
                 self._task_repo.update(
                     task_id,
-                    lambda task: _set_terminal(task, TaskStatus.FAILED, "service_shutdown_timeout", ""),
+                    lambda task: _set_terminal(task, TaskStatus.INTERRUPTED, "service_shutdown_timeout", ""),
                 )
-                self._publisher.publish(task_id, run.run_id, "task.failed", {"stop_reason": "service_shutdown_timeout"})
+                self._publisher.publish(task_id, run.run_id, "task.interrupted", {"stop_reason": "service_shutdown_timeout"})
                 self._release_active(task_id)
             except Exception:
                 self.mark_degraded()

@@ -13,10 +13,18 @@ class TaskStatus(str, Enum):
     CANCELLED = "cancelled"
     COMPLETED = "completed"
     FAILED = "failed"
+    INTERRUPTED = "interrupted"
+    BLOCKED = "blocked"
 
     @property
     def terminal(self) -> bool:
-        return self in {TaskStatus.CANCELLED, TaskStatus.COMPLETED, TaskStatus.FAILED}
+        return self in {
+            TaskStatus.CANCELLED,
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.INTERRUPTED,
+            TaskStatus.BLOCKED,
+        }
 
 
 class ApprovalStatus(str, Enum):
