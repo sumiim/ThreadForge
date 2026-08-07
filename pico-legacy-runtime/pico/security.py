@@ -5,6 +5,19 @@ import os
 SENSITIVE_ENV_NAME_MARKERS = ("API_KEY", "TOKEN", "SECRET", "PASSWORD")
 REDACTED_VALUE = "<redacted>"
 
+# Read-only tool previews are useful in the Web/Desktop timeline, but the
+# Worker must never stream unrestricted command arguments or full file contents.
+PUBLIC_READ_ONLY_TOOLS = frozenset({"list_files", "read_file", "search", "delegate"})
+PUBLIC_TOOL_RESULT_MAX_CHARS = 8000
+PUBLIC_TOOL_ARG_MAX_CHARS = 1200
+
+_PUBLIC_TOOL_ARG_FIELDS = {
+    "list_files": ("path",),
+    "read_file": ("path", "start", "end"),
+    "search": ("pattern", "path"),
+    "delegate": ("task", "max_steps"),
+}
+
 
 def _normalized_secret_names(secret_env_names):
     return {str(name).upper() for name in (secret_env_names or ())}
@@ -85,6 +98,41 @@ def redact_artifact(value, key=None, env=None, secret_env_names=None):
     if isinstance(value, str):
         return redact_text(value, env=env, secret_env_names=secret_env_names)
     return value
+
+
+def _clip_public_text(value, limit):
+    text = redact_text(value)
+    if len(text) <= limit:
+        return text, False
+    return text[: max(0, limit - 20)] + "\n...[truncated]", True
+
+
+def public_tool_args_preview(tool_name, args):
+    """Return bounded, allowlisted arguments for a read-only tool event."""
+    if str(tool_name) not in PUBLIC_READ_ONLY_TOOLS or not isinstance(args, dict):
+        return {}
+    result = {}
+    for field in _PUBLIC_TOOL_ARG_FIELDS[str(tool_name)]:
+        if field not in args:
+            continue
+        value = args[field]
+        if isinstance(value, str):
+            value, _ = _clip_public_text(value, PUBLIC_TOOL_ARG_MAX_CHARS)
+        elif isinstance(value, bool):
+            value = bool(value)
+        elif isinstance(value, int):
+            value = value
+        else:
+            value = str(value)[:PUBLIC_TOOL_ARG_MAX_CHARS]
+        result[field] = value
+    return redact_artifact(result)
+
+
+def public_tool_result_preview(tool_name, content):
+    """Return a bounded result preview only for read-only tools."""
+    if str(tool_name) not in PUBLIC_READ_ONLY_TOOLS or content is None:
+        return "", False
+    return _clip_public_text(content, PUBLIC_TOOL_RESULT_MAX_CHARS)
 
 
 def shell_env(env=None, allowlist=(), root="."):

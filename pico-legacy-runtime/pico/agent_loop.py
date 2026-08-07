@@ -9,7 +9,17 @@ from .checkpoint import (
     CHECKPOINT_WORKSPACE_MISMATCH_STATUS,
 )
 from .execution_hooks import ProcessCleanupFailed, RunCancelled
-from .task_state import STATUS_FAILED, STOP_REASON_PROCESS_CLEANUP_FAILED, TaskState
+from .task_state import (
+    PHASE_ACT_OR_ANSWER,
+    PHASE_FINAL,
+    PHASE_GATHER_CONTEXT,
+    PHASE_UNDERSTAND_REQUEST,
+    PHASE_VERIFY,
+    STATUS_FAILED,
+    STOP_REASON_PROCESS_CLEANUP_FAILED,
+    TaskState,
+)
+from .tool_executor import ToolExecutionResult
 from .workspace import clip, now
 
 
@@ -34,6 +44,9 @@ class AgentLoop:
             run_id=run_id or agent.new_run_id(),
             task_id=task_id or agent.new_task_id(),
             user_request=user_message,
+            max_tool_steps=agent.max_steps,
+            max_read_files=agent.max_read_files,
+            max_total_steps=agent.max_total_steps,
         )
         task_state.resume_status = agent.resume_state.get("status", CHECKPOINT_NONE_STATUS)
         agent.current_task_state = task_state
@@ -47,6 +60,16 @@ class AgentLoop:
                 "user_request": clip(user_message, 300),
             },
         )
+        task_state.set_phase(
+            PHASE_UNDERSTAND_REQUEST,
+            next_step="Gather the minimum workspace context",
+            completed_item="Understand the request and acceptance criteria",
+        )
+        agent.run_store.write_task_state(task_state)
+        agent.emit_agent_state(task_state, "run_started")
+        task_state.set_phase(PHASE_GATHER_CONTEXT, next_step="Inspect the workspace only when evidence is needed")
+        agent.run_store.write_task_state(task_state)
+        agent.emit_agent_state(task_state, "context_requested")
 
         try:
             return self._run_loop(
@@ -97,7 +120,10 @@ class AgentLoop:
         agent = self.agent
         tool_steps = 0
         attempts = 0
-        max_attempts = max(agent.max_steps * 3, agent.max_steps + 4)
+        max_attempts = min(
+            max(agent.max_steps * 3, agent.max_steps + 4),
+            task_state.max_total_steps,
+        )
 
         # 边界 1：进入控制循环前。
         token.raise_if_cancelled()
@@ -107,7 +133,9 @@ class AgentLoop:
             token.raise_if_cancelled()
             attempts += 1
             task_state.record_attempt()
+            task_state.set_phase(PHASE_ACT_OR_ANSWER, next_step="Choose a tool or prepare a final answer")
             agent.run_store.write_task_state(task_state)
+            agent.emit_agent_state(task_state, "model_decision")
             agent.emit_progress(f"step {attempts}: building prompt")
             prompt_started_at = time.monotonic()
             prompt, prompt_metadata = agent._build_prompt_and_metadata(user_message)
@@ -216,13 +244,31 @@ class AgentLoop:
                 tool_started_at = time.monotonic()
                 agent.emit_progress(f"step {attempts}: running tool {name}")
                 tool_call_id = _new_tool_call_id()
-                tool_result = agent.execute_tool(name, args, tool_call_id=tool_call_id)
+                if name == "read_file" and task_state.read_files >= task_state.max_read_files:
+                    tool_result = ToolExecutionResult(
+                        content=(
+                            f"error: read_file budget exhausted ({task_state.max_read_files}); "
+                            "use the existing evidence or return a final answer"
+                        ),
+                        metadata={
+                            "tool_status": "rejected",
+                            "tool_error_code": "read_file_budget_exhausted",
+                            "read_only": True,
+                            "affected_paths": [],
+                        },
+                    )
+                else:
+                    if name == "read_file":
+                        task_state.record_read_file()
+                    tool_result = agent.execute_tool(name, args, tool_call_id=tool_call_id)
                 task_state.record_affected_paths(tool_result.metadata.get("affected_paths", []))
                 agent.emit_progress(
                     f"step {attempts}: tool {name} finished "
                     f"({tool_result.metadata.get('tool_status', 'unknown')})"
                 )
                 result = tool_result.content
+                summary = agent.summarize_tool_result(name, args, tool_result)
+                task_state.begin_post_tool_reasoning(name)
                 agent.record(
                     {
                         "role": "tool",
@@ -240,6 +286,7 @@ class AgentLoop:
                         "name": name,
                         "args": args,
                         "result": clip(result, 500),
+                        "summary": summary,
                         "duration_ms": int((time.monotonic() - tool_started_at) * 1000),
                         **dict(tool_result.metadata or {}),
                     },
@@ -256,19 +303,48 @@ class AgentLoop:
                         },
                     )
                 # 边界 7 由下一轮顶部的边界 2 承担。
+                # The next iteration is an explicit post-tool reasoning
+                # boundary. It must choose another tool or a final answer.
+                agent.emit_trace(
+                    task_state,
+                    "post_tool_reasoning",
+                    {
+                        "tool": name,
+                        "summary": summary,
+                        "decision": "continue_or_final",
+                    },
+                )
+                task_state.finish_post_tool_reasoning("continue")
+                agent.run_store.write_task_state(task_state)
+                agent.emit_agent_state(task_state, "post_tool_reasoning")
                 continue
 
             if kind == "retry":
                 task_state.record_malformed_output_recovered()
+                task_state.set_phase(PHASE_ACT_OR_ANSWER, next_step="Retry with a valid tool call or final answer")
                 agent.record({"role": "assistant", "content": payload, "created_at": now()})
                 agent.run_store.write_task_state(task_state)
+                agent.emit_agent_state(task_state, "malformed_output_recovered")
                 continue
 
             # 边界 8：写最终回答和 durable memory 前。
             token.raise_if_cancelled()
             final = (payload or raw).strip()
+            if task_state.requires_post_tool_reasoning:
+                # Defensive fallback for custom runtimes that bypass the
+                # normal post-tool transition.
+                task_state.finish_post_tool_reasoning("final")
+            task_state.set_phase(
+                PHASE_VERIFY,
+                next_step="Verify the collected evidence before returning the final answer",
+                completed_item="Gather the minimum workspace context",
+            )
+            agent.run_store.write_task_state(task_state)
+            agent.emit_agent_state(task_state, "verify_before_final")
             agent.record({"role": "assistant", "content": final, "created_at": now()})
             task_state.finish_success(final)
+            agent.run_store.write_task_state(task_state)
+            agent.emit_agent_state(task_state, "final")
             if agent.allow_durable_memory_write:
                 agent.promote_durable_memory(user_message, final)
             checkpoint = None
@@ -304,6 +380,9 @@ class AgentLoop:
         else:
             final = "Stopped after reaching the step limit without a final answer."
             task_state.stop_step_limit(final)
+        task_state.set_phase(PHASE_FINAL, next_step="Explain the budget or execution blocker")
+        agent.run_store.write_task_state(task_state)
+        agent.emit_agent_state(task_state, "run_stopped")
         agent.record({"role": "assistant", "content": final, "created_at": now()})
         if agent.allow_durable_memory_write:
             agent.promote_durable_memory(user_message, final)

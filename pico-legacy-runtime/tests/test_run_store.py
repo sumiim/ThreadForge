@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from pico.run_store import RunStore
 from pico.task_state import STOP_REASON_FINAL_ANSWER_RETURNED, TaskState
@@ -16,6 +17,28 @@ def test_run_store_creates_run_directory_and_state_file(tmp_path):
     assert persisted["task_id"] == "task_001"
     assert persisted["run_id"] == "run_001"
     assert persisted["user_request"] == "Inspect the repo."
+
+
+def test_run_store_retries_transient_permission_error_during_atomic_replace(tmp_path, monkeypatch):
+    store = RunStore(tmp_path / "runs")
+    state = TaskState.create(task_id="task_retry", user_request="retry replace")
+    original_replace = Path.replace
+    attempts = 0
+
+    def flaky_replace(source, target):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PermissionError("file is temporarily locked")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+
+    store.start_run(state)
+
+    assert attempts == 2
+    persisted = json.loads(store.task_state_path(state).read_text(encoding="utf-8"))
+    assert persisted["task_id"] == "task_retry"
 
 
 def test_run_store_appends_trace_jsonl(tmp_path):

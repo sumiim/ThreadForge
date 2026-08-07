@@ -14,12 +14,16 @@ from pathlib import Path
 
 from pico import Pico
 from pico.approval import ApprovalOutcome, ApprovalRequest, ApprovalStrategy
-from pico.event_sink import CompositeSink, EventCollector, JsonlSink
+from pico.event_sink import CompositeSink, EventCollector, EventSink, JsonlSink
 from pico.execution_hooks import RunCancelled
 from pico.providers.clients import OpenAICompatibleModelClient
 from pico.run_lifecycle import finalize_failed_run
 from pico.run_store import RunStore
-from pico.security import redact_artifact
+from pico.security import (
+    public_tool_args_preview,
+    public_tool_result_preview,
+    redact_artifact,
+)
 from pico.session_store import SessionStore
 from pico.task_state import (
     STATUS_COMPLETED,
@@ -121,9 +125,17 @@ class RemoteExecutionHooks:
 
     def tool_requested(self, task_state, tool_call: dict) -> None:
         self._check()
+        tool_name = str(tool_call.get("name", ""))
+        payload = {
+            "tool_call_id": tool_call.get("id", ""),
+            "tool_name": tool_name,
+        }
+        args_preview = public_tool_args_preview(tool_name, tool_call.get("args", {}))
+        if args_preview:
+            payload["args_preview"] = args_preview
         self._send(
             "tool.requested",
-            {"tool_call_id": tool_call.get("id", ""), "tool_name": tool_call.get("name", "")},
+            payload,
         )
 
     def before_tool(self, task_state, tool_call: dict) -> None:
@@ -140,18 +152,52 @@ class RemoteExecutionHooks:
         metadata = dict(getattr(result, "metadata", {}) or {})
         status = metadata.get("tool_status", "ok")
         event_type = "tool.completed" if status in {"ok", "partial_success"} else "tool.failed"
+        result_preview, result_truncated = public_tool_result_preview(
+            self._active_tool_name, getattr(result, "content", "")
+        )
+        payload = {
+            "tool_call_id": self._active_tool_call_id,
+            "tool_name": self._active_tool_name,
+            "tool_status": status,
+            "tool_error_code": metadata.get("tool_error_code", ""),
+            "affected_paths": metadata.get("affected_paths", []),
+        }
+        if result_preview:
+            payload["result_preview"] = result_preview
+            payload["result_truncated"] = result_truncated
         self._send(
             event_type,
-            {
-                "tool_call_id": self._active_tool_call_id,
-                "tool_name": self._active_tool_name,
-                "tool_status": status,
-                "tool_error_code": metadata.get("tool_error_code", ""),
-                "affected_paths": metadata.get("affected_paths", []),
-            },
+            payload,
         )
         self._active_tool_call_id = ""
         self._active_tool_name = ""
+
+
+class RemoteAgentStateSink(EventSink):
+    """Forward the bounded Agent state projection to the control plane."""
+
+    def __init__(self, send_event: Callable[[str, dict], None]):
+        self._send_event = send_event
+
+    def emit(self, task_state, event_type: str, payload: dict) -> dict:
+        if event_type == "agent_state_changed":
+            self._send_event(
+                "agent.state",
+                {
+                    "phase": str(payload.get("phase", ""))[:64],
+                    "next_step": str(payload.get("next_step", ""))[:300],
+                    "checklist": [str(item)[:300] for item in payload.get("checklist", [])[:20]],
+                    "done_when": [str(item)[:300] for item in payload.get("done_when", [])[:20]],
+                    "completed_items": [str(item)[:300] for item in payload.get("completed_items", [])[:20]],
+                    "tool_steps": max(0, int(payload.get("tool_steps", 0))),
+                    "read_files": max(0, int(payload.get("read_files", 0))),
+                    "max_tool_steps": max(0, int(payload.get("max_tool_steps", 0))),
+                    "max_read_files": max(0, int(payload.get("max_read_files", 0))),
+                    "max_total_steps": max(0, int(payload.get("max_total_steps", 0))),
+                    "reason": str(payload.get("reason", ""))[:100],
+                },
+            )
+        return payload
 
 
 @dataclass
@@ -207,17 +253,17 @@ def run_task(
             max_attempts=1,
         )
     )
-    hooks = RemoteExecutionHooks(
-        lambda event_type, data: send(
+    def send_runtime_event(event_type: str, data: dict) -> None:
+        send(
             {
                 "type": "event",
                 "task_id": task["task_id"],
                 "event_type": event_type,
                 "data": redact_artifact(data),
             }
-        ),
-        active.token,
-    )
+        )
+
+    hooks = RemoteExecutionHooks(send_runtime_event, active.token)
     pico = Pico(
         model_client=model_client,
         workspace=WorkspaceContext.build(workspace_path),
@@ -230,9 +276,11 @@ def run_task(
         allowed_tools=ALLOWED_TOOLS,
         max_steps=int(task.get("max_steps", 6)),
         max_new_tokens=int(settings.get("max_new_tokens", 512)),
-        event_sink=CompositeSink(EventCollector(), JsonlSink(run_store)),
+        event_sink=CompositeSink(EventCollector(), JsonlSink(run_store), RemoteAgentStateSink(send_runtime_event)),
         shell_output_max_bytes=int(settings.get("shell_output_max_bytes", 1048576)),
         shell_cleanup_grace_seconds=float(settings.get("shell_cleanup_grace_seconds", 5)),
+        max_read_files=int(settings.get("max_read_files", 4)),
+        max_total_steps=int(settings.get("max_total_steps", max(int(task.get("max_steps", 6)) * 3, int(task.get("max_steps", 6)) + 4))),
         allow_durable_memory_write=False,
     )
     active.pico = pico

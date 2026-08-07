@@ -22,6 +22,7 @@ const barClass: Record<string, string> = {
 export default function ToolCallCard({ toolCall, onApprove, onReject }: ToolCallCardProps) {
   const status = toolStatusMeta[toolCall.status]
   const needsApproval = toolCall.requiresApproval && toolCall.status === 'pending'
+  const hasArgs = Object.keys(toolCall.args ?? {}).length > 0
 
   return (
     <div id={`tool-call-${toolCall.id}`} className="flex gap-2.5">
@@ -33,12 +34,16 @@ export default function ToolCallCard({ toolCall, onApprove, onReject }: ToolCall
           <span className={`ml-auto font-mono text-[11px] ${status.className}`}>{status.label}</span>
         </div>
 
-        <pre className="mt-2.5 overflow-x-auto rounded-lg border border-stone-100 bg-white p-2.5 font-mono text-[11px] leading-relaxed text-stone-500">
-          {JSON.stringify(toolCall.args ?? {}, null, 2)}
-        </pre>
+        {hasArgs && (
+          <pre className="mt-2.5 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg border border-stone-100 bg-white p-2.5 font-mono text-[11px] leading-relaxed text-stone-500">
+            {JSON.stringify(toolCall.args, null, 2)}
+          </pre>
+        )}
 
         {toolCall.result && (
-          <div className="mt-2.5 text-xs leading-relaxed text-stone-500">{toolCall.result}</div>
+          <pre className="mt-2.5 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-stone-100 bg-white p-2.5 font-mono text-[11px] leading-relaxed text-stone-600">
+            {toolCall.result}
+          </pre>
         )}
 
         {needsApproval && (

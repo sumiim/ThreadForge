@@ -31,6 +31,31 @@ STOP_REASON_PROCESS_CLEANUP_FAILED = "process_cleanup_failed"
 STOP_REASON_SERVICE_RESTARTED = "service_restarted"
 STOP_REASON_SERVICE_SHUTDOWN_TIMEOUT = "service_shutdown_timeout"
 
+# Public task phases.  These are deliberately data, not hidden model state, so
+# the control plane and UI can explain what the Agent is doing after reconnect.
+PHASE_UNDERSTAND_REQUEST = "UNDERSTAND_REQUEST"
+PHASE_GATHER_CONTEXT = "GATHER_CONTEXT"
+PHASE_ANALYZE_CONTEXT = "ANALYZE_CONTEXT"
+PHASE_ACT_OR_ANSWER = "ACT_OR_ANSWER"
+PHASE_VERIFY = "VERIFY"
+PHASE_FINAL = "FINAL"
+TASK_PHASES = (
+    PHASE_UNDERSTAND_REQUEST,
+    PHASE_GATHER_CONTEXT,
+    PHASE_ANALYZE_CONTEXT,
+    PHASE_ACT_OR_ANSWER,
+    PHASE_VERIFY,
+    PHASE_FINAL,
+)
+
+DEFAULT_CHECKLIST = (
+    "Understand the request and acceptance criteria",
+    "Gather the minimum workspace context",
+    "Analyze evidence and choose the next action",
+    "Act or prepare a grounded answer",
+    "Verify the result before finishing",
+)
+
 
 @dataclass
 class TaskState:
@@ -48,12 +73,43 @@ class TaskState:
     sandbox_violations: int = 0
     malformed_output_recovered: int = 0
     affected_paths: list[str] = field(default_factory=list)
+    phase: str = PHASE_UNDERSTAND_REQUEST
+    checklist: list[str] = field(default_factory=list)
+    done_when: list[str] = field(default_factory=list)
+    completed_items: list[str] = field(default_factory=list)
+    next_step: str = "Understand the request and acceptance criteria"
+    requires_post_tool_reasoning: bool = False
+    read_files: int = 0
+    max_tool_steps: int = 6
+    max_read_files: int = 4
+    max_total_steps: int = 18
 
     @classmethod
-    def create(cls, task_id, user_request, run_id=""):
+    def create(
+        cls,
+        task_id,
+        user_request,
+        run_id="",
+        max_tool_steps=6,
+        max_read_files=4,
+        max_total_steps=None,
+    ):
         if not run_id:
             run_id = "run_" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:6]
-        return cls(run_id=run_id, task_id=task_id, user_request=user_request)
+        max_tool_steps = max(1, int(max_tool_steps))
+        max_read_files = max(0, int(max_read_files))
+        if max_total_steps is None:
+            max_total_steps = max(max_tool_steps * 3, max_tool_steps + 4)
+        return cls(
+            run_id=run_id,
+            task_id=task_id,
+            user_request=user_request,
+            checklist=list(DEFAULT_CHECKLIST),
+            done_when=["A final answer is grounded in the collected evidence", "The requested work is verified or its blocker is explicit"],
+            max_tool_steps=max_tool_steps,
+            max_read_files=max_read_files,
+            max_total_steps=max(1, int(max_total_steps)),
+        )
 
     @classmethod
     def from_dict(cls, data):
@@ -72,7 +128,51 @@ class TaskState:
             sandbox_violations=int(data.get("sandbox_violations", 0)),
             malformed_output_recovered=int(data.get("malformed_output_recovered", 0)),
             affected_paths=[str(path) for path in data.get("affected_paths", [])],
+            phase=str(data.get("phase", PHASE_UNDERSTAND_REQUEST)),
+            checklist=[str(item) for item in data.get("checklist", DEFAULT_CHECKLIST)],
+            done_when=[str(item) for item in data.get("done_when", [])],
+            completed_items=[str(item) for item in data.get("completed_items", [])],
+            next_step=str(data.get("next_step", "Understand the request and acceptance criteria")),
+            requires_post_tool_reasoning=bool(data.get("requires_post_tool_reasoning", False)),
+            read_files=int(data.get("read_files", 0)),
+            max_tool_steps=max(1, int(data.get("max_tool_steps", data.get("max_steps", 6)))),
+            max_read_files=max(0, int(data.get("max_read_files", 4))),
+            max_total_steps=max(1, int(data.get("max_total_steps", 18))),
         )
+
+    def set_phase(self, phase, *, next_step="", completed_item=""):
+        phase = str(phase or "").strip().upper()
+        if phase not in TASK_PHASES:
+            raise ValueError(f"unknown task phase: {phase}")
+        self.phase = phase
+        if completed_item and completed_item not in self.completed_items:
+            self.completed_items.append(str(completed_item))
+        if next_step:
+            self.next_step = str(next_step)
+        return self
+
+    def begin_post_tool_reasoning(self, tool_name):
+        self.requires_post_tool_reasoning = True
+        return self.set_phase(
+            PHASE_ANALYZE_CONTEXT,
+            next_step=f"Summarize the {tool_name} result and decide whether more evidence is needed",
+        )
+
+    def finish_post_tool_reasoning(self, decision="continue"):
+        self.requires_post_tool_reasoning = False
+        for item in (
+            "Gather the minimum workspace context",
+            "Analyze evidence and choose the next action",
+        ):
+            if item not in self.completed_items:
+                self.completed_items.append(item)
+        if decision == "final":
+            return self.set_phase(PHASE_VERIFY, next_step="Verify the evidence before returning the final answer")
+        return self.set_phase(PHASE_ACT_OR_ANSWER, next_step="Choose the next tool or prepare the final answer")
+
+    def record_read_file(self):
+        self.read_files += 1
+        return self
 
     def record_attempt(self):
         # attempt 统计的是“模型被调用了几轮”，不等于 tool_steps。
@@ -122,6 +222,9 @@ class TaskState:
         self.status = STATUS_COMPLETED
         self.stop_reason = STOP_REASON_FINAL_ANSWER_RETURNED
         self.final_answer = str(final_answer)
+        self.requires_post_tool_reasoning = False
+        self.completed_items = list(self.checklist)
+        self.set_phase(PHASE_FINAL, next_step="Task complete")
         return self
 
     def to_dict(self):
@@ -140,4 +243,14 @@ class TaskState:
             "sandbox_violations": self.sandbox_violations,
             "malformed_output_recovered": self.malformed_output_recovered,
             "affected_paths": list(self.affected_paths),
+            "phase": self.phase,
+            "checklist": list(self.checklist),
+            "done_when": list(self.done_when),
+            "completed_items": list(self.completed_items),
+            "next_step": self.next_step,
+            "requires_post_tool_reasoning": self.requires_post_tool_reasoning,
+            "read_files": self.read_files,
+            "max_tool_steps": self.max_tool_steps,
+            "max_read_files": self.max_read_files,
+            "max_total_steps": self.max_total_steps,
         }

@@ -15,6 +15,7 @@ import {
   resolveApproval,
 } from '../api/client'
 import type {
+  AgentProgress,
   McpServerMetadata,
   Message,
   PendingApproval,
@@ -58,6 +59,23 @@ function sessionModel(
   return serverModel
 }
 
+function parseAgentProgress(data: Record<string, unknown>): AgentProgress {
+  const list = (value: unknown): string[] => (Array.isArray(value) ? value.map(String).slice(0, 20) : [])
+  return {
+    phase: String(data.phase ?? ''),
+    nextStep: String(data.next_step ?? ''),
+    checklist: list(data.checklist),
+    doneWhen: list(data.done_when),
+    completedItems: list(data.completed_items),
+    toolSteps: Number(data.tool_steps ?? 0),
+    readFiles: Number(data.read_files ?? 0),
+    maxToolSteps: Number(data.max_tool_steps ?? 0),
+    maxReadFiles: Number(data.max_read_files ?? 0),
+    maxTotalSteps: Number(data.max_total_steps ?? 0),
+    reason: data.reason ? String(data.reason) : undefined,
+  }
+}
+
 interface ActiveRun {
   taskId: string
   runId: string
@@ -75,6 +93,7 @@ export interface UseSessions {
   mcpServers: McpServerMetadata[]
   loading: boolean
   running: boolean
+  agentProgress: AgentProgress | null
   refreshWorkspaces: () => Promise<Workspace[]>
   select: (id: string) => void
   createSession: (workspaceId: string, deviceId?: string) => void
@@ -94,12 +113,15 @@ export function useSessions(): UseSessions {
   const [mcpServers, setMcpServers] = useState<McpServerMetadata[]>([])
   const [loading, setLoading] = useState(true)
   const [running, setRunning] = useState(false)
+  const [agentProgress, setAgentProgress] = useState<AgentProgress | null>(null)
 
   // 已从后端拉过完整消息的会话（避免选中时重复请求覆盖本地流式状态）
   const loadedRef = useRef<Set<string>>(new Set())
   // 当前在跑的任务（后端单活跃任务）
   const activeRunRef = useRef<ActiveRun | null>(null)
   const esRef = useRef<EventSource | null>(null)
+  const postToolWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const reconnectStreamRef = useRef<(taskId: string, sessionId: string, assistantId: string) => void>(() => undefined)
   // approval_id -> tool call（approval.required 建立，resolved 时回查）
   const approvalMapRef = useRef<Map<string, string>>(new Map())
   // 事件回调里需要读到最新 sessions（在 effect 中同步，避免 render 期间改 ref）
@@ -110,6 +132,7 @@ export function useSessions(): UseSessions {
 
   useEffect(
     () => () => {
+      if (postToolWatchdogRef.current) clearTimeout(postToolWatchdogRef.current)
       esRef.current?.close()
       esRef.current = null
     },
@@ -168,6 +191,10 @@ export function useSessions(): UseSessions {
     const run = activeRunRef.current
     if (!run) return
     activeRunRef.current = null
+    if (postToolWatchdogRef.current) {
+      clearTimeout(postToolWatchdogRef.current)
+      postToolWatchdogRef.current = null
+    }
     setRunning(false)
     esRef.current?.close()
     esRef.current = null
@@ -239,12 +266,22 @@ export function useSessions(): UseSessions {
         }
       }
       // 运行中出现的新工具卡（tool.requested 先于 approval.required 到达）
-      const ensureToolCard = (toolCallId: string, toolName: string) => {
+      const ensureToolCard = (toolCallId: string, toolName: string, args?: Record<string, unknown>) => {
         updateSessionMessages(sessionId, (messages) =>
           messages.map((m) => {
             if (m.id !== assistantId) return m
-            if ((m.toolCalls ?? []).some((t) => t.id === toolCallId)) return m
-            return { ...m, toolCalls: [...(m.toolCalls ?? []), { id: toolCallId, toolName, status: 'running' }] }
+            const existing = (m.toolCalls ?? []).find((t) => t.id === toolCallId)
+            if (existing) {
+              if (!args || Object.keys(args).length === 0 || existing.args) return m
+              return {
+                ...m,
+                toolCalls: (m.toolCalls ?? []).map((t) => (t.id === toolCallId ? { ...t, args } : t)),
+              }
+            }
+            return {
+              ...m,
+              toolCalls: [...(m.toolCalls ?? []), { id: toolCallId, toolName, args, status: 'running' }],
+            }
           }),
         )
       }
@@ -273,6 +310,7 @@ export function useSessions(): UseSessions {
         switch (type) {
           case 'task.snapshot': {
             const status = String(data.status ?? '')
+            if (data.phase) setAgentProgress(parseAgentProgress(data))
             const finalAnswer = getFinalAnswer(data)
             if (finalAnswer) {
               updateSessionMessages(sessionId, (messages) =>
@@ -288,10 +326,17 @@ export function useSessions(): UseSessions {
             }
             return
           }
+          case 'agent.state': {
+            setAgentProgress(parseAgentProgress(data))
+            return
+          }
           case 'tool.requested': {
             const toolCallId = String(data.tool_call_id ?? '')
             const toolName = String(data.tool_name ?? '')
-            if (toolCallId) ensureToolCard(toolCallId, toolName)
+            const args = data.args_preview && typeof data.args_preview === 'object'
+              ? data.args_preview as Record<string, unknown>
+              : undefined
+            if (toolCallId) ensureToolCard(toolCallId, toolName, args)
             return
           }
           case 'tool.started': {
@@ -309,11 +354,17 @@ export function useSessions(): UseSessions {
             const toolCallId = String(data.tool_call_id ?? '')
             const toolName = String(data.tool_name ?? '')
             const paths = (data.affected_paths ?? []) as string[]
+            const resultPreview = typeof data.result_preview === 'string' ? data.result_preview : ''
+            const result = resultPreview
+              ? `${resultPreview}${data.result_truncated === true ? '\n\n[预览已截断]' : ''}`
+              : paths.length > 0
+                ? `影响路径：${paths.join('、')}`
+                : undefined
             markToolByEvent(
               type === 'tool.completed' ? 'completed' : 'error',
               toolCallId,
               toolName,
-              paths.length > 0 ? `影响路径：${paths.join('、')}` : undefined,
+              result,
             )
             return
           }
@@ -363,13 +414,39 @@ export function useSessions(): UseSessions {
       const onFrame = (event: MessageEvent) => {
         const envelope = parse(event)
         if (!envelope) return
+        if (postToolWatchdogRef.current) {
+          clearTimeout(postToolWatchdogRef.current)
+          postToolWatchdogRef.current = null
+        }
         handleEnvelope(envelope)
+        if (envelope.type === 'tool.completed' || envelope.type === 'tool.failed') {
+          postToolWatchdogRef.current = setTimeout(() => {
+            const run = activeRunRef.current
+            if (!run || run.taskId !== taskId) return
+            setAgentProgress((current) => ({
+              phase: current?.phase || 'ANALYZE_CONTEXT',
+              nextStep: '工具结果后的推理事件超时，正在重新连接任务流',
+              checklist: current?.checklist ?? [],
+              doneWhen: current?.doneWhen ?? [],
+              completedItems: current?.completedItems ?? [],
+              toolSteps: current?.toolSteps ?? 0,
+              readFiles: current?.readFiles ?? 0,
+              maxToolSteps: current?.maxToolSteps ?? 0,
+              maxReadFiles: current?.maxReadFiles ?? 0,
+              maxTotalSteps: current?.maxTotalSteps ?? 0,
+              reason: 'post_tool_timeout',
+            }))
+            es.close()
+            reconnectStreamRef.current(taskId, sessionId, assistantId)
+          }, 15_000)
+        }
         if (TERMINAL_EVENTS.has(envelope.type)) finishRun()
       }
 
       // 命名事件 + 兜底 message 事件（后端帧均带 event 名）
       const NAMED = [
         'task.snapshot',
+        'agent.state',
         'tool.requested',
         'tool.started',
         'tool.completed',
@@ -387,6 +464,10 @@ export function useSessions(): UseSessions {
     },
     [ensureApprovalCard, findLatestToolByName, findTool, finishRun, updateSessionMessages, updateTool],
   )
+
+  useEffect(() => {
+    reconnectStreamRef.current = attachEventStream
+  }, [attachEventStream])
 
   // ---- 初始加载 ---------------------------------------------------------------
 
@@ -565,6 +646,7 @@ export function useSessions(): UseSessions {
       const sessionId = activeId
       if (!sessionId || !content.trim() || running) return
       setRunning(true)
+      setAgentProgress(null)
 
       const now = new Date().toISOString()
       const userId = nextId('m-user')
@@ -666,6 +748,7 @@ export function useSessions(): UseSessions {
     mcpServers,
     loading,
     running,
+    agentProgress,
     refreshWorkspaces,
     select,
     createSession,

@@ -204,6 +204,8 @@ class TaskService:
 
     def _snapshot(self, task: Task) -> dict:
         progress = self._run_store_reader.read_progress(task.run_id) if task.run_id else {}
+        if task.execution_environment == "local_worker" and self._worker_hub is not None:
+            progress.update(self._worker_hub.ephemeral_agent_progress(task.task_id) or {})
         pending = task.pending_approval
         if pending and task.status == TaskStatus.WAITING_FOR_APPROVAL:
             # Defensive: if the approval record was never created, don't
@@ -234,6 +236,15 @@ class TaskService:
             "stop_reason": task.stop_reason,
             "attempts": progress.get("attempts"),
             "tool_steps": progress.get("tool_steps"),
+            "phase": progress.get("phase", ""),
+            "next_step": progress.get("next_step", ""),
+            "checklist": progress.get("checklist", []),
+            "done_when": progress.get("done_when", []),
+            "completed_items": progress.get("completed_items", []),
+            "read_files": progress.get("read_files", 0),
+            "max_tool_steps": progress.get("max_tool_steps", 0),
+            "max_read_files": progress.get("max_read_files", 0),
+            "max_total_steps": progress.get("max_total_steps", 0),
             "pending_approval": pending,
             "created_at": task.created_at,
             "updated_at": task.updated_at,

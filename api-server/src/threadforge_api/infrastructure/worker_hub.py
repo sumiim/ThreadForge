@@ -16,7 +16,11 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import WebSocket
 from pico.features.memory import default_memory_state
-from pico.security import redact_artifact
+from pico.security import (
+    public_tool_args_preview,
+    public_tool_result_preview,
+    redact_artifact,
+)
 
 from ..domain.entities import Approval, canonical_json, utc_now
 from ..domain.enums import ApprovalStatus, TaskStatus
@@ -42,12 +46,14 @@ _PUBLIC_WORKER_EVENTS = {
     "tool.completed",
     "tool.failed",
     "policy.violation",
+    "agent.state",
 }
 _WORKSPACE_ID = re.compile(r"^ws_[a-f0-9]{32}$")
 _SESSION_ID = re.compile(r"^ses_[a-f0-9]{32}$")
 _CAPABILITY = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 _WORKSPACE_SELECTION_TTL_SECONDS = 120
 _EPHEMERAL_ANSWER_TTL_SECONDS = 600
+_EPHEMERAL_PROGRESS_TTL_SECONDS = 600
 
 
 @dataclass
@@ -116,6 +122,7 @@ class WorkerHub:
         self._history_requests: dict[str, PendingWorkerRequest] = {}
         self._model_requests: dict[str, PendingWorkerRequest] = {}
         self._terminal_answers: dict[str, tuple[float, str]] = {}
+        self._agent_progress: dict[str, tuple[float, dict]] = {}
         self._lock = threading.RLock()
         # The digest only needs to remain stable for the lifetime of an active
         # Worker run. Active runs are failed during restart recovery, so a
@@ -209,6 +216,24 @@ class WorkerHub:
             self._expire_terminal_answers_locked(now)
             item = self._terminal_answers.get(task_id)
             return item[1] if item is not None else None
+
+    def ephemeral_agent_progress(self, task_id: str) -> dict | None:
+        now = time.monotonic()
+        with self._lock:
+            item = self._agent_progress.get(task_id)
+            if item is None:
+                return None
+            if now - item[0] >= _EPHEMERAL_PROGRESS_TTL_SECONDS:
+                self._agent_progress.pop(task_id, None)
+                return None
+            return dict(item[1])
+
+    def _remember_agent_progress(self, task_id: str, progress: dict) -> None:
+        with self._lock:
+            now = time.monotonic()
+            self._agent_progress[task_id] = (now, dict(progress))
+            while len(self._agent_progress) > 512:
+                self._agent_progress.pop(next(iter(self._agent_progress)))
 
     def _remember_terminal_answer(self, task_id: str, answer: str) -> None:
         with self._lock:
@@ -869,7 +894,10 @@ class WorkerHub:
             raise WorkerProtocolError("Worker event data must be an object")
         if task.status is TaskStatus.CANCEL_REQUESTED:
             return
-        self._publisher.publish(task_id, task.run_id, event_type, _sanitize_event_data(event_type, data))
+        safe_data = _sanitize_event_data(event_type, data)
+        if event_type == "agent.state":
+            self._remember_agent_progress(task_id, safe_data)
+        self._publisher.publish(task_id, task.run_id, event_type, safe_data)
 
     def _handle_approval(self, connection: WorkerConnection, message: dict) -> None:
         task_id = str(message.get("task_id", ""))
@@ -1283,6 +1311,25 @@ def _sanitize_event_data(event_type: str, data: dict) -> dict:
         }
     if event_type == "model.started":
         return {}
+    if event_type == "agent.state":
+        def bounded_list(value):
+            return [str(item)[:300] for item in value[:20]] if isinstance(value, list) else []
+
+        return redact_artifact(
+            {
+                "phase": str(data.get("phase", ""))[:64],
+                "next_step": str(data.get("next_step", ""))[:300],
+                "checklist": bounded_list(data.get("checklist", [])),
+                "done_when": bounded_list(data.get("done_when", [])),
+                "completed_items": bounded_list(data.get("completed_items", [])),
+                "tool_steps": _nonnegative_int(data.get("tool_steps", 0)),
+                "read_files": _nonnegative_int(data.get("read_files", 0)),
+                "max_tool_steps": _nonnegative_int(data.get("max_tool_steps", 0)),
+                "max_read_files": _nonnegative_int(data.get("max_read_files", 0)),
+                "max_total_steps": _nonnegative_int(data.get("max_total_steps", 0)),
+                "reason": str(data.get("reason", ""))[:100],
+            }
+        )
     safe = {
         "tool_call_id": str(data.get("tool_call_id", ""))[:200],
         "tool_name": str(data.get("tool_name", ""))[:100],
@@ -1296,9 +1343,26 @@ def _sanitize_event_data(event_type: str, data: dict) -> dict:
             for item in paths[:100] if isinstance(paths, list)
             if (path := _safe_relative_path(item)) is not None
         ] if isinstance(paths, list) else []
+        result_preview, result_truncated = public_tool_result_preview(
+            safe["tool_name"], data.get("result_preview", "")
+        )
+        if result_preview:
+            safe["result_preview"] = result_preview
+            safe["result_truncated"] = result_truncated or bool(data.get("result_truncated", False))
+    if event_type == "tool.requested":
+        args_preview = public_tool_args_preview(safe["tool_name"], data.get("args_preview", {}))
+        if args_preview:
+            safe["args_preview"] = args_preview
     if event_type == "policy.violation":
         safe["policy_code"] = str(data.get("policy_code", ""))[:100]
     return redact_artifact(safe)
+
+
+def _nonnegative_int(value) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _safe_relative_path(value) -> str | None:

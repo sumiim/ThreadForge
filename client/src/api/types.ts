@@ -198,6 +198,15 @@ export interface TaskSnapshot {
   stop_reason: string | null
   attempts: number | null
   tool_steps: number | null
+  phase?: string
+  next_step?: string
+  checklist?: string[]
+  done_when?: string[]
+  completed_items?: string[]
+  read_files?: number
+  max_tool_steps?: number
+  max_read_files?: number
+  max_total_steps?: number
   pending_approval: PendingApproval | null
   created_at: string
   updated_at: string
@@ -238,14 +247,30 @@ export type RunEvent = RunEventEnvelope & {
     tool_status?: string
     tool_error_code?: string
     affected_paths?: string[]
-    approval_id?: string
     args_preview?: Record<string, unknown>
+    result_preview?: string
+    result_truncated?: boolean
+    approval_id?: string
     created_at?: string
     expires_at?: string
     status?: string
     decision?: string
     [key: string]: unknown
   }
+}
+
+export interface AgentProgress {
+  phase: string
+  nextStep: string
+  checklist: string[]
+  doneWhen: string[]
+  completedItems: string[]
+  toolSteps: number
+  readFiles: number
+  maxToolSteps: number
+  maxReadFiles: number
+  maxTotalSteps: number
+  reason?: string
 }
 
 // ---- 前端 UI 模型 ---------------------------------------------------------

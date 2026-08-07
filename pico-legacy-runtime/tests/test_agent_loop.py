@@ -35,3 +35,25 @@ def test_pico_ask_delegates_to_agent_loop(tmp_path):
     agent = build_agent(tmp_path, ["<final>Facade works.</final>"])
 
     assert agent.ask("Use facade") == "Facade works."
+
+
+def test_tool_result_enters_post_tool_reasoning_and_persists_agent_state(tmp_path):
+    (tmp_path / "hello.txt").write_text("alpha\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"read_file","args":{"path":"hello.txt","start":1,"end":1}}</tool>',
+            "<final>Evidence reviewed.</final>",
+        ],
+    )
+
+    assert agent.ask("Inspect hello.txt") == "Evidence reviewed."
+    state = agent.current_task_state
+    assert state.phase == "FINAL"
+    assert state.read_files == 1
+    assert state.checklist
+    assert set(state.checklist).issubset(state.completed_items)
+    trace = agent.run_store.trace_path(state).read_text(encoding="utf-8")
+    assert '"event": "agent_state_changed"' in trace
+    assert '"event": "post_tool_reasoning"' in trace
+    assert '"reason": "post_tool_reasoning"' in trace
