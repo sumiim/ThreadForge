@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from ..event_sink import CompositeSink, EventCollector, JsonlSink
+from ..execution_hooks import RunCancelled
 from ..features import memory as memorylib
 from ..run_lifecycle import finalize_failed_run
 from ..task_state import STOP_REASON_MODEL_ERROR, STOP_REASON_RUNTIME_ERROR, TaskState
@@ -53,7 +54,7 @@ class HarnessModelClientAdapter:
     def complete(self, *args, **kwargs):
         try:
             return self.delegate.complete(*args, **kwargs)
-        except ModelBoundaryError:
+        except (ModelBoundaryError, RunCancelled):
             raise
         except Exception as exc:
             raise ModelBoundaryError(

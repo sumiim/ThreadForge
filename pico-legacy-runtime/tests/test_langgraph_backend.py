@@ -8,6 +8,7 @@ from pico import Pico
 from pico.evaluation.backends import build_backend_runner
 from pico.evaluation.evaluator import _scripted_outputs_for_task, load_benchmark
 from pico.event_sink import NullSink
+from pico.execution_hooks import RunCancelled
 from pico.providers.clients import FakeModelClient
 from pico.run_store import RunStore
 from pico.session_store import SessionStore
@@ -226,6 +227,31 @@ def test_langgraph_graph_state_contains_only_declared_data_fields():
 
     assert "agent" not in AgentState.__annotations__
     assert "model_client" not in AgentState.__annotations__
+
+
+def test_langgraph_cancellation_converges_to_cancelled_terminal_state(tmp_path):
+    from langgraph_pico import run_agent
+
+    class CancelledToken:
+        def is_cancelled(self):
+            return True
+
+        def raise_if_cancelled(self):
+            raise RunCancelled()
+
+    agent, _, _ = _build_runtime(tmp_path, [_v11_plan("conversation", [])])
+    agent.cancellation_token = CancelledToken()
+
+    result = run_agent(
+        agent,
+        "Stop this run.",
+        task_mode="auto",
+        enable_planning=True,
+    )
+
+    assert result.task_state.status == "stopped"
+    assert result.task_state.stop_reason == "user_cancelled"
+    assert result.final_answer == ""
 
 
 def test_run_agent_reuses_cli_runtime_and_records_parent_session(tmp_path):

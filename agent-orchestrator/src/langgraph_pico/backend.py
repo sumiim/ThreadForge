@@ -10,6 +10,7 @@ from pico.evaluation.backends import (
 )
 from pico.evaluation.evaluator import _apply_task_setup
 from pico.event_sink import CompositeSink, EventCollector
+from pico.execution_hooks import RunCancelled
 from pico.features import memory as memorylib
 from pico.run_lifecycle import finalize_run
 from pico.runtime import Pico
@@ -449,6 +450,9 @@ def run_agent(
             else:
                 stop_reason = STOP_REASON_MAP[result["terminal_reason"]]
                 task_state.stop(stop_reason, status=STATUS_FAILED, final_answer=final_answer)
+        except RunCancelled:
+            task_state.stop_user_cancelled()
+            final_answer = ""
         except Exception as exc:
             error_code, final_answer = _safe_execution_failure(exc)
             stop_reason = getattr(exc, "stop_reason", STOP_REASON_RUNTIME_ERROR)

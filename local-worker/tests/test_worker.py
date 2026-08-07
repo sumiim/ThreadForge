@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 from pico.approval import ApprovalOutcome, ApprovalRequest
+from pico.execution_hooks import RunCancelled
 from pico.features.memory import default_memory_state
 from pico.providers.clients import FakeModelClient
 from pico.session_store import SessionStore
@@ -39,6 +40,7 @@ from threadforge_worker.config import (
 )
 from threadforge_worker.runtime import (
     ActiveRun,
+    CancellableModelClient,
     CancellationToken,
     RemoteApprovalStrategy,
     RemoteExecutionHooks,
@@ -719,6 +721,39 @@ def test_remote_approval_blocks_until_exact_decision():
     assert result == [ApprovalOutcome.APPROVED]
 
 
+def test_blocking_model_call_is_interrupted_by_worker_cancellation():
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingModelClient:
+        def complete(self, prompt, max_new_tokens, **kwargs):
+            del prompt, max_new_tokens, kwargs
+            started.set()
+            release.wait(timeout=2)
+            return "late response"
+
+    token = CancellationToken()
+    client = CancellableModelClient(BlockingModelClient(), token, poll_interval=0.01)
+    errors = []
+
+    def invoke():
+        try:
+            client.complete("wait", 32)
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=invoke)
+    thread.start()
+    assert started.wait(timeout=1)
+    token.cancel()
+    thread.join(timeout=0.5)
+    release.set()
+
+    assert not thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], RunCancelled)
+
+
 def test_remote_execution_hooks_publish_read_only_preview_and_hide_risky_result():
     events = []
     hooks = RemoteExecutionHooks(lambda event_type, data: events.append((event_type, data)), CancellationToken())
@@ -839,6 +874,68 @@ def test_runtime_completes_with_fake_model_without_provider_call(tmp_path):
         )
     )
     assert [item["content"] for item in stored["history"]] == ["say done", "done"]
+
+
+def test_runtime_cancels_while_planning_model_request_is_blocked(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    task = {
+        "task_id": "task_" + "1" * 32,
+        "run_id": "run_" + "2" * 32,
+        "workspace_id": "ws_" + "3" * 32,
+        "input": "inspect the repository",
+        "max_steps": 2,
+        "settings": {"max_new_tokens": 128, "model_timeout_seconds": 120},
+        "session": {
+            "id": "ses_" + "4" * 32,
+            "owner_id": "11111111-1111-4111-8111-111111111111",
+            "workspace_id": "ws_" + "3" * 32,
+            "workspace_root": "worker://placeholder",
+            "title": "test",
+            "history": [],
+            "memory": default_memory_state(),
+            "checkpoints": {},
+        },
+    }
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingModelClient:
+        def complete(self, prompt, max_new_tokens, **kwargs):
+            del prompt, max_new_tokens, kwargs
+            started.set()
+            release.wait(timeout=2)
+            return "late response"
+
+    sent = []
+    token = CancellationToken()
+    approval = RemoteApprovalStrategy(sent.append, task["task_id"], token)
+    active = ActiveRun(task["task_id"], token, approval)
+    thread = threading.Thread(
+        target=lambda: run_task(
+            task=task,
+            workspace_path=workspace,
+            data_dir=tmp_path / "worker-state",
+            send=sent.append,
+            active=active,
+            model_client_factory=BlockingModelClient,
+        )
+    )
+
+    thread.start()
+    assert started.wait(timeout=1)
+    active.cancel(0)
+    thread.join(timeout=1)
+    release.set()
+
+    assert not thread.is_alive()
+    assert sent[-1]["type"] == "terminal"
+    assert sent[-1]["status"] == "cancelled"
+    assert sent[-1]["stop_reason"] == "user_cancelled"
+    assert not any(
+        item.get("type") == "event" and item.get("event_type", "").startswith("tool.")
+        for item in sent
+    )
 
 
 def test_history_read_and_model_configuration_protocol(tmp_path):

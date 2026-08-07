@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import queue
 import secrets
 import threading
 import time
@@ -61,6 +62,44 @@ class CancellationToken:
     def raise_if_cancelled(self) -> None:
         if self.is_cancelled():
             raise RunCancelled()
+
+
+class CancellableModelClient:
+    """Make a blocking provider call observable by the Worker cancellation token."""
+
+    def __init__(self, delegate, token: CancellationToken, poll_interval: float = 0.05):
+        self._delegate = delegate
+        self._token = token
+        self._poll_interval = max(0.01, float(poll_interval))
+
+    def __getattr__(self, name):
+        return getattr(self._delegate, name)
+
+    def complete(self, prompt, max_new_tokens, **kwargs):
+        self._token.raise_if_cancelled()
+        outcome = queue.Queue(maxsize=1)
+
+        def invoke() -> None:
+            try:
+                outcome.put((True, self._delegate.complete(prompt, max_new_tokens, **kwargs)))
+            except BaseException as exc:
+                outcome.put((False, exc))
+
+        threading.Thread(
+            target=invoke,
+            name="worker-model-request",
+            daemon=True,
+        ).start()
+        while True:
+            try:
+                succeeded, value = outcome.get(timeout=self._poll_interval)
+                break
+            except queue.Empty:
+                self._token.raise_if_cancelled()
+        self._token.raise_if_cancelled()
+        if succeeded:
+            return value
+        raise value
 
 
 class RemoteApprovalStrategy(ApprovalStrategy):
@@ -279,7 +318,7 @@ def run_task(
     requested_effort = str(settings.get("reasoning_effort", "none")).strip().lower() or "none"
     if requested_effort not in supported_efforts:
         raise RuntimeError("requested reasoning effort is not supported by the local Worker")
-    model_client = (
+    provider_model_client = (
         model_client_factory()
         if model_client_factory is not None
         else OpenAICompatibleModelClient(
@@ -293,6 +332,7 @@ def run_task(
             supported_reasoning_efforts=supported_efforts,
         )
     )
+    model_client = CancellableModelClient(provider_model_client, active.token)
     def send_runtime_event(event_type: str, data: dict) -> None:
         send(
             {
