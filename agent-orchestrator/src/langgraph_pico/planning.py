@@ -59,7 +59,8 @@ def build_plan_prompt(
         "Create a concise execution plan for a local coding agent. Return exactly one JSON object; "
         "do not return markdown or hidden reasoning. Required keys: schema_version, plan_id, revision, "
         "intent, summary, steps, acceptance, risk_level, budgets. intent is conversation, read_only, "
-        "or code_change. Each step has exactly id, goal, dependencies, required_tools, "
+        "or code_change. Set schema_version to the string \"1\" (JSON string, not a number). "
+        "Each step has exactly id, goal, dependencies, required_tools, "
         "required_evidence, done_when. Dependencies must be acyclic. Use only available tools. "
         "A request that changes files or runs a potentially mutating shell command is code_change. "
         "Use expected_revision exactly. For a revision, preserve the previous plan_id. "
@@ -96,7 +97,8 @@ def parse_and_validate_plan(
     }
     if set(value) != required:
         raise PlanValidationError("plan_fields_invalid", "plan fields do not match schema")
-    if str(value["schema_version"]) != PLAN_SCHEMA_VERSION:
+    schema_version = value["schema_version"]
+    if isinstance(schema_version, bool) or str(schema_version) != PLAN_SCHEMA_VERSION:
         raise PlanValidationError("plan_schema_unsupported", "unsupported plan schema")
     plan_id = str(value["plan_id"]).strip()
     if not PLAN_ID_PATTERN.fullmatch(plan_id):
