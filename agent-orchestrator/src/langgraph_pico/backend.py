@@ -1,7 +1,7 @@
 """LangGraph backend adapter for Pico's public runtime and benchmark harness."""
 
-from pathlib import Path, PureWindowsPath
 import time
+from pathlib import Path, PureWindowsPath
 
 from pico.evaluation.backends import (
     BackendRunResult,
@@ -36,7 +36,6 @@ from .intent import (
     TASK_MODE_AUTO,
     normalize_task_mode,
 )
-
 
 RUN_METADATA_KEYS = (
     "requested_task_mode",

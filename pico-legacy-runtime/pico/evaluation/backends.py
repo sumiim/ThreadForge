@@ -1,8 +1,8 @@
 """Execution backends shared by the benchmark harness."""
 
+import time
 from copy import deepcopy
 from dataclasses import dataclass, field
-import time
 from typing import Protocol
 
 from ..event_sink import CompositeSink, EventCollector, JsonlSink

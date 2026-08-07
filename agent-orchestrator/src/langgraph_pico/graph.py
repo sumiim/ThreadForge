@@ -1,13 +1,16 @@
 """Pure-data LangGraph orchestration for Pico's routed three-role workflow."""
 
-from copy import deepcopy
 import time
+from copy import deepcopy
 from typing import TypedDict
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
-
-from pico.delegates import RoleDelegateSpec, create_role_delegate, normalize_review_result
+from pico.delegates import (
+    RoleDelegateSpec,
+    create_role_delegate,
+    normalize_review_result,
+)
 from pico.run_lifecycle import finalize_failed_run
 from pico.runtime import Pico
 from pico.session_store import InMemorySessionStore
@@ -39,7 +42,6 @@ from .planning import (
     build_plan_prompt,
     parse_and_validate_plan,
 )
-
 
 MAX_FIX_ATTEMPTS = 2
 MAX_REPLAN_ATTEMPTS = 2
@@ -955,14 +957,10 @@ def execute_change_node(state: AgentState, config: RunnableConfig) -> AgentState
                 if item.get("tool_name") in {"write_file", "patch_file", "run_shell"}
                 and item.get("status") in {"ok", "partial_success"}
             ]
-            if affected and (write_evidence or not state["planning_enabled"]):
+            if not state["planning_enabled"] and (affected or state["review_focus_paths"]):
                 next_state = updated
-            elif state["planning_enabled"] and state["replan_attempts"] < MAX_REPLAN_ATTEMPTS:
-                next_state = {
-                    **updated,
-                    "replan_requested": True,
-                    "replan_reason": "execution produced no successful write evidence and affected path",
-                }
+            elif affected and write_evidence:
+                next_state = updated
             else:
                 no_change_result = str(result).strip()
                 next_state = _failed_state(
@@ -1035,7 +1033,6 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
             **state,
             "review_status": review["status"],
             "review_issues": review["text"],
-            "coordinator_steps_used": state["coordinator_steps_used"] + 1,
         }
         task_state.review_status = review["status"]
         if review["recovered"]:

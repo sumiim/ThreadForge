@@ -95,6 +95,15 @@ def test_v11_plan_rejects_cycles_and_excessive_budgets():
             maximum_budgets=MAXIMUM_BUDGETS,
         )
 
+    incomplete_run = _plan()
+    incomplete_run["budgets"]["model_rounds"] = 2
+    with pytest.raises(PlanValidationError, match="at least 3"):
+        parse_and_validate_plan(
+            json.dumps(incomplete_run),
+            available_tools={"read_file"},
+            maximum_budgets=MAXIMUM_BUDGETS,
+        )
+
 
 def test_v11_agent_turn_requires_explicit_talk_tool_or_final():
     assert Pico.parse("I am still working.")[0] == "retry"

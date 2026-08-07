@@ -12,7 +12,11 @@ from threadforge_api.domain.errors import (
     PairingCodeInvalidError,
     RenameConflictError,
 )
-from threadforge_api.infrastructure.device_store import DeviceStore, PairingCodeStore, WorkerWorkspace
+from threadforge_api.infrastructure.device_store import (
+    DeviceStore,
+    PairingCodeStore,
+    WorkerWorkspace,
+)
 
 OWNER_A = "11111111-1111-4111-8111-111111111111"
 OWNER_B = "22222222-2222-4222-8222-222222222222"

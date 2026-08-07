@@ -9,12 +9,14 @@ interface RunMinimapProps {
 }
 
 export default function RunMinimap({ runs, activeRunId }: RunMinimapProps) {
-  const [selectedRunId, setSelectedRunId] = useState(activeRunId ?? '')
+  const [selection, setSelection] = useState({
+    runId: activeRunId ?? '',
+    activeRunId: activeRunId ?? '',
+  })
   const [activeIndex, setActiveIndex] = useState(0)
 
-  useEffect(() => {
-    if (activeRunId) setSelectedRunId(activeRunId)
-  }, [activeRunId])
+  const selectedRunId =
+    activeRunId && selection.activeRunId !== activeRunId ? activeRunId : selection.runId
 
   const selectedRun = useMemo(
     () => runs.find((run) => run.runId === selectedRunId) ?? runs.at(-1),
@@ -73,7 +75,7 @@ export default function RunMinimap({ runs, activeRunId }: RunMinimapProps) {
           selectable: true,
           selectedKeys: selectedRun ? [selectedRun.runId] : [],
           onClick: ({ key }) => {
-            setSelectedRunId(key)
+            setSelection({ runId: key, activeRunId: activeRunId ?? '' })
             setActiveIndex(0)
           },
         }}

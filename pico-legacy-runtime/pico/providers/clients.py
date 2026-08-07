@@ -338,7 +338,7 @@ class OpenAICompatibleModelClient:
         if self.reasoning_effort:
             payload["reasoning"] = {"effort": self.reasoning_effort}
         if self.temperature is not None and (
-            not self.reasoning_effort or self.supports_temperature_with_reasoning
+            self.reasoning_effort in {"", "none"} or self.supports_temperature_with_reasoning
         ):
             payload["temperature"] = self.temperature
         # runtime 传入的是“稳定前缀”的签名，而不是整段 prompt 的签名。
