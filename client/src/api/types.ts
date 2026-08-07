@@ -15,6 +15,22 @@ export interface Workspace {
   device_platform?: string
   model?: string
   model_configured?: boolean
+  display_name?: string
+  device_display_name?: string
+  model_capabilities?: ModelCapabilities
+}
+
+export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+
+export interface ModelCapability {
+  id: string
+  display_name: string
+  reasoning_efforts: ReasoningEffort[]
+}
+
+export interface ModelCapabilities {
+  provider: string
+  models: ModelCapability[]
 }
 
 export interface WorkerWorkspace {
@@ -35,6 +51,9 @@ export interface Device {
   architecture: string
   compatible: boolean
   capabilities: string[]
+  display_name?: string
+  orchestration_backend?: string
+  model_capabilities?: ModelCapabilities
   created_at: string
   last_seen_at: string
   workspaces: WorkerWorkspace[]
@@ -159,6 +178,9 @@ export interface SessionTask {
   stop_reason: string | null
   created_at: string
   updated_at: string
+  model_id?: string
+  reasoning_effort?: ReasoningEffort
+  run_index?: RunIndexItem[]
 }
 
 // GET /api/v1/sessions/{id} 会话详情
@@ -213,6 +235,21 @@ export interface TaskSnapshot {
   execution_environment: string
   container_sandbox_enabled: boolean
   device_id: string
+  model_id?: string
+  reasoning_effort?: ReasoningEffort
+  run_index?: RunIndexItem[]
+}
+
+export interface RunIndexItem {
+  event_id: string
+  type: string
+  timestamp: string
+  label: string
+  tool_name?: string
+  tool_call_id?: string
+  intent?: string
+  step_count?: number
+  status?: string
 }
 
 // POST /api/v1/tasks 响应（202）
@@ -308,6 +345,8 @@ export interface Session {
   executionEnvironment?: string
   deviceId?: string
   model: string
+  modelOptions: ModelCapability[]
+  runIndex?: RunIndexItem[]
   messages: Message[]
   lastTaskId?: string
   lastRunId?: string

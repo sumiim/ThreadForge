@@ -47,6 +47,9 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
     approveTool,
     rejectTool,
     stopRun,
+    renameDevice,
+    renameWorkspace,
+    renameSession,
   } = useSessions()
   const { mode, toggle: toggleTheme } = useTheme()
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -98,6 +101,9 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
             onNavigate={setView}
             onOpenSettings={() => setSettingsOpen(true)}
             onWorkspacesChanged={refreshWorkspaces}
+            onRenameDevice={renameDevice}
+            onRenameWorkspace={renameWorkspace}
+            onRenameSession={renameSession}
             themeMode={mode}
             onToggleTheme={toggleTheme}
           />

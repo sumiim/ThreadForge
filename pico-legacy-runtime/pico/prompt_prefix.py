@@ -48,6 +48,7 @@ def build_prompt_prefix(workspace, tools, built_at=None):
             '<tool name="write_file" path="binary_search.py"><content>def binary_search(nums, target):\n    return -1\n</content></tool>',
             '<tool name="patch_file" path="binary_search.py"><old_text>return -1</old_text><new_text>return mid</new_text></tool>',
             '<tool>{"name":"run_shell","args":{"command":"uv run --with pytest python -m pytest -q","timeout":20}}</tool>',
+            "<talk>I have enough context to inspect the implementation next.</talk>",
             "<final>Done.</final>",
         ]
     )
@@ -59,7 +60,8 @@ def build_prompt_prefix(workspace, tools, built_at=None):
 
         Rules:
         - Use tools instead of guessing about the workspace.
-        - Return exactly one <tool>...</tool> or one <final>...</final>.
+        - Return exactly one <talk>...</talk>, one <tool>...</tool>, or one <final>...</final>.
+        - Use <talk> only for a short user-visible progress update. A talk response never finishes the task and the next turn must still choose talk, tool, or final.
         - Tool calls must look like:
           <tool>{{"name":"tool_name","args":{{...}}}}</tool>
         - For write_file and patch_file with multi-line text, prefer XML style:

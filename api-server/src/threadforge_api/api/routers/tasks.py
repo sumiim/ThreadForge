@@ -39,7 +39,14 @@ def create_task(
     task_service: TaskService = Depends(get_task_service),
 ) -> TaskQueuedResponse:
     max_steps = body.max_steps if body.max_steps is not None else settings.max_steps
-    task = task_service.create_task(body.session_id, body.input, max_steps, actor.owner_id)
+    task = task_service.create_task(
+        body.session_id,
+        body.input,
+        max_steps,
+        actor.owner_id,
+        model_id=body.model_id,
+        reasoning_effort=body.reasoning_effort,
+    )
     return TaskQueuedResponse(
         task_id=task.task_id,
         run_id=task.run_id,

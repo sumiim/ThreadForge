@@ -35,8 +35,17 @@ from pico.task_state import (
     STOP_REASON_USER_CANCELLED,
 )
 from pico.workspace import WorkspaceContext
+from langgraph_pico import run_agent
 
-ALLOWED_TOOLS = ("list_files", "read_file", "search", "run_shell", "write_file", "patch_file")
+ALLOWED_TOOLS = (
+    "delegate",
+    "list_files",
+    "read_file",
+    "search",
+    "run_shell",
+    "write_file",
+    "patch_file",
+)
 
 
 class CancellationToken:
@@ -172,6 +181,10 @@ class RemoteExecutionHooks:
         self._active_tool_call_id = ""
         self._active_tool_name = ""
 
+    def commentary(self, task_state, text: str) -> None:
+        self._check()
+        self._send("assistant.commentary", {"text": str(text)[:1000]})
+
 
 class RemoteAgentStateSink(EventSink):
     """Forward the bounded Agent state projection to the control plane."""
@@ -197,6 +210,13 @@ class RemoteAgentStateSink(EventSink):
                     "reason": str(payload.get("reason", ""))[:100],
                 },
             )
+        public_type = {
+            "plan_created": "plan.created",
+            "review_started": "review.started",
+            "review_completed": "review.completed",
+        }.get(event_type)
+        if public_type:
+            self._send_event(public_type, dict(payload))
         return payload
 
 
@@ -241,16 +261,30 @@ def run_task(
         session = incoming_session
     session["workspace_root"] = str(workspace_path)
     run_store = RunStore(data_dir / "runs")
+    import os
+
+    configured_model = os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4").strip() or "gpt-5.4"
+    requested_model = str(settings.get("model_id", configured_model)).strip() or configured_model
+    if requested_model != configured_model:
+        raise RuntimeError("requested model is not configured on the local Worker")
+    supported_efforts = _supported_reasoning_efforts()
+    requested_effort = str(settings.get("reasoning_effort", "none")).strip().lower() or "none"
+    if requested_effort not in supported_efforts:
+        raise RuntimeError("requested reasoning effort is not supported by the local Worker")
     model_client = (
         model_client_factory()
         if model_client_factory is not None
         else OpenAICompatibleModelClient(
-            model=_required_env("PICO_OPENAI_MODEL", "gpt-5.4"),
+            model=requested_model,
             base_url=_required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
             api_key=_required_env("PICO_OPENAI_API_KEY"),
             temperature=0.2,
             timeout=int(settings.get("model_timeout_seconds", 120)),
             max_attempts=1,
+            reasoning_effort="" if requested_effort == "none" else requested_effort,
+            supported_reasoning_efforts=tuple(
+                effort for effort in supported_efforts if effort != "none"
+            ),
         )
     )
     def send_runtime_event(event_type: str, data: dict) -> None:
@@ -286,7 +320,14 @@ def run_task(
     active.pico = pico
     started = time.monotonic()
     try:
-        pico.ask(task["input"], task_id=task["task_id"], run_id=task["run_id"])
+        run_agent(
+            pico,
+            task["input"],
+            task_mode="auto",
+            enable_planning=True,
+            task_id=task["task_id"],
+            run_id=task["run_id"],
+        )
     except Exception as exc:
         if pico.current_task_state is not None and pico.current_task_state.status == STATUS_RUNNING:
             error_type, stop_reason = _classify_error(exc)
@@ -325,6 +366,31 @@ def _required_env(name: str, default: str = "") -> str:
     if not value:
         raise RuntimeError(f"{name} is not configured on the local Worker")
     return value
+
+
+def _supported_reasoning_efforts() -> tuple[str, ...]:
+    import os
+    import urllib.parse
+
+    configured = os.environ.get("PICO_REASONING_EFFORTS", "").strip()
+    if configured:
+        values = tuple(
+            value.strip().lower()
+            for value in configured.split(",")
+            if value.strip()
+        )
+    else:
+        hostname = urllib.parse.urlsplit(
+            _required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1")
+        ).hostname
+        values = (
+            ("none", "minimal", "low", "medium", "high", "xhigh")
+            if hostname == "api.openai.com"
+            else ("none",)
+        )
+    allowed = {"none", "minimal", "low", "medium", "high", "xhigh"}
+    normalized = tuple(dict.fromkeys(value for value in values if value in allowed))
+    return normalized or ("none",)
 
 
 def _classify_error(exc: Exception) -> tuple[str, str]:

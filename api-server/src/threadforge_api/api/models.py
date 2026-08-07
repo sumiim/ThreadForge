@@ -62,6 +62,8 @@ class CreateTaskRequest(BaseModel):
     session_id: str
     input: str = Field(min_length=1, max_length=100000)
     max_steps: int | None = Field(default=None, ge=1, le=25)
+    model_id: str | None = Field(default=None, min_length=1, max_length=200)
+    reasoning_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = "none"
 
     @field_validator("input")
     @classmethod
@@ -73,6 +75,18 @@ class CreateTaskRequest(BaseModel):
 
 class ApprovalDecisionRequest(BaseModel):
     decision: Literal["approved", "rejected"]
+
+
+class RenameEntityRequest(BaseModel):
+    display_name: str = Field(min_length=1, max_length=200)
+
+    @field_validator("display_name")
+    @classmethod
+    def _display_name_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("display_name must not be blank")
+        return value
 
 
 class TaskQueuedResponse(BaseModel):

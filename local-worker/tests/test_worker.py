@@ -714,6 +714,8 @@ def test_remote_execution_hooks_publish_read_only_preview_and_hide_risky_result(
     )
     assert "args_preview" not in events[0][1]
     assert "result_preview" not in events[-1][1]
+    hooks.commentary(None, "still working")
+    assert events[-1] == ("assistant.commentary", {"text": "still working"})
 
 
 def test_runtime_completes_with_fake_model_without_provider_call(tmp_path):
@@ -748,7 +750,39 @@ def test_runtime_completes_with_fake_model_without_provider_call(tmp_path):
         data_dir=tmp_path / "worker-state",
         send=sent.append,
         active=active,
-        model_client_factory=lambda: FakeModelClient(["<final>done</final>"]),
+        model_client_factory=lambda: FakeModelClient(
+            [
+                json.dumps(
+                    {
+                        "schema_version": "1",
+                        "plan_id": "plan_worker",
+                        "revision": 1,
+                        "intent": "conversation",
+                        "summary": "Answer the user.",
+                        "steps": [
+                            {
+                                "id": "answer",
+                                "goal": "Answer the user",
+                                "dependencies": [],
+                                "required_tools": [],
+                                "required_evidence": [],
+                                "done_when": ["the answer is returned"],
+                            }
+                        ],
+                        "acceptance": ["the answer is returned"],
+                        "risk_level": "low",
+                        "budgets": {
+                            "model_rounds": 2,
+                            "tool_calls": 1,
+                            "input_tokens": 1000,
+                            "output_tokens": 256,
+                            "elapsed_seconds": 30,
+                        },
+                    }
+                ),
+                '{"answer":"done"}',
+            ]
+        ),
     )
 
     terminal = sent[-1]

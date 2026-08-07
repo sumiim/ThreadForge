@@ -103,3 +103,13 @@ class ExecutionBoundary:
             )
             self._active_tool_call_id = ""
             self._active_tool_name = ""
+
+    def commentary(self, task_state, text: str) -> None:
+        with self._gate:
+            self._check()
+            self._publisher.publish(
+                self._task_id,
+                self._run_id,
+                "assistant.commentary",
+                {"text": str(text)[:1000]},
+            )

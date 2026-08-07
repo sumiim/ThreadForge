@@ -33,7 +33,7 @@ if (Test-Path -LiteralPath $bundlePackages -PathType Container) {
 } else {
     $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
     & $venvPython -m pip install --upgrade pip
-    & $venvPython -m pip install (Join-Path $repoRoot "pico-legacy-runtime") (Join-Path $repoRoot "local-worker")
+    & $venvPython -m pip install (Join-Path $repoRoot "pico-legacy-runtime") (Join-Path $repoRoot "agent-orchestrator") (Join-Path $repoRoot "local-worker")
 }
 if ($LASTEXITCODE -ne 0) { throw "Failed to install ThreadForge Worker" }
 

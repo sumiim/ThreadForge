@@ -13,17 +13,23 @@ import {
   listWorkspaces,
   openTaskEventStream,
   resolveApproval,
+  renameDevice as apiRenameDevice,
+  renameSession as apiRenameSession,
+  renameWorkspace as apiRenameWorkspace,
 } from '../api/client'
 import type {
   AgentProgress,
   McpServerMetadata,
   Message,
+  ModelCapability,
   PendingApproval,
   RunEventEnvelope,
   RuntimeConfig,
   Session,
   SessionDetail,
   SessionMessage,
+  ReasoningEffort,
+  RunIndexItem,
   SkillMetadata,
   ToolCall,
   Workspace,
@@ -57,6 +63,26 @@ function sessionModel(
     return workspace.model_configured ? (workspace.model ?? '本地模型') : '本地模型未配置'
   }
   return serverModel
+}
+
+function sessionModelOptions(
+  workspaceId: string,
+  deviceId: string | undefined,
+  executionEnvironment: string | undefined,
+  workspaces: Workspace[],
+  fallbackModel: string,
+): ModelCapability[] {
+  const workspace = workspaces.find(
+    (item) => workspaceKey(item) === workspaceKey({
+      workspace_id: workspaceId,
+      device_id: deviceId,
+      execution_environment: executionEnvironment,
+    }),
+  )
+  const models = workspace?.model_capabilities?.models ?? []
+  if (models.length > 0) return models
+  const model = workspace?.model || fallbackModel
+  return [{ id: model, display_name: model, reasoning_efforts: ['none'] }]
 }
 
 function parseAgentProgress(data: Record<string, unknown>): AgentProgress {
@@ -97,7 +123,10 @@ export interface UseSessions {
   refreshWorkspaces: () => Promise<Workspace[]>
   select: (id: string) => void
   createSession: (workspaceId: string, deviceId?: string) => void
-  sendMessage: (content: string) => void
+  sendMessage: (content: string, modelId?: string, reasoningEffort?: ReasoningEffort) => void
+  renameDevice: (deviceId: string, displayName: string) => Promise<void>
+  renameWorkspace: (deviceId: string, workspaceId: string, displayName: string) => Promise<void>
+  renameSession: (sessionId: string, displayName: string) => Promise<void>
   approveTool: (messageId: string, toolCallId: string) => void
   rejectTool: (messageId: string, toolCallId: string) => void
   stopRun: () => void
@@ -298,12 +327,48 @@ export function useSessions(): UseSessions {
         }))
       }
 
+      const appendRunIndex = (envelope: RunEventEnvelope) => {
+        const labels: Record<string, string> = {
+          'plan.created': '计划已创建',
+          'assistant.commentary': '过程更新',
+          'review.started': '开始审查',
+          'review.completed': '审查完成',
+          'tool.started': '工具开始',
+          'tool.completed': '工具完成',
+          'tool.failed': '工具失败',
+        }
+        if (!labels[envelope.type]) return
+        const item: RunIndexItem = {
+          event_id: envelope.event_id,
+          type: envelope.type,
+          timestamp: envelope.timestamp,
+          label: labels[envelope.type],
+          tool_name: envelope.data.tool_name ? String(envelope.data.tool_name) : undefined,
+          tool_call_id: envelope.data.tool_call_id ? String(envelope.data.tool_call_id) : undefined,
+          intent: envelope.data.intent ? String(envelope.data.intent) : undefined,
+          step_count: envelope.data.step_count == null ? undefined : Number(envelope.data.step_count),
+          status: envelope.data.status ? String(envelope.data.status) : undefined,
+        }
+        updateSession(sessionId, (session) => {
+          const current = session.runIndex ?? []
+          if (current.some((entry) => entry.event_id === item.event_id)) return session
+          return { ...session, runIndex: [...current.slice(-499), item] }
+        })
+      }
+
       const handleEnvelope = (envelope: RunEventEnvelope) => {
         const { type, data } = envelope
+        appendRunIndex(envelope)
         switch (type) {
           case 'task.snapshot': {
             const status = String(data.status ?? '')
             if (data.phase) setAgentProgress(parseAgentProgress(data))
+            if (Array.isArray(data.run_index)) {
+              updateSession(sessionId, (session) => ({
+                ...session,
+                runIndex: data.run_index as RunIndexItem[],
+              }))
+            }
             const finalAnswer = getFinalAnswer(data)
             if (finalAnswer) {
               updateSessionMessages(sessionId, (messages) =>
@@ -325,6 +390,43 @@ export function useSessions(): UseSessions {
           }
           case 'model.started':
           case 'model.completed': {
+            return
+          }
+          case 'plan.created': {
+            const steps = Array.isArray(data.steps) ? data.steps : []
+            setAgentProgress({
+              phase: 'PLANNING',
+              nextStep: String(data.summary ?? ''),
+              checklist: steps.map((step) => String((step as Record<string, unknown>).goal ?? '')),
+              doneWhen: [],
+              completedItems: [],
+              toolSteps: 0,
+              readFiles: 0,
+              maxToolSteps: 0,
+              maxReadFiles: 0,
+              maxTotalSteps: 0,
+            })
+            return
+          }
+          case 'assistant.commentary': {
+            const text = String(data.text ?? '').trim()
+            if (text) {
+              updateSessionMessages(sessionId, (messages) =>
+                messages.map((message) =>
+                  message.id === assistantId
+                    ? { ...message, content: [message.content, text].filter(Boolean).join('\n\n') }
+                    : message,
+                ),
+              )
+            }
+            return
+          }
+          case 'review.started': {
+            setAgentProgress((progress) => progress ? { ...progress, phase: 'REVIEW', nextStep: '正在审查结果' } : progress)
+            return
+          }
+          case 'review.completed': {
+            setAgentProgress((progress) => progress ? { ...progress, nextStep: `审查结果：${String(data.status ?? '')}` } : progress)
             return
           }
           case 'tool.requested': {
@@ -446,6 +548,10 @@ export function useSessions(): UseSessions {
         'agent.state',
         'model.started',
         'model.completed',
+        'plan.created',
+        'assistant.commentary',
+        'review.started',
+        'review.completed',
         'tool.requested',
         'tool.started',
         'tool.completed',
@@ -461,7 +567,7 @@ export function useSessions(): UseSessions {
       es.addEventListener('message', onFrame)
       // 断开后 EventSource 自动重连，重连成功会重发 task.snapshot；无需额外处理
     },
-    [ensureApprovalCard, findLatestToolByName, findTool, finishRun, updateSessionMessages, updateTool],
+    [ensureApprovalCard, findLatestToolByName, findTool, finishRun, updateSession, updateSessionMessages, updateTool],
   )
 
   // ---- 初始加载 ---------------------------------------------------------------
@@ -493,6 +599,13 @@ export function useSessions(): UseSessions {
             executionEnvironment: item.execution_environment,
             deviceId: item.device_id,
             model: sessionModel(
+              item.workspace_id,
+              item.device_id,
+              item.execution_environment,
+              wsRes.items,
+              configRes.model,
+            ),
+            modelOptions: sessionModelOptions(
               item.workspace_id,
               item.device_id,
               item.execution_environment,
@@ -552,9 +665,17 @@ export function useSessions(): UseSessions {
             workspaces,
             runtimeConfig?.model ?? '未配置',
           ),
+          modelOptions: sessionModelOptions(
+            detail.workspace_id,
+            detail.device_id,
+            detail.execution_environment,
+            workspaces,
+            runtimeConfig?.model ?? '',
+          ),
           messages,
           lastTaskId: lastTask?.task_id,
           lastRunId: lastTask?.run_id,
+          runIndex: lastTask?.run_index ?? [],
         }
         setSessions((prev) =>
           prev.map((s) => (s.id === detail.session_id ? { ...s, ...loaded } : s)),
@@ -623,6 +744,13 @@ export function useSessions(): UseSessions {
               workspaces,
               runtimeConfig?.model ?? '未配置',
             ),
+            modelOptions: sessionModelOptions(
+              res.workspace_id,
+              res.device_id,
+              res.execution_environment,
+              workspaces,
+              runtimeConfig?.model ?? '',
+            ),
             messages: [],
           }
           loadedRef.current.add(session.id)
@@ -637,7 +765,7 @@ export function useSessions(): UseSessions {
   )
 
   const sendMessage = useCallback(
-    (content: string) => {
+    (content: string, modelId?: string, reasoningEffort: ReasoningEffort = 'none') => {
       const sessionId = activeId
       if (!sessionId || !content.trim() || running) return
       setRunning(true)
@@ -654,14 +782,25 @@ export function useSessions(): UseSessions {
 
       ;(async () => {
         try {
-          const queued = await createTask(sessionId, content.trim())
+          const queued = await createTask(
+            sessionId,
+            content.trim(),
+            undefined,
+            modelId,
+            reasoningEffort,
+          )
           activeRunRef.current = {
             taskId: queued.task_id,
             runId: queued.run_id,
             sessionId,
             assistantId,
           }
-          updateSession(sessionId, (s) => ({ ...s, lastTaskId: queued.task_id, lastRunId: queued.run_id }))
+          updateSession(sessionId, (s) => ({
+            ...s,
+            lastTaskId: queued.task_id,
+            lastRunId: queued.run_id,
+            runIndex: [],
+          }))
           attachEventStream(queued.task_id, sessionId, assistantId)
         } catch (err) {
           setRunning(false)
@@ -733,6 +872,58 @@ export function useSessions(): UseSessions {
     })()
   }, [finishRun])
 
+  const renameDevice = useCallback(async (deviceId: string, displayName: string) => {
+    try {
+      const result = await apiRenameDevice(deviceId, displayName)
+      setWorkspaces((current) => current.map((workspace) =>
+        workspace.device_id === deviceId
+          ? {
+              ...workspace,
+              device_name: result.display_name,
+              device_display_name: result.display_name,
+              display_path: `${result.display_name} / ${workspace.name}`,
+            }
+          : workspace,
+      ))
+    } catch (error) {
+      notify.error(friendlyMessage(error))
+      throw error
+    }
+  }, [])
+
+  const renameWorkspace = useCallback(async (
+    deviceId: string,
+    workspaceId: string,
+    displayName: string,
+  ) => {
+    try {
+      const result = await apiRenameWorkspace(deviceId, workspaceId, displayName)
+      setWorkspaces((current) => current.map((workspace) =>
+        workspace.device_id === deviceId && workspace.workspace_id === workspaceId
+          ? {
+              ...workspace,
+              name: result.display_name,
+              display_name: result.display_name,
+              display_path: `${workspace.device_name ?? 'Worker'} / ${result.display_name}`,
+            }
+          : workspace,
+      ))
+    } catch (error) {
+      notify.error(friendlyMessage(error))
+      throw error
+    }
+  }, [])
+
+  const renameSession = useCallback(async (sessionId: string, displayName: string) => {
+    try {
+      const result = await apiRenameSession(sessionId, displayName)
+      updateSession(sessionId, (session) => ({ ...session, title: result.display_name }))
+    } catch (error) {
+      notify.error(friendlyMessage(error))
+      throw error
+    }
+  }, [updateSession])
+
   return {
     sessions,
     activeId,
@@ -748,6 +939,9 @@ export function useSessions(): UseSessions {
     select,
     createSession,
     sendMessage,
+    renameDevice,
+    renameWorkspace,
+    renameSession,
     approveTool,
     rejectTool,
     stopRun,

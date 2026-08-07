@@ -4,12 +4,13 @@ import type { AgentProgress, Session } from '../../api/types'
 import ApprovalNotice from './ApprovalNotice'
 import MessageList from './MessageList'
 import Composer from './Composer'
+import RunMinimap from './RunMinimap'
 
 interface ChatViewProps {
   session: Session
   running: boolean
   agentProgress: AgentProgress | null
-  onSend: (content: string) => void
+  onSend: Parameters<typeof Composer>[0]['onSend']
   onStop: () => void
   onApprove: (messageId: string, toolCallId: string) => void
   onReject: (messageId: string, toolCallId: string) => void
@@ -72,9 +73,10 @@ export default function ChatView({ session, running, agentProgress, onSend, onSt
           ) : null}
         </div>
       ) : null}
+      <div className="flex min-h-0 flex-1">
       {empty ? (
         // 空态：引导用户开始，无装饰元素
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-5 px-6">
+        <div id="run-scroll-container" className="flex min-h-0 flex-1 flex-col items-center justify-center gap-5 px-6">
           <div className="flex items-center gap-2.5">
             <Logo size={26} />
             <span className="text-lg font-semibold tracking-tight text-stone-900">ThreadForge</span>
@@ -99,10 +101,18 @@ export default function ChatView({ session, running, agentProgress, onSend, onSt
       ) : (
         <MessageList messages={session.messages} onApprove={onApprove} onReject={onReject} />
       )}
+      <RunMinimap items={session.runIndex ?? []} />
+      </div>
 
       <ApprovalNotice count={pendingApprovals.length} onLocate={locatePending} />
 
-      <Composer model={session.model} running={running} onSend={onSend} onStop={onStop} />
+      <Composer
+        model={session.model}
+        modelOptions={session.modelOptions}
+        running={running}
+        onSend={onSend}
+        onStop={onStop}
+      />
     </div>
   )
 }

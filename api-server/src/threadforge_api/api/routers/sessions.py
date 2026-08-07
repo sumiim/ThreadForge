@@ -7,8 +7,8 @@ from fastapi import APIRouter, Depends, Query
 from ...application.session_service import SessionService
 from ...domain.identity import Actor
 from ...infrastructure.id_validators import validate_session_id
-from ..dependencies import get_actor, get_session_service, require_csrf
-from ..models import CreateSessionRequest
+from ..dependencies import get_actor, get_session_service, get_worker_hub, require_csrf
+from ..models import CreateSessionRequest, RenameEntityRequest
 
 router = APIRouter()
 
@@ -50,3 +50,30 @@ async def get_session(
 ) -> dict:
     validate_session_id(session_id)
     return await session_service.get_session(session_id, message_limit, actor.owner_id)
+
+
+@router.patch("/api/v1/sessions/{session_id}", dependencies=[Depends(require_csrf)])
+async def rename_session(
+    session_id: str,
+    body: RenameEntityRequest,
+    actor: Actor = Depends(get_actor),
+    session_service: SessionService = Depends(get_session_service),
+    worker_hub=Depends(get_worker_hub),
+) -> dict:
+    validate_session_id(session_id)
+    session = session_service.load_raw(session_id, actor.owner_id)
+    if session.get("execution_environment") == "local_worker":
+        await worker_hub.rename_entity(
+            device_id=str(session.get("device_id", "")),
+            owner_id=actor.owner_id,
+            entity_type="session",
+            entity_id=session_id,
+            display_name=body.display_name,
+        )
+    summary = session_service.rename_session(session_id, body.display_name, actor.owner_id)
+    return {
+        **summary,
+        "display_name": summary["title"],
+        "display_name_source": "user",
+        "display_name_updated_at": summary.get("updated_at", ""),
+    }

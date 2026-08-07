@@ -180,6 +180,9 @@ class SessionService:
                     "stop_reason": task.stop_reason,
                     "created_at": task.created_at,
                     "updated_at": task.updated_at,
+                    "model_id": task.model_id,
+                    "reasoning_effort": task.reasoning_effort,
+                    "run_index": list(task.run_index),
                 }
                 for task in tasks
             ]
@@ -227,6 +230,16 @@ class SessionService:
 
     def load_raw(self, session_id: str, owner_id: str) -> dict:
         return self._load(session_id, owner_id)
+
+    def rename_session(self, session_id: str, display_name: str, owner_id: str) -> dict:
+        display_name = str(display_name).strip()
+        if not display_name or len(display_name) > 200:
+            raise ValueError("invalid session display name")
+        session = self._load(session_id, owner_id)
+        session["title"] = display_name
+        session["updated_at"] = utc_now()
+        self._session_store.save(session)
+        return self._summary(session)
 
     @staticmethod
     def _summary(session: dict) -> dict:

@@ -454,6 +454,43 @@ def test_openai_compatible_client_posts_expected_responses_payload():
     assert captured["headers"]["Content-type"] == "application/json"
     assert captured["headers"]["Accept"] == "application/json"
     assert captured["headers"]["User-agent"] == "pico/0.1"
+
+
+def test_openai_compatible_reasoning_omits_temperature_and_records_effort():
+    captured = {}
+
+    class FakeResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"output_text": "<final>ok</final>"}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    client = OpenAICompatibleModelClient(
+        model="gpt-5.4",
+        base_url="https://api.openai.com/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+        reasoning_effort="high",
+        supported_reasoning_efforts=("low", "medium", "high"),
+    )
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        assert client.complete("hello", 42) == "<final>ok</final>"
+
+    assert captured["body"]["reasoning"] == {"effort": "high"}
+    assert "temperature" not in captured["body"]
+    assert client.last_completion_metadata["effective_reasoning_effort"] == "high"
     assert captured["body"] == {
         "model": "right.codes/codex-mini",
         "input": [

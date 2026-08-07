@@ -55,6 +55,7 @@ STOP_REASON_MAP = {
     "step_limit_reached": STOP_REASON_STEP_LIMIT_REACHED,
     "runtime_error": STOP_REASON_RUNTIME_ERROR,
     "persistence_error": STOP_REASON_PERSISTENCE_ERROR,
+    "missing_current_run_evidence": STOP_REASON_RUNTIME_ERROR,
 }
 
 
@@ -144,6 +145,9 @@ def run_agent(
     task_mode=INTENT_CODE_CHANGE,
     router_model_client=None,
     record_session=True,
+    enable_planning=False,
+    task_id=None,
+    run_id=None,
 ):
     """Run the routed LangGraph workflow with an already configured Pico instance."""
     task_input = str(task_input).strip()
@@ -192,15 +196,27 @@ def run_agent(
         "intent_attempts": 0,
         "answer_attempts": 0,
     }
+    if enable_planning:
+        run_metadata_collector.update(
+            {
+                "planning_enabled": True,
+                "plan_id": "",
+                "plan_revision": 0,
+                "plan_attempts": 0,
+            }
+        )
     try:
         if record_session:
             agent.memory.set_task_summary(task_input)
             agent.session["memory"] = agent.memory.to_dict()
 
         task_state = TaskState.create(
-            run_id=agent.new_run_id(),
-            task_id=agent.new_task_id(),
+            run_id=str(run_id or agent.new_run_id()),
+            task_id=str(task_id or agent.new_task_id()),
             user_request=task_input,
+            max_tool_steps=agent.max_steps,
+            max_read_files=agent.max_read_files,
+            max_total_steps=agent.max_total_steps,
         )
         agent.current_task_state = task_state
         agent.current_run_dir = agent.run_store.start_run(task_state)
@@ -235,6 +251,10 @@ def run_agent(
             "fix_attempts": 0,
             "terminal_reason": "",
             "final_result": "",
+            "planning_enabled": bool(enable_planning),
+            "plan": {},
+            "plan_attempts": 0,
+            "plan_error": "",
         }
 
         try:
@@ -250,11 +270,38 @@ def run_agent(
                 },
             )
             task_state.record_affected_paths(result["affected_paths"])
+            for child_state in node_child_states:
+                for evidence in child_state.evidence:
+                    task_state.record_evidence(evidence)
+            task_state.plan_id = str(result["plan"].get("plan_id", ""))
+            task_state.plan_revision = int(result["plan"].get("revision", 0))
+            task_state.intent = result["resolved_intent"]
+            task_state.review_status = result["review_status"]
             budget_task_states = [task_state, *node_child_states]
             measured_steps = sum(state.tool_steps for state in budget_task_states)
             if measured_steps != result["coordinator_steps_used"]:
                 raise RuntimeError("graph budget counter drift")
-            expected_metadata = {key: result[key] for key in RUN_METADATA_KEYS}
+            expected_metadata = {
+                key: result[key]
+                for key in RUN_METADATA_KEYS
+                if key in result
+            }
+            if enable_planning:
+                expected_metadata.update(
+                    {
+                        "planning_enabled": True,
+                        "plan_id": task_state.plan_id,
+                        "plan_revision": task_state.plan_revision,
+                        "plan_attempts": result["plan_attempts"],
+                    }
+                )
+                run_metadata_collector.update(
+                    {
+                        "plan_id": task_state.plan_id,
+                        "plan_revision": task_state.plan_revision,
+                        "plan_attempts": result["plan_attempts"],
+                    }
+                )
             if run_metadata_collector != expected_metadata:
                 raise RuntimeError("graph run metadata drift")
 

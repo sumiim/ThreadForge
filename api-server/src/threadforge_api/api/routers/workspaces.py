@@ -23,6 +23,7 @@ def list_workspaces(
                 {
                     "workspace_id": entry.workspace_id,
                     "name": entry.name,
+                    "display_name": entry.name,
                     "display_path": str(entry.canonical_path),
                     "available": entry.available,
                     "is_git": entry.is_git,
@@ -37,15 +38,18 @@ def list_workspaces(
                 {
                     "workspace_id": workspace.workspace_id,
                     "name": workspace.name,
+                    "display_name": workspace.name,
                     "display_path": f"{device.name} / {workspace.name}",
                     "available": device.device_id in online,
                     "is_git": workspace.is_git,
                     "execution_environment": ExecutionEnvironment.LOCAL_WORKER.value,
                     "device_id": device.device_id,
                     "device_name": device.name,
+                    "device_display_name": device.name,
                     "device_platform": device.platform,
                     "model": device.model,
                     "model_configured": device.model_configured,
+                    "model_capabilities": device.model_capabilities,
                     "container_sandbox_enabled": False,
                 }
             )
