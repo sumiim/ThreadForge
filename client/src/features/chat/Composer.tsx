@@ -8,6 +8,7 @@ interface ComposerProps {
   model: string
   modelOptions: ModelCapability[]
   running: boolean
+  stopping?: boolean
   onSend: (content: string, modelId?: string, reasoningEffort?: ReasoningEffort) => void
   onStop: () => void
 }
@@ -22,7 +23,7 @@ const effortLabels: Record<ReasoningEffort, string> = {
   xhigh: '极高',
 }
 
-export default function Composer({ model, modelOptions, running, onSend, onStop }: ComposerProps) {
+export default function Composer({ model, modelOptions, running, stopping = false, onSend, onStop }: ComposerProps) {
   const [value, setValue] = useState('')
   const [modelId, setModelId] = useState(modelOptions[0]?.id ?? model)
   const activeModel = useMemo(
@@ -93,9 +94,11 @@ export default function Composer({ model, modelOptions, running, onSend, onStop 
                   type="primary"
                   icon={<StopOutlined />}
                   onClick={onStop}
+                  loading={stopping}
+                  disabled={stopping}
                   className="transition-transform active:scale-95"
                 >
-                  停止
+                  {stopping ? '正在停止' : '停止'}
                 </Button>
               ) : (
                 <Button

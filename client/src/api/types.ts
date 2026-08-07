@@ -355,6 +355,14 @@ export interface AgentProgress {
   reason?: string
 }
 
+export interface AgentActivity {
+  id: string
+  type: string
+  label: string
+  detail?: string
+  createdAt: string
+}
+
 // ---- 前端 UI 模型 ---------------------------------------------------------
 
 export type ToolStatus = 'pending' | 'running' | 'completed' | 'rejected' | 'error'
@@ -378,6 +386,8 @@ export interface Message {
   content: string
   createdAt: string // ISO 时间
   toolCalls?: ToolCall[]
+  activity?: AgentActivity[]
+  runId?: string
   status?: 'streaming' | 'done' // assistant 消息运行状态
 }
 
@@ -387,6 +397,7 @@ export interface Session {
   createdAt: string
   displayNameSource?: 'auto' | 'user'
   displayNameUpdatedAt?: string
+  updatedAt?: string
   draft?: boolean
   /** 后端 workspace_id，显示路径由 Workspace.display_path 映射 */
   workspaceId: string

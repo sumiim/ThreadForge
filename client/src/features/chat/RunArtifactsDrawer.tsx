@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Drawer, Empty, Spin, Tabs } from 'antd'
+import { Drawer, Empty, Select, Spin, Tabs } from 'antd'
 import { friendlyMessage, getArtifactText, listArtifacts } from '../../api/client'
 import type { Session } from '../../api/types'
 
@@ -7,6 +7,7 @@ interface RunArtifactsDrawerProps {
   open: boolean
   session: Session | null
   onClose: () => void
+  activeRunId?: string
 }
 
 interface DrawerData {
@@ -51,8 +52,11 @@ function formatTime(iso: string): string {
 }
 
 // 运行结果：task_state / trace / report，来自 GET /api/v1/runs/{run_id}/artifacts
-export default function RunArtifactsDrawer({ open, session, onClose }: RunArtifactsDrawerProps) {
-  const runId = session?.lastRunId
+export default function RunArtifactsDrawer({ open, session, onClose, activeRunId }: RunArtifactsDrawerProps) {
+  const defaultRunId = activeRunId ?? session?.activeRunId ?? session?.lastRunId
+  const [selection, setSelection] = useState<{ sessionId: string; runId?: string }>({ sessionId: '' })
+  const selectedRunId = selection.sessionId === session?.id ? selection.runId : undefined
+  const runId = selectedRunId ?? defaultRunId
   const [data, setData] = useState<DrawerData | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -112,6 +116,22 @@ export default function RunArtifactsDrawer({ open, session, onClose }: RunArtifa
       ) : !hasAny ? (
         <Empty description="运行尚未产生制品" />
       ) : (
+        <div>
+          <p className="mb-3 text-xs leading-relaxed text-stone-500">
+            状态记录任务预算和终态；Trace 是按时间排列的运行事件；报告汇总本次运行结果。
+          </p>
+          {session?.runs && session.runs.length > 1 ? (
+            <Select
+              className="mb-3 w-full"
+              value={runId}
+              onChange={(value) => setSelection({ sessionId: session.id, runId: value })}
+              options={session.runs.slice().reverse().map((run, index) => ({
+                value: run.runId,
+                label: `Run ${session.runs!.length - index} · ${run.status}`,
+              }))}
+              aria-label="当前运行"
+            />
+          ) : null}
         <Tabs
           items={[
             {
@@ -162,6 +182,7 @@ export default function RunArtifactsDrawer({ open, session, onClose }: RunArtifa
             },
           ]}
         />
+        </div>
       )}
     </Drawer>
   )

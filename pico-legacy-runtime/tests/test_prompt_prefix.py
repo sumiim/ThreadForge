@@ -28,7 +28,8 @@ def test_build_prompt_prefix_renders_tools_and_workspace_metadata(tmp_path):
 
     prefix = build_prompt_prefix(workspace=workspace, tools=tools, built_at="2026-06-02T00:00:00+08:00")
 
-    assert "You are pico" in prefix.text
+    assert "You are ThreadForge" in prefix.text
+    assert "legacy Pico runtime" in prefix.text
     assert "Tools:" in prefix.text
     assert "- read_file(" in prefix.text
     assert "A tool result is never the end of a turn" in prefix.text

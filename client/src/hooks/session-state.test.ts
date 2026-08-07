@@ -26,6 +26,7 @@ describe('session task recovery', () => {
     assert.equal(getFinalAnswer({ status: 'completed', final_answer: 'done' }), 'done')
     assert.equal(getFinalAnswer({ status: 'cancelled', final_answer: '' }), null)
     assert.equal(getFinalAnswer({ status: 'failed' }), null)
+    assert.equal(getFinalAnswer({ status: 'failed', final_answer: 'status: needs_fix' }), null)
   })
 
   it('reconciles a missed tool completion when the task completed normally', () => {

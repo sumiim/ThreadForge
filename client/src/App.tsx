@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Avatar, Button, ConfigProvider, Drawer, Dropdown, Input, Layout, Modal, Spin, Tag } from 'antd'
+import { Avatar, Button, ConfigProvider, Drawer, Dropdown, Input, Layout, Spin, Tag } from 'antd'
 import {
   FileTextOutlined,
   FolderOpenOutlined,
@@ -41,6 +41,7 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
     loading,
     historyLoading,
     running,
+    stopping,
     agentProgress,
     refreshWorkspaces,
     select,
@@ -49,6 +50,7 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
     approveTool,
     rejectTool,
     stopRun,
+    selectRun,
     renameDevice,
     renameWorkspace,
     renameSession,
@@ -56,7 +58,6 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
   const { mode, toggle: toggleTheme } = useTheme()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [artifactsOpen, setArtifactsOpen] = useState(false)
-  const [stopConfirmOpen, setStopConfirmOpen] = useState(false)
   const [view, setView] = useState<PanelView>('chat')
   const hasRun = active?.lastRunId != null
   const pageTitle = view === 'chat' ? (active?.title ?? 'ThreadForge') : view === 'skills' ? 'Skills' : 'MCP'
@@ -162,7 +163,9 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
                   running={running}
                   agentProgress={agentProgress}
                   onSend={sendMessage}
-                  onStop={() => setStopConfirmOpen(true)}
+                  stopping={stopping}
+                  onStop={stopRun}
+                  onSelectRun={selectRun}
                   onApprove={approveTool}
                   onReject={rejectTool}
                 />
@@ -188,9 +191,11 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
           <div className="space-y-5">
             <div>
               <div className="mb-1.5 text-sm font-medium text-stone-800">模型</div>
-              <Input value={runtimeConfig?.model ?? '正在读取后端配置'} readOnly />
+              <Input value={activeWorkspace?.model ?? runtimeConfig?.model ?? '正在读取后端配置'} readOnly />
               <p className="mt-1.5 text-xs text-stone-500">
-                {runtimeConfig?.model_configured ? '模型已由后端配置。' : '后端尚未配置模型密钥，无法启动任务。'}
+                {activeWorkspace?.execution_environment === 'local_worker'
+                  ? (activeWorkspace.model_configured ? '模型配置来自当前本地 Worker。' : '当前 Worker 尚未配置模型密钥。')
+                  : (runtimeConfig?.model_configured ? '模型已由后端配置。' : '后端尚未配置模型密钥，无法启动任务。')}
               </p>
             </div>
             <div>
@@ -205,24 +210,10 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
         <RunArtifactsDrawer
           open={artifactsOpen}
           session={active}
+          activeRunId={active?.activeRunId}
           onClose={() => setArtifactsOpen(false)}
         />
 
-        <Modal
-          title="停止当前任务？"
-          open={stopConfirmOpen && running}
-          okText="停止任务"
-          okButtonProps={{ danger: true }}
-          cancelText="继续运行"
-          onOk={() => {
-            setStopConfirmOpen(false)
-            stopRun()
-          }}
-          onCancel={() => setStopConfirmOpen(false)}
-          afterClose={() => setStopConfirmOpen(false)}
-        >
-          当前模型请求或工具执行将被取消，未完成的结果不会保留为最终回答。
-        </Modal>
       </Layout>
     </ConfigProvider>
   )
