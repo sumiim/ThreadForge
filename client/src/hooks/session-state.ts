@@ -5,14 +5,20 @@ export function getLatestTask(tasks: SessionTask[]): SessionTask | undefined {
   return tasks[0]
 }
 
+export function isInternalReviewDiagnostic(value: unknown): boolean {
+  if (typeof value !== 'string') return false
+  const text = value.trim()
+  return /^(?:status\s*:\s*(?:pass|needs_fix)\b|\{\s*["']?status["']?\s*:\s*["']?(?:pass|needs_fix)\b)/i.test(text)
+}
+
 export function getFinalAnswer(data: Record<string, unknown>): string | null {
   const status = String(data.status ?? '')
   // Failed runs may carry internal review diagnostics. Only completed runs
   // can promote final_answer into the visible conversation.
   if (status && status !== 'completed') return null
-  return typeof data.final_answer === 'string' && data.final_answer.trim().length > 0
-    ? data.final_answer
-    : null
+  if (typeof data.final_answer !== 'string') return null
+  const finalAnswer = data.final_answer.trim()
+  return finalAnswer && !isInternalReviewDiagnostic(finalAnswer) ? data.final_answer : null
 }
 
 export function reconcileToolCalls(

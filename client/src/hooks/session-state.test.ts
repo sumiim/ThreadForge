@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import type { SessionTask } from '../api/types'
-import { getFinalAnswer, getLatestTask, reconcileToolCalls } from './session-state.ts'
+import {
+  getFinalAnswer,
+  getLatestTask,
+  isInternalReviewDiagnostic,
+  reconcileToolCalls,
+} from './session-state.ts'
 
 function task(taskId: string): SessionTask {
   return {
@@ -27,6 +32,14 @@ describe('session task recovery', () => {
     assert.equal(getFinalAnswer({ status: 'cancelled', final_answer: '' }), null)
     assert.equal(getFinalAnswer({ status: 'failed' }), null)
     assert.equal(getFinalAnswer({ status: 'failed', final_answer: 'status: needs_fix' }), null)
+    assert.equal(getFinalAnswer({ status: 'completed', final_answer: 'status: needs_fix\nretry' }), null)
+  })
+
+  it('recognizes leaked review diagnostics without hiding normal answers', () => {
+    assert.equal(isInternalReviewDiagnostic('status: needs_fix candidate issue'), true)
+    assert.equal(isInternalReviewDiagnostic('{"status":"pass","text":"ok"}'), true)
+    assert.equal(isInternalReviewDiagnostic('The status: needs_fix value is internal.'), false)
+    assert.equal(isInternalReviewDiagnostic('done'), false)
   })
 
   it('reconciles a missed tool completion when the task completed normally', () => {
