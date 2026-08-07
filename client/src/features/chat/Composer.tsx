@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Button, Input, Select } from 'antd'
 import { SendOutlined, StopOutlined } from '@ant-design/icons'
 
@@ -33,19 +33,11 @@ export default function Composer({ model, modelOptions, running, onSend, onStop 
     ? activeModel.reasoning_efforts
     : ['none']
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(efforts[0])
-
-  useEffect(() => {
-    const nextModel = modelOptions.find((item) => item.id === modelId) ?? modelOptions[0]
-    if (nextModel && nextModel.id !== modelId) setModelId(nextModel.id)
-    const nextEfforts: ReasoningEffort[] = nextModel?.reasoning_efforts?.length
-      ? nextModel.reasoning_efforts
-      : ['none']
-    if (!nextEfforts.includes(reasoningEffort)) setReasoningEffort(nextEfforts[0])
-  }, [modelId, modelOptions, reasoningEffort])
+  const activeReasoningEffort = efforts.includes(reasoningEffort) ? reasoningEffort : efforts[0]
 
   const handleSend = () => {
     if (!value.trim() || running) return
-    onSend(value, activeModel?.id ?? model, reasoningEffort)
+    onSend(value, activeModel?.id ?? model, activeReasoningEffort)
     setValue('')
   }
 
@@ -87,7 +79,7 @@ export default function Composer({ model, modelOptions, running, onSend, onStop 
                 />
                 <Select
                   size="small"
-                  value={reasoningEffort}
+                  value={activeReasoningEffort}
                   disabled={running}
                   onChange={(value) => setReasoningEffort(value as ReasoningEffort)}
                   options={efforts.map((effort) => ({ value: effort, label: effortLabels[effort] }))}

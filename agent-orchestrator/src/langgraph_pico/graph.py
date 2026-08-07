@@ -831,10 +831,13 @@ def execute_change_node(state: AgentState, config: RunnableConfig) -> AgentState
             if review_focus_paths and (write_evidence or not state["planning_enabled"]):
                 next_state = updated
             else:
+                no_change_result = str(result).strip()
                 next_state = _failed_state(
                     updated,
                     "no_changes_to_review",
-                    "No successful write evidence and reviewable path were produced.",
+                    no_change_result
+                    if no_change_result and not state["planning_enabled"]
+                    else "No successful write evidence and reviewable path were produced.",
                 )
 
     route = route_after_execute_change(next_state)

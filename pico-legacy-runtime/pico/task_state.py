@@ -256,7 +256,7 @@ class TaskState:
         self.stop_reason = STOP_REASON_FINAL_ANSWER_RETURNED
         self.final_answer = str(final_answer)
         self.requires_post_tool_reasoning = False
-        self.complete_item("Verify the result before finishing")
+        self.completed_items = list(self.checklist)
         self.set_phase(PHASE_FINAL, next_step="Task complete")
         return self
 

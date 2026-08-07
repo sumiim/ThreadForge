@@ -492,7 +492,7 @@ def test_openai_compatible_reasoning_omits_temperature_and_records_effort():
     assert "temperature" not in captured["body"]
     assert client.last_completion_metadata["effective_reasoning_effort"] == "high"
     assert captured["body"] == {
-        "model": "right.codes/codex-mini",
+        "model": "gpt-5.4",
         "input": [
             {
                 "role": "user",
@@ -506,7 +506,7 @@ def test_openai_compatible_reasoning_omits_temperature_and_records_effort():
         ],
         "max_output_tokens": 42,
         "stream": False,
-        "temperature": 0.2,
+        "reasoning": {"effort": "high"},
     }
 
 

@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from langgraph_pico import run_agent
 from pico import Pico
 from pico.approval import ApprovalOutcome, ApprovalRequest, ApprovalStrategy
 from pico.event_sink import CompositeSink, EventCollector, EventSink, JsonlSink
@@ -35,7 +36,6 @@ from pico.task_state import (
     STOP_REASON_USER_CANCELLED,
 )
 from pico.workspace import WorkspaceContext
-from langgraph_pico import run_agent
 
 ALLOWED_TOOLS = (
     "delegate",
