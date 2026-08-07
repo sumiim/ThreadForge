@@ -174,6 +174,9 @@ def test_apply_update_resumes_a_partial_download(tmp_path, monkeypatch):
 
 
 def test_update_lock_rejects_a_second_updater(tmp_path):
-    with _update_lock(tmp_path), pytest.raises(UpdateAlreadyRunningError):
-        with _update_lock(tmp_path):
-            pass
+    with (
+        _update_lock(tmp_path),
+        pytest.raises(UpdateAlreadyRunningError),
+        _update_lock(tmp_path),
+    ):
+        pass
