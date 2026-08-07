@@ -34,11 +34,11 @@ def _run_task(tmp_path, task, outputs, *, null_sink=False):
     return result, fixture_root
 
 
-def _build_runtime(tmp_path, outputs, *, allowed_tools=None):
+def _build_runtime(tmp_path, outputs, *, allowed_tools=None, model_client=None):
     source = Path("tests/fixtures/bench_repo_readme")
     fixture_root = tmp_path / "runtime-workspace"
     shutil.copytree(source, fixture_root)
-    model_client = FakeModelClient(outputs)
+    model_client = model_client or FakeModelClient(outputs)
     agent = Pico(
         model_client=model_client,
         workspace=WorkspaceContext.build(fixture_root, repo_root_override=fixture_root),
@@ -554,3 +554,55 @@ def test_v11_conversation_accepts_scalar_plan_fields_and_zero_tool_budget(tmp_pa
     assert result.final_answer == "你好!"
     assert result.run_metadata["resolved_intent"] == "conversation"
     assert result.task_state.tool_steps == 0
+
+
+def test_v11_conversation_normalizes_budget_below_observed_planning_usage(tmp_path):
+    from langgraph_pico import run_agent
+
+    class UsageModelClient(FakeModelClient):
+        def __init__(self, outputs, usages):
+            super().__init__(outputs)
+            self.usages = list(usages)
+
+        def complete(self, prompt, max_new_tokens, **kwargs):
+            result = super().complete(prompt, max_new_tokens, **kwargs)
+            self.last_completion_metadata = self.usages.pop(0)
+            return result
+
+    plan = json.loads(_v11_plan("conversation", []))
+    plan["steps"][0]["required_evidence"] = []
+    plan["budgets"].update(
+        {
+            "model_rounds": 3,
+            "tool_calls": 0,
+            "input_tokens": 1_000,
+            "output_tokens": 256,
+            "elapsed_seconds": 60,
+        }
+    )
+    client = UsageModelClient(
+        [
+            json.dumps(plan),
+            '{"answer":"你好! 有什么我可以帮你?"}',
+            "status: pass\nThe greeting answers the request.",
+        ],
+        [
+            {"input_tokens": 4_743, "output_tokens": 164},
+            {"input_tokens": 800, "output_tokens": 30},
+            {"input_tokens": 600, "output_tokens": 20},
+        ],
+    )
+    agent, _, _ = _build_runtime(tmp_path, [], model_client=client)
+
+    result = run_agent(
+        agent,
+        "你好",
+        task_mode="auto",
+        requires_research=False,
+        enable_planning=True,
+    )
+
+    assert result.task_state.stop_reason == "final_answer_returned"
+    assert result.final_answer == "你好! 有什么我可以帮你?"
+    assert result.task_state.plan_history[-1]["budgets"]["input_tokens"] == 20_000
+    assert not any(event.get("event") == "plan_budget_exhausted" for event in result.events)

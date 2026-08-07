@@ -100,13 +100,26 @@ def test_v11_plan_rejects_cycles_and_excessive_budgets():
         )
 
     incomplete_run = _plan()
-    incomplete_run["budgets"]["model_rounds"] = 2
-    with pytest.raises(PlanValidationError, match="at least 3"):
-        parse_and_validate_plan(
-            json.dumps(incomplete_run),
-            available_tools={"read_file"},
-            maximum_budgets=MAXIMUM_BUDGETS,
-        )
+    incomplete_run["budgets"].update(
+        {
+            "model_rounds": 2,
+            "input_tokens": 1_000,
+            "output_tokens": 256,
+            "elapsed_seconds": 30,
+        }
+    )
+    normalized = parse_and_validate_plan(
+        json.dumps(incomplete_run),
+        available_tools={"read_file"},
+        maximum_budgets=MAXIMUM_BUDGETS,
+    )
+    assert normalized["budgets"] == {
+        "elapsed_seconds": 120,
+        "input_tokens": 20_000,
+        "model_rounds": 4,
+        "output_tokens": 2_000,
+        "tool_calls": 3,
+    }
 
 
 def test_v11_plan_normalizes_scalar_step_contract_and_allows_zero_tool_budget():
@@ -144,6 +157,7 @@ def test_v11_retry_prompt_explains_the_validation_failure_and_array_contract():
     assert "plan_required_evidence_invalid" in prompt
     assert "must be JSON arrays" in prompt
     assert "tool_calls may be 0" in prompt
+    assert "minimum_budgets" in prompt
 
 
 def test_v11_agent_turn_requires_explicit_talk_tool_or_final():

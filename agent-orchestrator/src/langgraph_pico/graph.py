@@ -37,6 +37,7 @@ from .intent import (
 )
 from .planning import (
     MAX_PLAN_ATTEMPTS,
+    PLAN_MINIMUM_BUDGETS,
     PLANNER_MAX_NEW_TOKENS,
     PlanValidationError,
     build_plan_prompt,
@@ -153,6 +154,33 @@ def _run_budget_usage(state, config):
         "output_tokens": sum(item.output_tokens for item in unique.values()),
         "elapsed_seconds": max(0, int(time.monotonic() - state["started_monotonic"])),
     }
+
+
+def _plan_minimum_budgets(state, config, maximum):
+    """Reserve budget for the current plan and mandatory downstream stages."""
+    usage = _run_budget_usage(state, config)
+    minimum = dict(PLAN_MINIMUM_BUDGETS)
+    minimum["model_rounds"] = min(
+        int(maximum["model_rounds"]),
+        max(int(minimum["model_rounds"]), int(usage["model_rounds"]) + 2),
+    )
+    minimum["input_tokens"] = min(
+        int(maximum["input_tokens"]),
+        max(int(minimum["input_tokens"]), int(usage["input_tokens"]) + 20_000),
+    )
+    minimum["output_tokens"] = min(
+        int(maximum["output_tokens"]),
+        max(int(minimum["output_tokens"]), int(usage["output_tokens"]) + 2_000),
+    )
+    minimum["elapsed_seconds"] = min(
+        int(maximum["elapsed_seconds"]),
+        max(int(minimum["elapsed_seconds"]), int(usage["elapsed_seconds"]) + 120),
+    )
+    minimum["tool_calls"] = min(
+        int(maximum["tool_calls"]),
+        int(usage["tool_calls"]),
+    )
+    return minimum
 
 
 def _budget_failure(state, config):
@@ -316,6 +344,7 @@ def prepare_plan_node(state: AgentState, config: RunnableConfig) -> AgentState:
             attempt=attempt,
             counter_key="plan_attempts",
         )
+        minimum_budgets = _plan_minimum_budgets(state, config, maximum_budgets)
         started_at = time.monotonic()
         raw = _complete_graph_model(
             agent,
@@ -332,6 +361,7 @@ def prepare_plan_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 validation_error=(
                     f"{error_code}: {error_message}" if attempt > 1 and error_code else ""
                 ),
+                minimum_budgets=minimum_budgets,
             ),
             PLANNER_MAX_NEW_TOKENS,
             stage="planning",
@@ -343,6 +373,7 @@ def prepare_plan_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 maximum_budgets=maximum_budgets,
                 expected_revision=expected_revision,
                 expected_plan_id=expected_plan_id,
+                minimum_budgets=minimum_budgets,
             )
         except PlanValidationError as exc:
             error_code = exc.code
@@ -365,6 +396,13 @@ def prepare_plan_node(state: AgentState, config: RunnableConfig) -> AgentState:
         task_state.plan_id = plan["plan_id"]
         task_state.plan_revision = plan["revision"]
         task_state.intent = plan["intent"]
+        metadata_collector.update(
+            {
+                "resolved_intent": plan["intent"],
+                "intent_source": "plan",
+                "intent_attempts": 0,
+            }
+        )
         task_state.checklist = [step["goal"] for step in plan["steps"]]
         task_state.done_when = [item for step in plan["steps"] for item in step["done_when"]]
         task_state.completed_items = []
