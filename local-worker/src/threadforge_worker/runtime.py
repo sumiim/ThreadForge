@@ -409,9 +409,11 @@ def _supported_reasoning_efforts() -> tuple[str, ...]:
         hostname = urllib.parse.urlsplit(
             _required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1")
         ).hostname
+        model_id = os.environ.get("PICO_OPENAI_MODEL", "").strip().lower().rsplit("/", 1)[-1]
+        reasoning_model = model_id.startswith(("gpt-5", "o1", "o3", "o4"))
         values = (
             ("none", "minimal", "low", "medium", "high", "xhigh")
-            if hostname == "api.openai.com"
+            if hostname == "api.openai.com" or reasoning_model
             else ("none",)
         )
     allowed = {"none", "minimal", "low", "medium", "high", "xhigh"}

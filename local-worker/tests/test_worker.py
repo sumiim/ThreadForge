@@ -42,6 +42,7 @@ from threadforge_worker.runtime import (
     CancellationToken,
     RemoteApprovalStrategy,
     RemoteExecutionHooks,
+    _supported_reasoning_efforts,
     run_task,
 )
 from threadforge_worker.service import (
@@ -230,6 +231,46 @@ def test_model_configuration_is_written_to_worker_env_and_loaded(tmp_path):
             api_key="secret",
             model="model-a",
         )
+
+
+def test_reasoning_capabilities_follow_model_family_or_explicit_override():
+    with patch.dict(
+        "os.environ",
+        {
+            "PICO_OPENAI_API_BASE": "https://provider.example/v1",
+            "PICO_OPENAI_MODEL": "gpt-5.5",
+        },
+        clear=True,
+    ):
+        assert _supported_reasoning_efforts() == (
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+        )
+
+    with patch.dict(
+        "os.environ",
+        {
+            "PICO_OPENAI_API_BASE": "https://provider.example/v1",
+            "PICO_OPENAI_MODEL": "model-a",
+        },
+        clear=True,
+    ):
+        assert _supported_reasoning_efforts() == ("none",)
+
+    with patch.dict(
+        "os.environ",
+        {
+            "PICO_OPENAI_API_BASE": "https://provider.example/v1",
+            "PICO_OPENAI_MODEL": "model-a",
+            "PICO_REASONING_EFFORTS": "low,high,low",
+        },
+        clear=True,
+    ):
+        assert _supported_reasoning_efforts() == ("low", "high")
 
 
 def test_service_lock_prevents_duplicate_worker_processes(tmp_path):
