@@ -35,7 +35,12 @@ import type {
   ToolCall,
   Workspace,
 } from '../api/types'
-import { getFinalAnswer, getLatestTask, reconcileToolCalls } from './session-state.ts'
+import {
+  getFinalAnswer,
+  getLatestTask,
+  isInternalReviewDiagnostic,
+  reconcileToolCalls,
+} from './session-state.ts'
 import { workspaceKey } from '../features/sessions/workspaceIdentity'
 
 let idCounter = 0
@@ -613,6 +618,7 @@ export function useSessions(): UseSessions {
           }
           case 'message.completed': {
             const text = String(data.text ?? '')
+            if (isInternalReviewDiagnostic(text)) return
             updateSessionMessages(sessionId, (messages) =>
               messages.map((m) => (m.id === assistantId ? { ...m, content: text } : m)),
             )
@@ -793,7 +799,8 @@ export function useSessions(): UseSessions {
         const messages: Message[] = detail.messages
           .filter(
             (m): m is SessionMessage & { role: Message['role'] } =>
-              m.role === 'user' || m.role === 'assistant',
+              (m.role === 'user' || m.role === 'assistant') &&
+              !(m.role === 'assistant' && isInternalReviewDiagnostic(m.content)),
           )
           .map((m, i) => ({
             id: `m-${detail.session_id}-${i}`,
