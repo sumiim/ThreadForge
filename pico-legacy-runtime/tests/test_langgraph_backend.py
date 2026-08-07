@@ -523,3 +523,34 @@ def test_v11_code_change_fails_without_write_evidence(tmp_path):
         enable_planning=True,
     )
     assert result.task_state.stop_reason == "no_changes_to_review"
+
+
+def test_v11_conversation_accepts_scalar_plan_fields_and_zero_tool_budget(tmp_path):
+    from langgraph_pico import run_agent
+
+    plan = json.loads(_v11_plan("conversation", []))
+    plan["steps"][0]["required_evidence"] = "the greeting is available"
+    plan["steps"][0]["done_when"] = "a greeting is returned"
+    plan["budgets"]["model_rounds"] = 3
+    plan["budgets"]["tool_calls"] = 0
+    agent, _, _ = _build_runtime(
+        tmp_path,
+        [
+            json.dumps(plan),
+            '{"answer":"你好!"}',
+            "status: pass\nThe greeting answers the request.",
+        ],
+    )
+
+    result = run_agent(
+        agent,
+        "你好",
+        task_mode="auto",
+        requires_research=False,
+        enable_planning=True,
+    )
+
+    assert result.task_state.stop_reason == "final_answer_returned"
+    assert result.final_answer == "你好!"
+    assert result.run_metadata["resolved_intent"] == "conversation"
+    assert result.task_state.tool_steps == 0

@@ -38,6 +38,7 @@ def build_plan_prompt(
     expected_revision=1,
     previous_plan=None,
     replan_reason="",
+    validation_error="",
 ):
     payload = json.dumps(
         {
@@ -51,18 +52,23 @@ def build_plan_prompt(
         },
         ensure_ascii=False,
     )
-    correction = (
-        "The previous plan violated the JSON contract. Return corrected JSON only.\n"
-        if retry
-        else ""
-    )
+    correction = ""
+    if retry:
+        correction = "The previous plan violated the JSON contract."
+        if validation_error:
+            correction += f" Validation error: {validation_error}."
+        correction += " Return corrected JSON only.\n"
     return correction + (
         "Create a concise execution plan for a local coding agent. Return exactly one JSON object; "
         "do not return markdown or hidden reasoning. Required keys: schema_version, plan_id, revision, "
         "intent, summary, steps, acceptance, risk_level, budgets. intent is conversation, read_only, "
         "or code_change. Set schema_version to the string \"1\" (JSON string, not a number). "
-        "Each step has exactly id, goal, dependencies, required_tools, "
-        "required_evidence, done_when. Dependencies must be acyclic. Use only available tools. "
+        "Each step has exactly id, goal, dependencies, required_tools, required_evidence, done_when. "
+        "acceptance, dependencies, required_tools, required_evidence, and done_when must be JSON arrays "
+        "of non-empty strings, even when they contain only one item. Empty arrays are allowed for "
+        "dependencies, required_tools, and required_evidence. Dependencies must be acyclic. Use only "
+        "available tools. Budgets are integer limits; tool_calls may be 0 when no tool is needed, while "
+        "every other budget must be at least 1. "
         "A request that changes files or runs a potentially mutating shell command is code_change. "
         "Use expected_revision exactly. For a revision, preserve the previous plan_id. "
         "Budgets cover the whole run, including planning and review. model_rounds must be at least "
@@ -221,7 +227,8 @@ def _validate_budgets(value, maximum):
     result = {}
     for key in sorted(keys):
         raw = value[key]
-        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        minimum = 0 if key == "tool_calls" else 1
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < minimum:
             raise PlanValidationError("plan_budget_invalid", f"invalid {key} budget")
         limit = int(maximum[key])
         if raw > limit:
@@ -231,6 +238,8 @@ def _validate_budgets(value, maximum):
 
 
 def _string_list(value, field, *, maximum):
+    if isinstance(value, str):
+        value = [value]
     if not isinstance(value, list) or len(value) > maximum:
         raise PlanValidationError(f"plan_{field}_invalid", f"invalid {field}")
     result = []

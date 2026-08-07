@@ -1,8 +1,12 @@
 import json
 
 import pytest
+from langgraph_pico.planning import (
+    PlanValidationError,
+    build_plan_prompt,
+    parse_and_validate_plan,
+)
 
-from langgraph_pico.planning import PlanValidationError, parse_and_validate_plan
 from pico import Pico
 
 
@@ -103,6 +107,43 @@ def test_v11_plan_rejects_cycles_and_excessive_budgets():
             available_tools={"read_file"},
             maximum_budgets=MAXIMUM_BUDGETS,
         )
+
+
+def test_v11_plan_normalizes_scalar_step_contract_and_allows_zero_tool_budget():
+    conversation = _plan(intent="conversation")
+    conversation["steps"][0].update(
+        {
+            "required_tools": [],
+            "required_evidence": "the user request is available",
+            "done_when": "a concise response is returned",
+        }
+    )
+    conversation["budgets"]["tool_calls"] = 0
+
+    parsed = parse_and_validate_plan(
+        json.dumps(conversation),
+        available_tools={"read_file"},
+        maximum_budgets=MAXIMUM_BUDGETS,
+    )
+
+    assert parsed["steps"][0]["required_evidence"] == ["the user request is available"]
+    assert parsed["steps"][0]["done_when"] == ["a concise response is returned"]
+    assert parsed["budgets"]["tool_calls"] == 0
+
+
+def test_v11_retry_prompt_explains_the_validation_failure_and_array_contract():
+    prompt = build_plan_prompt(
+        "hello",
+        "",
+        {"read_file"},
+        MAXIMUM_BUDGETS,
+        retry=True,
+        validation_error="plan_required_evidence_invalid: invalid required_evidence",
+    )
+
+    assert "plan_required_evidence_invalid" in prompt
+    assert "must be JSON arrays" in prompt
+    assert "tool_calls may be 0" in prompt
 
 
 def test_v11_agent_turn_requires_explicit_talk_tool_or_final():

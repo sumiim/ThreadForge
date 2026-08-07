@@ -329,6 +329,9 @@ def prepare_plan_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 expected_revision=expected_revision,
                 previous_plan=state["plan"] if is_replan else None,
                 replan_reason=state["replan_reason"] if is_replan else "",
+                validation_error=(
+                    f"{error_code}: {error_message}" if attempt > 1 and error_code else ""
+                ),
             ),
             PLANNER_MAX_NEW_TOKENS,
             stage="planning",
