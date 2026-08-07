@@ -138,7 +138,7 @@ def _update_lock(root: Path):
     root.mkdir(parents=True, exist_ok=True)
     handle = (root / "update.lock").open("a+b")
     try:
-        if sys.platform == "win32":
+        if os.name == "nt":
             import msvcrt
 
             handle.seek(0)
@@ -161,7 +161,7 @@ def _update_lock(root: Path):
         try:
             yield
         finally:
-            if sys.platform == "win32":
+            if os.name == "nt":
                 handle.seek(0)
                 msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
             else:
