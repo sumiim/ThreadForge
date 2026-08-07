@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Avatar, Button, ConfigProvider, Drawer, Dropdown, Input, Layout, Modal, Tag } from 'antd'
+import { Avatar, Button, ConfigProvider, Drawer, Dropdown, Input, Layout, Modal, Spin, Tag } from 'antd'
 import {
   FileTextOutlined,
   FolderOpenOutlined,
@@ -38,6 +38,8 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
     runtimeConfig,
     skills,
     mcpServers,
+    loading,
+    historyLoading,
     running,
     agentProgress,
     refreshWorkspaces,
@@ -96,6 +98,7 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
             activeId={activeId}
             activeView={view}
             workspaces={workspaces}
+            loading={loading}
             onSelect={select}
             onCreate={createSession}
             onNavigate={setView}
@@ -155,6 +158,7 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
               active ? (
                 <ChatView
                   session={active}
+                  historyLoading={historyLoading}
                   running={running}
                   agentProgress={agentProgress}
                   onSend={sendMessage}
@@ -162,6 +166,11 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
                   onApprove={approveTool}
                   onReject={rejectTool}
                 />
+              ) : loading ? (
+                <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-stone-500" role="status">
+                  <Spin size="large" />
+                  <span>正在读取历史记录...</span>
+                </div>
               ) : (
                 <div className="flex h-full items-center justify-center text-sm text-stone-500">
                   还没有会话，点击左侧「新建会话」开始

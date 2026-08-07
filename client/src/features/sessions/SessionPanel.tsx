@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { ReactNode } from 'react'
-import { Button, Collapse, Input } from 'antd'
+import { Button, Collapse, Input, Spin } from 'antd'
 import {
   ApiOutlined,
   MoonOutlined,
@@ -24,6 +24,7 @@ interface SessionPanelProps {
   activeId: string | null
   activeView: PanelView
   workspaces: Workspace[]
+  loading: boolean
   onSelect: (id: string) => void
   onCreate: (workspaceId: string, deviceId?: string) => void
   onNavigate: (view: PanelView) => void
@@ -42,6 +43,7 @@ export default function SessionPanel({
   activeId,
   activeView,
   workspaces,
+  loading,
   onSelect,
   onCreate,
   onNavigate,
@@ -133,7 +135,12 @@ export default function SessionPanel({
       </div>
       {/* 会话树：设备/Worker -> 工作区 -> 会话 */}
       <div className="min-h-0 flex-1 overflow-y-auto px-2">
-        {deviceGroups.length === 0 ? (
+        {loading ? (
+          <div className="flex items-center justify-center gap-2 px-3 py-5 text-xs text-stone-500" role="status">
+            <Spin size="small" />
+            <span>正在读取历史记录...</span>
+          </div>
+        ) : deviceGroups.length === 0 ? (
           <div className="px-3 py-4 text-center text-xs text-stone-400">
             {visibleSessions.length === 0 ? '暂无会话，点击上方「新建会话」开始' : '未找到匹配的会话'}
           </div>

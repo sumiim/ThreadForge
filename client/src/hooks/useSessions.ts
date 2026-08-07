@@ -148,6 +148,7 @@ export interface UseSessions {
   skills: SkillMetadata[]
   mcpServers: McpServerMetadata[]
   loading: boolean
+  historyLoading: boolean
   running: boolean
   agentProgress: AgentProgress | null
   refreshWorkspaces: () => Promise<Workspace[]>
@@ -171,6 +172,7 @@ export function useSessions(): UseSessions {
   const [skills, setSkills] = useState<SkillMetadata[]>([])
   const [mcpServers, setMcpServers] = useState<McpServerMetadata[]>([])
   const [loading, setLoading] = useState(true)
+  const [historyLoading, setHistoryLoading] = useState(false)
   const [running, setRunning] = useState(false)
   const [agentProgress, setAgentProgress] = useState<AgentProgress | null>(null)
 
@@ -716,8 +718,12 @@ export function useSessions(): UseSessions {
   // ---- 会话选中：按需拉取详情；未结束的任务续接事件流 -------------------------
 
   useEffect(() => {
-    if (!activeId || loadedRef.current.has(activeId)) return
+    if (!activeId || loadedRef.current.has(activeId)) {
+      setHistoryLoading(false)
+      return
+    }
     let cancelled = false
+    setHistoryLoading(true)
     ;(async () => {
       try {
         const detail: SessionDetail = await getSession(activeId, 200)
@@ -816,6 +822,8 @@ export function useSessions(): UseSessions {
         }
       } catch (err) {
         if (!cancelled) notify.error(friendlyMessage(err))
+      } finally {
+        if (!cancelled) setHistoryLoading(false)
       }
     })()
     return () => {
@@ -1076,6 +1084,7 @@ export function useSessions(): UseSessions {
     skills,
     mcpServers,
     loading,
+    historyLoading,
     running,
     agentProgress,
     refreshWorkspaces,
