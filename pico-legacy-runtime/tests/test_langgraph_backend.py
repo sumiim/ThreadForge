@@ -1,3 +1,4 @@
+import json
 import shutil
 from pathlib import Path
 
@@ -49,6 +50,37 @@ def _build_runtime(tmp_path, outputs, *, allowed_tools=None):
         event_sink=NullSink(),
     )
     return agent, model_client, fixture_root
+
+
+def _v11_plan(intent, tools):
+    return json.dumps(
+        {
+            "schema_version": "1",
+            "plan_id": "plan_v11",
+            "revision": 1,
+            "intent": intent,
+            "summary": "Execute the requested task.",
+            "steps": [
+                {
+                    "id": "execute",
+                    "goal": "Execute the task",
+                    "dependencies": [],
+                    "required_tools": tools,
+                    "required_evidence": ["current run evidence"],
+                    "done_when": ["the result is grounded and verified"],
+                }
+            ],
+            "acceptance": ["the result is grounded and verified"],
+            "risk_level": "low",
+            "budgets": {
+                "model_rounds": 4,
+                "tool_calls": 4,
+                "input_tokens": 20_000,
+                "output_tokens": 2_000,
+                "elapsed_seconds": 120,
+            },
+        }
+    )
 
 
 def test_langgraph_research_execute_review_uses_isolated_children_and_memory_events(tmp_path):
@@ -456,3 +488,38 @@ def test_run_agent_rejects_invalid_mode_and_path_combinations(tmp_path, kwargs):
     agent, _, _ = _build_runtime(tmp_path, [])
     with pytest.raises((ValueError, PermissionError)):
         run_agent(agent, "task", **kwargs)
+
+
+def test_v11_read_only_fails_without_current_run_evidence(tmp_path):
+    from langgraph_pico import run_agent
+
+    agent, _, _ = _build_runtime(
+        tmp_path,
+        [_v11_plan("read_only", ["read_file"]), "<final>Ungrounded answer.</final>"],
+    )
+    result = run_agent(
+        agent,
+        "Inspect README",
+        task_mode="auto",
+        requires_research=False,
+        enable_planning=True,
+    )
+    assert result.task_state.stop_reason == "runtime_error"
+    assert "no successful workspace evidence" in result.final_answer
+
+
+def test_v11_code_change_fails_without_write_evidence(tmp_path):
+    from langgraph_pico import run_agent
+
+    agent, _, _ = _build_runtime(
+        tmp_path,
+        [_v11_plan("code_change", ["patch_file"]), "<final>No change.</final>"],
+    )
+    result = run_agent(
+        agent,
+        "Patch README",
+        task_mode="auto",
+        requires_research=False,
+        enable_planning=True,
+    )
+    assert result.task_state.stop_reason == "no_changes_to_review"

@@ -29,6 +29,9 @@ interface SessionPanelProps {
   onNavigate: (view: PanelView) => void
   onOpenSettings: () => void
   onWorkspacesChanged?: () => Promise<Workspace[]> | Workspace[]
+  onRenameDevice: (deviceId: string, displayName: string) => Promise<void>
+  onRenameWorkspace: (deviceId: string, workspaceId: string, displayName: string) => Promise<void>
+  onRenameSession: (sessionId: string, displayName: string) => Promise<void>
   themeMode: ThemeMode
   onToggleTheme: () => void
 }
@@ -44,6 +47,9 @@ export default function SessionPanel({
   onNavigate,
   onOpenSettings,
   onWorkspacesChanged,
+  onRenameDevice,
+  onRenameWorkspace,
+  onRenameSession,
   themeMode,
   onToggleTheme,
 }: SessionPanelProps) {
@@ -137,7 +143,14 @@ export default function SessionPanel({
             defaultActiveKey={deviceGroups.map((group) => group.key)}
             items={deviceGroups.map((device) => ({
               key: device.key,
-              label: <span className="text-xs font-semibold text-stone-700">{device.label}</span>,
+              label: (
+                <InlineName
+                  value={device.label}
+                  disabled={!device.deviceId}
+                  className="text-xs font-semibold text-stone-700"
+                  onSave={(value) => onRenameDevice(device.deviceId!, value)}
+                />
+              ),
               children: (
                 <Collapse
                   ghost
@@ -147,7 +160,12 @@ export default function SessionPanel({
                     key: workspace.key,
                     label: (
                       <span className="flex min-w-0 items-center gap-2 text-xs text-stone-600">
-                        <span className="min-w-0 flex-1 truncate">{workspace.label}</span>
+                        <InlineName
+                          value={workspace.label}
+                          disabled={!workspace.deviceId}
+                          className="min-w-0 flex-1 truncate"
+                          onSave={(value) => onRenameWorkspace(workspace.deviceId!, workspace.workspaceId, value)}
+                        />
                         <span className="font-mono text-[10px] text-stone-400">{workspace.sessions.length}</span>
                       </span>
                     ),
@@ -156,12 +174,19 @@ export default function SessionPanel({
                         {workspace.sessions.map((session) => {
                           const active = session.id === activeId
                           return (
-                            <button
+                            <div
                               key={session.id}
-                              type="button"
+                              role="button"
+                              tabIndex={0}
                               onClick={() => {
                                 onSelect(session.id)
                                 onNavigate('chat')
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  onSelect(session.id)
+                                  onNavigate('chat')
+                                }
                               }}
                               className={`relative flex h-10 w-full items-center rounded-xl px-3 text-left transition-all ${
                                 active ? 'bg-white shadow-[0_1px_3px_rgba(28,25,23,0.1)]' : 'hover:bg-white/70'
@@ -173,13 +198,17 @@ export default function SessionPanel({
                                     active ? 'font-semibold text-stone-900' : 'font-medium text-stone-700'
                                   }`}
                                 >
-                                  {session.title}
+                                  <InlineName
+                                    value={session.title}
+                                    className="block truncate"
+                                    onSave={(value) => onRenameSession(session.id, value)}
+                                  />
                                 </span>
                                 <span className="mt-px block font-mono text-[11px] text-stone-500">
                                   {formatTime(session.createdAt)}
                                 </span>
                               </span>
-                            </button>
+                            </div>
                           )
                         })}
                       </div>
@@ -235,12 +264,15 @@ export default function SessionPanel({
 interface WorkspaceGroup {
   key: string
   label: string
+  workspaceId: string
+  deviceId?: string
   sessions: Session[]
 }
 
 interface DeviceGroup {
   key: string
   label: string
+  deviceId?: string
   workspaces: WorkspaceGroup[]
 }
 
@@ -252,13 +284,24 @@ function buildDeviceGroups(workspaces: Workspace[], sessions: Session[], include
     const deviceKey = workspaceDeviceKey(workspace)
     let device = devices.get(deviceKey)
     if (!device) {
-      device = { key: deviceKey, label: workspaceDeviceLabel(workspace), workspaces: [] }
+      device = {
+        key: deviceKey,
+        label: workspaceDeviceLabel(workspace),
+        deviceId: workspace.device_id,
+        workspaces: [],
+      }
       devices.set(deviceKey, device)
     }
     const key = workspaceKey(workspace)
     let group = workspaceGroups.get(key)
     if (!group) {
-      group = { key, label: workspace.name || workspace.display_path || workspace.workspace_id, sessions: [] }
+      group = {
+        key,
+        label: workspace.display_name || workspace.name || workspace.display_path || workspace.workspace_id,
+        workspaceId: workspace.workspace_id,
+        deviceId: workspace.device_id,
+        sessions: [],
+      }
       workspaceGroups.set(key, group)
       device.workspaces.push(group)
     }
@@ -295,6 +338,82 @@ function buildDeviceGroups(workspaces: Workspace[], sessions: Session[], include
       workspaces: device.workspaces.filter((workspace) => includeEmpty || workspace.sessions.length > 0),
     }))
     .filter((device) => device.workspaces.length > 0)
+}
+
+function InlineName({
+  value,
+  onSave,
+  disabled = false,
+  className = '',
+}: {
+  value: string
+  onSave: (value: string) => Promise<void>
+  disabled?: boolean
+  className?: string
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(value)
+  const [saving, setSaving] = useState(false)
+
+  if (!editing) {
+    return (
+      <span
+        className={className}
+        onDoubleClick={(event) => {
+          if (disabled) return
+          event.preventDefault()
+          event.stopPropagation()
+          setDraft(value)
+          setEditing(true)
+        }}
+      >
+        {value}
+      </span>
+    )
+  }
+
+  const save = async () => {
+    const normalized = draft.trim()
+    if (!normalized || normalized === value) {
+      setEditing(false)
+      return
+    }
+    setSaving(true)
+    try {
+      await onSave(normalized)
+      setEditing(false)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Input
+      size="small"
+      autoFocus
+      value={draft}
+      disabled={saving}
+      maxLength={200}
+      onClick={(event) => event.stopPropagation()}
+      onDoubleClick={(event) => event.stopPropagation()}
+      onChange={(event) => setDraft(event.target.value)}
+      onPressEnter={(event) => {
+        event.stopPropagation()
+        void save()
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') {
+          event.stopPropagation()
+          setEditing(false)
+        }
+      }}
+      onBlur={() => {
+        if (!saving) setEditing(false)
+      }}
+      className="h-7 min-w-0"
+      aria-label="重命名"
+    />
+  )
 }
 
 function NavItem({

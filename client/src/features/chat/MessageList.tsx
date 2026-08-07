@@ -17,7 +17,7 @@ export default function MessageList({ messages, onApprove, onReject }: MessageLi
   }, [messages])
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6 lg:px-10">
+    <div id="run-scroll-container" className="min-h-0 flex-1 overflow-y-auto px-6 py-6 lg:px-10">
       <div className="mx-auto max-w-4xl space-y-6">
         {messages.map((message) => (
           <MessageItem

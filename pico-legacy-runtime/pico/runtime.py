@@ -822,7 +822,7 @@ class Pico:
 
         输入 / 输出：
         - 输入：模型返回的原始文本 `raw`
-        - 输出：`(kind, payload)`，其中 `kind` 可能是 `tool`、`final`、`retry`
+        - 输出：`(kind, payload)`，其中 `kind` 可能是 `talk`、`tool`、`final`、`retry`
 
         在 agent 链路里的位置：
         它位于 `model_client.complete()` 之后、`run_tool()` 之前，是模型输出
@@ -853,6 +853,11 @@ class Pico:
             if payload is not None:
                 return "tool", payload
             return "retry", Pico.retry_notice()
+        if "<talk>" in raw and ("<final>" not in raw or raw.find("<talk>") < raw.find("<final>")):
+            talk = Pico.extract(raw, "talk").strip()
+            if talk:
+                return "talk", talk
+            return "retry", Pico.retry_notice("model returned an empty <talk> update")
         if "<final>" in raw:
             final = Pico.extract(raw, "final").strip()
             if final:
@@ -860,7 +865,7 @@ class Pico:
             return "retry", Pico.retry_notice("model returned an empty <final> answer")
         raw = raw.strip()
         if raw:
-            return "final", raw
+            return "retry", Pico.retry_notice("model response did not declare talk, tool, or final")
         return "retry", Pico.retry_notice("model returned an empty response")
 
     @staticmethod
@@ -893,7 +898,7 @@ class Pico:
         else:
             prefix += ": model returned malformed tool output"
         return (
-            f"{prefix}. Reply with a valid <tool> call or a non-empty <final> answer. "
+            f"{prefix}. Reply with one non-empty <talk>, a valid <tool> call, or a non-empty <final> answer. "
             'For multi-line files, prefer <tool name="write_file" path="file.py"><content>...</content></tool>.'
         )
 

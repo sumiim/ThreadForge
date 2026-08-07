@@ -41,7 +41,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip build cryptography pyinstaller
-          python -m pip install -e ./pico-legacy-runtime -e "./local-worker[dev]"
+          python -m pip install -e ./pico-legacy-runtime -e ./agent-orchestrator -e "./local-worker[dev]"
           choco install nsis --no-progress -y
 
       - name: Test Worker
@@ -50,6 +50,7 @@ jobs:
           python -m ruff check local-worker/src local-worker/tests
           python -m pytest -q local-worker/tests
           python -m build --wheel ./pico-legacy-runtime
+          python -m build --wheel ./agent-orchestrator
           python -m build --wheel ./local-worker
 
       - name: Build self-contained Worker executable

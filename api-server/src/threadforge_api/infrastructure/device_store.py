@@ -33,6 +33,8 @@ class WorkerWorkspace:
         return {
             "workspace_id": self.workspace_id,
             "name": self.name,
+            "display_name": self.name,
+            "display_name_source": "user",
             "is_git": self.is_git,
         }
 
@@ -52,6 +54,8 @@ class Device:
     platform: str = ""
     architecture: str = ""
     capabilities: list[str] = field(default_factory=list)
+    orchestration_backend: str = ""
+    model_capabilities: dict = field(default_factory=dict)
     workspaces: list[WorkerWorkspace] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -70,6 +74,8 @@ class Device:
             "platform": self.platform,
             "architecture": self.architecture,
             "capabilities": list(self.capabilities),
+            "orchestration_backend": self.orchestration_backend,
+            "model_capabilities": dict(self.model_capabilities),
             "workspaces": [workspace.to_dict() for workspace in self.workspaces],
         }
 
@@ -93,6 +99,12 @@ class Device:
                 for item in payload.get("capabilities", [])
                 if isinstance(item, str)
             ],
+            orchestration_backend=str(payload.get("orchestration_backend", ""))[:64],
+            model_capabilities=(
+                dict(payload.get("model_capabilities", {}))
+                if isinstance(payload.get("model_capabilities", {}), dict)
+                else {}
+            ),
             workspaces=[
                 WorkerWorkspace(
                     workspace_id=str(item["workspace_id"]),
@@ -216,6 +228,8 @@ class DeviceStore:
         architecture: str,
         capabilities: list[str],
         workspaces: list[WorkerWorkspace],
+        orchestration_backend: str | None = None,
+        model_capabilities: dict | None = None,
     ) -> Device:
         if len(workspaces) > 100:
             raise ValueError("a Worker may register at most 100 workspaces")
@@ -231,6 +245,10 @@ class DeviceStore:
             device.platform = platform[:32]
             device.architecture = architecture[:32]
             device.capabilities = list(capabilities)
+            if orchestration_backend is not None:
+                device.orchestration_backend = str(orchestration_backend)[:64]
+            if model_capabilities is not None:
+                device.model_capabilities = dict(model_capabilities)
             device.workspaces = list(workspaces)
             write_json_atomic(self.root / f"{device_id}.json", device.to_dict())
             return device
@@ -252,6 +270,16 @@ class DeviceStore:
                 if workspace.workspace_id == workspace_id:
                     return device, workspace
         return None
+
+    def rename(self, device_id: str, owner_id: str, display_name: str) -> Device:
+        display_name = str(display_name).strip()
+        if not display_name or len(display_name) > 200:
+            raise ValueError("invalid device display name")
+        with self._lock:
+            device = self.get_for_owner(device_id, owner_id)
+            device.name = display_name
+            write_json_atomic(self.root / f"{device_id}.json", device.to_dict())
+            return device
 
     def revoke(self, device_id: str, owner_id: str) -> None:
         self.get_for_owner(device_id, owner_id)

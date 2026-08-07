@@ -83,6 +83,12 @@ class TaskState:
     max_tool_steps: int = 6
     max_read_files: int = 4
     max_total_steps: int = 18
+    plan_id: str = ""
+    plan_revision: int = 0
+    intent: str = ""
+    review_status: str = ""
+    talk_steps: int = 0
+    evidence: list[dict] = field(default_factory=list)
 
     @classmethod
     def create(
@@ -138,6 +144,12 @@ class TaskState:
             max_tool_steps=max(1, int(data.get("max_tool_steps", data.get("max_steps", 6)))),
             max_read_files=max(0, int(data.get("max_read_files", 4))),
             max_total_steps=max(1, int(data.get("max_total_steps", 18))),
+            plan_id=str(data.get("plan_id", "")),
+            plan_revision=max(0, int(data.get("plan_revision", 0))),
+            intent=str(data.get("intent", "")),
+            review_status=str(data.get("review_status", "")),
+            talk_steps=max(0, int(data.get("talk_steps", 0))),
+            evidence=[dict(item) for item in data.get("evidence", []) if isinstance(item, dict)],
         )
 
     def set_phase(self, phase, *, next_step="", completed_item=""):
@@ -191,6 +203,27 @@ class TaskState:
 
     def record_malformed_output_recovered(self):
         self.malformed_output_recovered += 1
+        return self
+
+    def record_talk(self):
+        self.talk_steps += 1
+        return self
+
+    def record_evidence(self, evidence):
+        if not isinstance(evidence, dict):
+            raise TypeError("evidence must be a dictionary")
+        item = dict(evidence)
+        item.setdefault("evidence_id", "evidence_" + uuid4().hex)
+        item.setdefault("run_id", self.run_id)
+        item.setdefault("task_id", self.task_id)
+        item.setdefault("created_at", datetime.now().astimezone().isoformat())
+        self.evidence.append(item)
+        return item
+
+    def complete_item(self, item):
+        item = str(item or "").strip()
+        if item and item in self.checklist and item not in self.completed_items:
+            self.completed_items.append(item)
         return self
 
     def record_affected_paths(self, paths):
@@ -253,4 +286,10 @@ class TaskState:
             "max_tool_steps": self.max_tool_steps,
             "max_read_files": self.max_read_files,
             "max_total_steps": self.max_total_steps,
+            "plan_id": self.plan_id,
+            "plan_revision": self.plan_revision,
+            "intent": self.intent,
+            "review_status": self.review_status,
+            "talk_steps": self.talk_steps,
+            "evidence": [dict(item) for item in self.evidence],
         }

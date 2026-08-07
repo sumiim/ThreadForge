@@ -27,6 +27,9 @@ def _new_tool_call_id():
     return "call_" + uuid.uuid4().hex
 
 
+MAX_CONSECUTIVE_TALKS = 2
+
+
 class AgentLoop:
     def __init__(self, agent):
         self.agent = agent
@@ -120,6 +123,7 @@ class AgentLoop:
         agent = self.agent
         tool_steps = 0
         attempts = 0
+        consecutive_talks = 0
         max_attempts = min(
             max(agent.max_steps * 3, agent.max_steps + 4),
             task_state.max_total_steps,
@@ -241,7 +245,37 @@ class AgentLoop:
                 },
             )
 
+            if kind == "talk":
+                if consecutive_talks >= MAX_CONSECUTIVE_TALKS:
+                    task_state.record_malformed_output_recovered()
+                    task_state.set_phase(
+                        PHASE_ACT_OR_ANSWER,
+                        next_step="Choose a tool or submit a grounded final answer",
+                    )
+                    agent.emit_trace(
+                        task_state,
+                        "talk_rejected",
+                        {"error_code": "consecutive_talk_limit", "limit": MAX_CONSECUTIVE_TALKS},
+                    )
+                else:
+                    consecutive_talks += 1
+                    task_state.record_talk()
+                    hooks.commentary(task_state, str(payload))
+                    agent.emit_trace(
+                        task_state,
+                        "assistant_commentary",
+                        {"text": clip(str(payload), 1000), "consecutive": consecutive_talks},
+                    )
+                    task_state.set_phase(
+                        PHASE_ACT_OR_ANSWER,
+                        next_step="Continue with a tool or submit a grounded final answer",
+                    )
+                agent.run_store.write_task_state(task_state)
+                agent.emit_agent_state(task_state, "assistant_commentary")
+                continue
+
             if kind == "tool":
+                consecutive_talks = 0
                 tool_steps += 1
                 name = payload.get("name", "")
                 args = payload.get("args", {})
@@ -267,6 +301,18 @@ class AgentLoop:
                         task_state.record_read_file()
                     tool_result = agent.execute_tool(name, args, tool_call_id=tool_call_id)
                 task_state.record_affected_paths(tool_result.metadata.get("affected_paths", []))
+                tool_status = str(tool_result.metadata.get("tool_status", "unknown"))
+                if tool_status in {"ok", "partial_success"}:
+                    task_state.record_evidence(
+                        {
+                            "tool_call_id": tool_call_id,
+                            "tool_name": name,
+                            "status": tool_status,
+                            "read_only": bool(tool_result.metadata.get("read_only", False)),
+                            "affected_paths": list(tool_result.metadata.get("affected_paths", [])),
+                            "summary": agent.summarize_tool_result(name, args, tool_result),
+                        }
+                    )
                 agent.emit_progress(
                     f"step {attempts}: tool {name} finished "
                     f"({tool_result.metadata.get('tool_status', 'unknown')})"
@@ -325,6 +371,7 @@ class AgentLoop:
                 continue
 
             if kind == "retry":
+                consecutive_talks = 0
                 task_state.record_malformed_output_recovered()
                 task_state.set_phase(PHASE_ACT_OR_ANSWER, next_step="Retry with a valid tool call or final answer")
                 agent.record({"role": "assistant", "content": payload, "created_at": now()})
@@ -334,6 +381,7 @@ class AgentLoop:
 
             # 边界 8：写最终回答和 durable memory 前。
             token.raise_if_cancelled()
+            consecutive_talks = 0
             final = (payload or raw).strip()
             if task_state.requires_post_tool_reasoning:
                 # Defensive fallback for custom runtimes that bypass the

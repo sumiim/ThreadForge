@@ -16,6 +16,7 @@ from ..domain.errors import (
     InputTooLongError,
     ModelNotConfiguredError,
     TaskRunnerUnavailableError,
+    WorkerCapabilityUnavailableError,
     WorkerOfflineError,
 )
 from ..domain.identity import canonical_owner_id
@@ -55,7 +56,16 @@ class TaskService:
         self._worker_hub = worker_hub
         self._device_store = device_store
 
-    def create_task(self, session_id: str, input_text: str, max_steps: int, owner_id: str) -> Task:
+    def create_task(
+        self,
+        session_id: str,
+        input_text: str,
+        max_steps: int,
+        owner_id: str,
+        *,
+        model_id: str | None = None,
+        reasoning_effort: str = "none",
+    ) -> Task:
         owner_id = canonical_owner_id(owner_id)
         validate_session_id(session_id)
         if len(input_text) > self._settings.task_input_max_chars:
@@ -64,6 +74,8 @@ class TaskService:
         workspace_id = session.get("workspace_id", "")
         execution_environment = session.get("execution_environment", "backend_process")
         device_id = session.get("device_id", "")
+        selected_model = str(model_id or "").strip()
+        selected_effort = str(reasoning_effort or "none").strip().lower()
         if execution_environment == "local_worker":
             if self._worker_hub is None or not self._worker_hub.is_online(device_id):
                 raise WorkerOfflineError("the selected local Worker is offline")
@@ -72,6 +84,18 @@ class TaskService:
                 raise WorkspaceNotFoundError(workspace_id)
             if not device.model_configured:
                 raise ModelNotConfiguredError("the selected local Worker has no model configuration")
+            selected_model = selected_model or device.model
+            models = {
+                str(item.get("id", "")): set(item.get("reasoning_efforts", []))
+                for item in device.model_capabilities.get("models", [])
+                if isinstance(item, dict)
+            }
+            if not models:
+                models = {device.model: {"none"}}
+            if selected_model not in models or selected_effort not in models[selected_model]:
+                raise WorkerCapabilityUnavailableError(
+                    "the selected model or reasoning effort is unavailable on this Worker"
+                )
         else:
             if self._settings.identity_mode == "github_oauth":
                 raise AuthorizationDeniedError(
@@ -81,6 +105,11 @@ class TaskService:
                 raise TaskRunnerUnavailableError("runner is unavailable")
             if not self._settings.model_configured():
                 raise ModelNotConfiguredError("model configuration is incomplete")
+            selected_model = selected_model or self._settings.pico_openai_model
+            if selected_model != self._settings.pico_openai_model or selected_effort != "none":
+                raise WorkerCapabilityUnavailableError(
+                    "server-side execution does not advertise the selected model settings"
+                )
         input_text = input_text.strip()
         task_id = "task_" + uuid.uuid4().hex
         run_id = "run_" + uuid.uuid4().hex
@@ -94,6 +123,8 @@ class TaskService:
             max_steps=max_steps,
             execution_environment=execution_environment,
             device_id=device_id,
+            model_id=selected_model,
+            reasoning_effort=selected_effort,
         )
         if execution_environment == "local_worker":
             # The plaintext prompt is dispatched from memory. Persist only
@@ -250,6 +281,9 @@ class TaskService:
             "updated_at": task.updated_at,
             "execution_environment": task.execution_environment,
             "device_id": task.device_id,
+            "model_id": task.model_id,
+            "reasoning_effort": task.reasoning_effort,
+            "run_index": list(task.run_index),
             "container_sandbox_enabled": False,
         }
 

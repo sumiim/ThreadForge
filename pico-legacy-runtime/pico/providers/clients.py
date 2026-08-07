@@ -224,12 +224,31 @@ def _extract_usage_cache_details(data):
 
 
 class OpenAICompatibleModelClient:
-    def __init__(self, model, base_url, api_key, temperature, timeout, max_attempts=3):
+    def __init__(
+        self,
+        model,
+        base_url,
+        api_key,
+        temperature,
+        timeout,
+        max_attempts=3,
+        *,
+        reasoning_effort=None,
+        supported_reasoning_efforts=(),
+        supports_temperature_with_reasoning=False,
+    ):
         self.model = model
         self.base_url = _normalize_versioned_base_url(base_url)
         self.api_key = api_key
         self.temperature = temperature
         self.timeout = timeout
+        self.supported_reasoning_efforts = tuple(
+            str(value).strip() for value in supported_reasoning_efforts if str(value).strip()
+        )
+        self.reasoning_effort = str(reasoning_effort or "").strip()
+        if self.reasoning_effort and self.reasoning_effort not in self.supported_reasoning_efforts:
+            raise ValueError("reasoning_effort is not supported by this provider/model")
+        self.supports_temperature_with_reasoning = bool(supports_temperature_with_reasoning)
         if not isinstance(max_attempts, int) or max_attempts < 1:
             raise ValueError("max_attempts must be a positive integer")
         self.max_attempts = max_attempts
@@ -272,7 +291,11 @@ class OpenAICompatibleModelClient:
             "max_output_tokens": max_new_tokens,
             "stream": False,
         }
-        if self.temperature is not None:
+        if self.reasoning_effort:
+            payload["reasoning"] = {"effort": self.reasoning_effort}
+        if self.temperature is not None and (
+            not self.reasoning_effort or self.supports_temperature_with_reasoning
+        ):
             payload["temperature"] = self.temperature
         # runtime 传入的是“稳定前缀”的签名，而不是整段 prompt 的签名。
         # 这样缓存复用针对的是稳定段，不会因为动态 history 每轮变化而失效。
@@ -326,6 +349,8 @@ class OpenAICompatibleModelClient:
                 # 这些元数据会一路传回 runtime，进入 trace 和 report，
                 # 用来观察 prompt cache 是否真的命中。
                 self.last_completion_metadata = {
+                    "requested_reasoning_effort": self.reasoning_effort,
+                    "effective_reasoning_effort": self.reasoning_effort,
                     "prompt_cache_supported": self.supports_prompt_cache,
                     "prompt_cache_key": prompt_cache_key,
                     "prompt_cache_retention": prompt_cache_retention,
@@ -344,6 +369,8 @@ class OpenAICompatibleModelClient:
         if data.get("error"):
             raise RuntimeError(f"OpenAI-compatible error: {data['error']}")
         self.last_completion_metadata = {
+            "requested_reasoning_effort": self.reasoning_effort,
+            "effective_reasoning_effort": self.reasoning_effort,
             "prompt_cache_supported": self.supports_prompt_cache,
             "prompt_cache_key": prompt_cache_key,
             "prompt_cache_retention": prompt_cache_retention,

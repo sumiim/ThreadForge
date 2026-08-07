@@ -399,10 +399,43 @@ export function createTask(
   sessionId: string,
   input: string,
   maxSteps?: number,
+  modelId?: string,
+  reasoningEffort: string = 'none',
 ): Promise<TaskQueued> {
   return request('/api/v1/tasks', {
     method: 'POST',
-    body: JSON.stringify({ session_id: sessionId, input, max_steps: maxSteps ?? null }),
+    body: JSON.stringify({
+      session_id: sessionId,
+      input,
+      max_steps: maxSteps ?? null,
+      model_id: modelId ?? null,
+      reasoning_effort: reasoningEffort,
+    }),
+  })
+}
+
+export function renameDevice(deviceId: string, displayName: string): Promise<{ display_name: string }> {
+  return request(`/api/v1/devices/${encodeURIComponent(deviceId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ display_name: displayName }),
+  })
+}
+
+export function renameWorkspace(
+  deviceId: string,
+  workspaceId: string,
+  displayName: string,
+): Promise<{ display_name: string }> {
+  return request(
+    `/api/v1/devices/${encodeURIComponent(deviceId)}/workspaces/${encodeURIComponent(workspaceId)}`,
+    { method: 'PATCH', body: JSON.stringify({ display_name: displayName }) },
+  )
+}
+
+export function renameSession(sessionId: string, displayName: string): Promise<{ display_name: string }> {
+  return request(`/api/v1/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ display_name: displayName }),
   })
 }
 

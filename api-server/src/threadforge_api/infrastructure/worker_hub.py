@@ -47,6 +47,10 @@ _PUBLIC_WORKER_EVENTS = {
     "tool.failed",
     "policy.violation",
     "agent.state",
+    "plan.created",
+    "assistant.commentary",
+    "review.started",
+    "review.completed",
 }
 _WORKSPACE_ID = re.compile(r"^ws_[a-f0-9]{32}$")
 _SESSION_ID = re.compile(r"^ses_[a-f0-9]{32}$")
@@ -121,6 +125,7 @@ class WorkerHub:
         self._workspace_requests: dict[str, WorkspaceSelectionRequest] = {}
         self._history_requests: dict[str, PendingWorkerRequest] = {}
         self._model_requests: dict[str, PendingWorkerRequest] = {}
+        self._rename_requests: dict[str, PendingWorkerRequest] = {}
         self._terminal_answers: dict[str, tuple[float, str]] = {}
         self._agent_progress: dict[str, tuple[float, dict]] = {}
         self._lock = threading.RLock()
@@ -341,6 +346,76 @@ class WorkerHub:
             )
         return {"status": "completed", "model": result.get("model", "")}
 
+    async def rename_entity(
+        self,
+        *,
+        device_id: str,
+        owner_id: str,
+        entity_type: str,
+        entity_id: str,
+        display_name: str,
+    ) -> dict:
+        device = self._devices.get_for_owner(device_id, owner_id)
+        display_name = str(display_name).strip()
+        if not display_name or len(display_name) > 200:
+            raise ValueError("invalid display name")
+        if entity_type == "workspace":
+            if not _WORKSPACE_ID.fullmatch(entity_id) or not any(
+                item.workspace_id == entity_id for item in device.workspaces
+            ):
+                raise NotFoundError("workspace not found")
+        elif entity_type == "session":
+            if not _SESSION_ID.fullmatch(entity_id):
+                raise NotFoundError("session not found")
+            session = self._session_store.load(entity_id)
+            if (
+                session.get("owner_id") != owner_id
+                or session.get("device_id") != device_id
+                or session.get("execution_environment") != "local_worker"
+            ):
+                raise NotFoundError("session not found")
+        else:
+            raise ValueError("unsupported rename entity type")
+
+        request_id = "rename_" + uuid.uuid4().hex
+        future = self._register_pending_request(
+            self._rename_requests,
+            request_id=request_id,
+            device_id=device_id,
+            owner_id=owner_id,
+            capability="rename_entities",
+            subject_id=entity_id,
+        )
+        try:
+            self._send(
+                device_id,
+                {
+                    "type": "entity.rename",
+                    "request_id": request_id,
+                    "entity_type": entity_type,
+                    "entity_id": entity_id,
+                    "display_name": display_name,
+                },
+            )
+            result = await asyncio.wait_for(future, timeout=10)
+        except asyncio.TimeoutError as exc:
+            raise WorkerOfflineError("rename request timed out") from exc
+        finally:
+            with self._lock:
+                self._rename_requests.pop(request_id, None)
+        if result.get("status") != "completed":
+            raise WorkerCommandFailedError(
+                "local rename was rejected",
+                {"reason": result.get("error", "rename_failed")},
+            )
+        return {
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "display_name": display_name,
+            "display_name_source": "user",
+            "display_name_updated_at": utc_now(),
+        }
+
     def _register_pending_request(
         self,
         requests: dict[str, PendingWorkerRequest],
@@ -368,7 +443,7 @@ class WorkerHub:
 
     def _expire_pending_requests_locked(self) -> None:
         cutoff = time.monotonic() - 60
-        for requests in (self._history_requests, self._model_requests):
+        for requests in (self._history_requests, self._model_requests, self._rename_requests):
             expired = [
                 request_id
                 for request_id, request in requests.items()
@@ -497,6 +572,8 @@ class WorkerHub:
                             "model_timeout_seconds": self._settings.model_timeout_seconds,
                             "shell_output_max_bytes": self._settings.shell_output_max_bytes,
                             "shell_cleanup_grace_seconds": self._settings.shell_cleanup_grace_seconds,
+                            "model_id": task.model_id,
+                            "reasoning_effort": task.reasoning_effort,
                         },
                     },
                 },
@@ -587,6 +664,8 @@ class WorkerHub:
             self._handle_history_result(connection, message)
         elif message_type == "model.configuration.completed":
             self._handle_model_configuration_completed(connection, message)
+        elif message_type == "entity.rename.completed":
+            self._handle_rename_completed(connection, message)
         elif message_type == "heartbeat":
             self._send(connection.device.device_id, {"type": "heartbeat.ack"})
         else:
@@ -595,6 +674,10 @@ class WorkerHub:
     async def _handle_hello(self, connection: WorkerConnection, message: dict) -> None:
         workspaces = _parse_workspaces(message.get("workspaces", []))
         capabilities = _parse_capabilities(message.get("capabilities", []))
+        model_capabilities = _parse_model_capabilities(
+            message.get("model_capabilities", {}),
+            str(message.get("model", "")),
+        )
         version = _parse_worker_version(message.get("version", ""))
         protocol_version = _parse_protocol_version(message.get("protocol_version", 0))
         platform = _parse_platform_value(message.get("platform", "unknown"), "platform")
@@ -611,6 +694,8 @@ class WorkerHub:
             architecture=architecture,
             capabilities=capabilities,
             workspaces=workspaces,
+            orchestration_backend=str(message.get("orchestration_backend", ""))[:64],
+            model_capabilities=model_capabilities,
         )
         connection.ready = True
         self._send(
@@ -754,6 +839,9 @@ class WorkerHub:
                 architecture=connection.device.architecture,
                 capabilities=connection.device.capabilities,
                 workspaces=connection.device.workspaces,
+                model_capabilities=_parse_model_capabilities(
+                    message.get("model_capabilities", {}), model
+                ),
             )
             result = {"status": "completed", "model": model}
         elif status == "failed":
@@ -823,6 +911,52 @@ class WorkerHub:
             {"type": "workspace.selection.ack", "request_id": request_id},
         )
 
+    def _handle_rename_completed(self, connection: WorkerConnection, message: dict) -> None:
+        request_id = str(message.get("request_id", ""))
+        with self._lock:
+            request = self._rename_requests.get(request_id)
+            if (
+                request is None
+                or request.device_id != connection.device.device_id
+                or request.owner_id != connection.device.owner_id
+            ):
+                raise WorkerProtocolError("rename request is not pending")
+        status = str(message.get("status", ""))
+        entity_type = str(message.get("entity_type", ""))
+        entity_id = str(message.get("entity_id", ""))
+        display_name = str(message.get("display_name", "")).strip()
+        if entity_id != request.subject_id:
+            raise WorkerProtocolError("renamed entity does not match request")
+        if status == "completed" and display_name:
+            if entity_type == "workspace":
+                workspaces = self._update_workspace_presence(
+                    connection, message.get("workspaces", [])
+                )
+                if not any(
+                    item.workspace_id == entity_id and item.name == display_name
+                    for item in workspaces
+                ):
+                    raise WorkerProtocolError("renamed workspace metadata is inconsistent")
+            elif entity_type == "session":
+                session = self._session_store.load(entity_id)
+                if (
+                    session.get("owner_id") != request.owner_id
+                    or session.get("device_id") != request.device_id
+                ):
+                    raise WorkerProtocolError("renamed session ownership changed")
+                session["title"] = display_name[:200]
+                session["updated_at"] = utc_now()
+                self._session_store.save(session)
+            else:
+                raise WorkerProtocolError("invalid renamed entity type")
+            result = {"status": "completed"}
+        elif status == "failed":
+            result = {"status": "failed", "error": _safe_error_code(message.get("error"), "rename_failed")}
+        else:
+            raise WorkerProtocolError("invalid rename result")
+        if not request.future.done():
+            request.future.set_result(result)
+
     def _update_workspace_presence(
         self, connection: WorkerConnection, raw_workspaces
     ) -> list[WorkerWorkspace]:
@@ -865,7 +999,7 @@ class WorkerHub:
                 request.error = reason
 
     def _fail_pending_requests_locked(self, device_id: str, reason: str) -> None:
-        for requests in (self._history_requests, self._model_requests):
+        for requests in (self._history_requests, self._model_requests, self._rename_requests):
             for request in requests.values():
                 if request.device_id == device_id and not request.future.done():
                     self._loop.call_soon_threadsafe(
@@ -897,7 +1031,20 @@ class WorkerHub:
         safe_data = _sanitize_event_data(event_type, data)
         if event_type == "agent.state":
             self._remember_agent_progress(task_id, safe_data)
-        self._publisher.publish(task_id, task.run_id, event_type, safe_data)
+        event = self._publisher.publish(task_id, task.run_id, event_type, safe_data)
+        if event_type in {
+            "plan.created",
+            "assistant.commentary",
+            "review.started",
+            "review.completed",
+            "tool.started",
+            "tool.completed",
+            "tool.failed",
+        }:
+            self._task_repo.update(
+                task_id,
+                lambda item: _append_run_index(item, event.to_dict(), safe_data),
+            )
 
     def _handle_approval(self, connection: WorkerConnection, message: dict) -> None:
         task_id = str(message.get("task_id", ""))
@@ -1153,6 +1300,46 @@ def _parse_capabilities(raw_capabilities) -> list[str]:
     return capabilities
 
 
+def _parse_model_capabilities(raw, fallback_model: str) -> dict:
+    if not isinstance(raw, dict):
+        raise WorkerProtocolError("model_capabilities must be an object")
+    provider = str(raw.get("provider", "openai-compatible")).strip()
+    if not provider or len(provider) > 64:
+        raise WorkerProtocolError("invalid model provider capability")
+    raw_models = raw.get("models", [])
+    if not isinstance(raw_models, list) or len(raw_models) > 20:
+        raise WorkerProtocolError("model capabilities must contain a bounded model list")
+    models = []
+    allowed_efforts = {"none", "minimal", "low", "medium", "high", "xhigh"}
+    for raw_model in raw_models:
+        if not isinstance(raw_model, dict):
+            raise WorkerProtocolError("model capability must be an object")
+        model_id = str(raw_model.get("id", "")).strip()
+        display_name = str(raw_model.get("display_name", model_id)).strip()
+        efforts = raw_model.get("reasoning_efforts", [])
+        if (
+            not model_id
+            or len(model_id) > 200
+            or not display_name
+            or len(display_name) > 200
+            or not isinstance(efforts, list)
+        ):
+            raise WorkerProtocolError("invalid model capability")
+        normalized_efforts = list(dict.fromkeys(str(item).lower() for item in efforts))
+        if not normalized_efforts or any(item not in allowed_efforts for item in normalized_efforts):
+            raise WorkerProtocolError("invalid reasoning effort capability")
+        models.append(
+            {
+                "id": model_id,
+                "display_name": display_name,
+                "reasoning_efforts": normalized_efforts,
+            }
+        )
+    if not models and fallback_model:
+        models = [{"id": fallback_model[:200], "display_name": fallback_model[:200], "reasoning_efforts": ["none"]}]
+    return {"provider": provider, "models": models}
+
+
 def _parse_worker_version(raw_version) -> str:
     version = str(raw_version).strip()
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?", version):
@@ -1294,6 +1481,36 @@ def _clear_local_task_content(task):
     return task
 
 
+def _append_run_index(task, event: dict, data: dict):
+    event_type = str(event.get("type", ""))
+    labels = {
+        "plan.created": "计划已创建",
+        "assistant.commentary": "过程更新",
+        "review.started": "开始审查",
+        "review.completed": "审查完成",
+        "tool.started": "工具开始",
+        "tool.completed": "工具完成",
+        "tool.failed": "工具失败",
+    }
+    item = {
+        "event_id": str(event.get("event_id", ""))[:64],
+        "type": event_type[:64],
+        "timestamp": str(event.get("timestamp", ""))[:40],
+        "label": labels.get(event_type, event_type)[:64],
+    }
+    if event_type.startswith("tool."):
+        item["tool_name"] = str(data.get("tool_name", ""))[:100]
+        item["tool_call_id"] = str(data.get("tool_call_id", ""))[:200]
+    elif event_type == "plan.created":
+        item["intent"] = str(data.get("intent", ""))[:32]
+        item["step_count"] = _nonnegative_int(data.get("step_count", 0))
+    elif event_type == "review.completed":
+        item["status"] = str(data.get("status", ""))[:32]
+    task.run_index = [*task.run_index[-499:], item]
+    task.updated_at = utc_now()
+    return task
+
+
 def _sanitize_event_data(event_type: str, data: dict) -> dict:
     """Keep Worker events useful without accepting arbitrary local data."""
     if event_type == "model.completed":
@@ -1311,6 +1528,48 @@ def _sanitize_event_data(event_type: str, data: dict) -> dict:
         }
     if event_type == "model.started":
         return {}
+    if event_type == "assistant.commentary":
+        return {"text": redact_artifact(str(data.get("text", ""))[:1000])}
+    if event_type == "plan.created":
+        raw_steps = data.get("steps", [])
+        steps = []
+        if isinstance(raw_steps, list):
+            for raw in raw_steps[:20]:
+                if not isinstance(raw, dict):
+                    continue
+                dependencies = raw.get("dependencies", [])
+                done_when = raw.get("done_when", [])
+                steps.append(
+                    {
+                        "id": str(raw.get("id", ""))[:64],
+                        "goal": str(raw.get("goal", ""))[:300],
+                        "dependencies": [
+                            str(item)[:64] for item in dependencies[:20]
+                        ] if isinstance(dependencies, list) else [],
+                        "done_when": [
+                            str(item)[:300] for item in done_when[:20]
+                        ] if isinstance(done_when, list) else [],
+                    }
+                )
+        return redact_artifact(
+            {
+                "plan_id": str(data.get("plan_id", ""))[:64],
+                "revision": _nonnegative_int(data.get("revision", 0)),
+                "intent": str(data.get("intent", ""))[:32],
+                "summary": str(data.get("summary", ""))[:500],
+                "risk_level": str(data.get("risk_level", ""))[:16],
+                "step_count": min(20, _nonnegative_int(data.get("step_count", 0))),
+                "steps": steps,
+            }
+        )
+    if event_type == "review.started":
+        return {"attempt": _nonnegative_int(data.get("attempt", 0))}
+    if event_type == "review.completed":
+        return {
+            "status": str(data.get("status", ""))[:32],
+            "attempt": _nonnegative_int(data.get("attempt", 0)),
+            "issue_count": _nonnegative_int(data.get("issue_count", 0)),
+        }
     if event_type == "agent.state":
         def bounded_list(value):
             return [str(item)[:300] for item in value[:20]] if isinstance(value, list) else []

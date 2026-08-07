@@ -172,10 +172,24 @@ class WorkerClient:
                     "architecture": platform.machine().lower(),
                     "model": os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4"),
                     "model_configured": bool(os.environ.get("PICO_OPENAI_API_KEY", "").strip()),
+                    "orchestration_backend": "langgraph-v1.1",
+                    "model_capabilities": {
+                        "provider": "openai-compatible",
+                        "models": [
+                            {
+                                "id": os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4"),
+                                "display_name": os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4"),
+                                "reasoning_efforts": list(_runtime_reasoning_efforts()),
+                            }
+                        ],
+                    },
                     "capabilities": [
                         "local_history",
                         "model_configuration",
                         "auto_update",
+                        "langgraph_v1_1",
+                        "run_model_settings",
+                        "rename_entities",
                         *(["workspace_selection"] if self._workspace_selector else []),
                     ],
                     "workspaces": [workspace.public_dict() for workspace in self.config.workspaces],
@@ -218,6 +232,8 @@ class WorkerClient:
             self._start_history_read(message)
         elif message_type == "model.configure":
             self._configure_model(message)
+        elif message_type == "entity.rename":
+            self._rename_entity(message)
         elif message_type == "hello.ack":
             self._start_session_sync()
             if self._ready_callback is not None and not self._update_started.is_set():
@@ -373,6 +389,16 @@ class WorkerClient:
                 "request_id": request_id,
                 "status": "completed",
                 "model": os.environ.get("PICO_OPENAI_MODEL", ""),
+                "model_capabilities": {
+                    "provider": "openai-compatible",
+                    "models": [
+                        {
+                            "id": os.environ.get("PICO_OPENAI_MODEL", ""),
+                            "display_name": os.environ.get("PICO_OPENAI_MODEL", ""),
+                            "reasoning_efforts": list(_runtime_reasoning_efforts()),
+                        }
+                    ],
+                },
             }
         except Exception:
             response = {
@@ -382,6 +408,62 @@ class WorkerClient:
                 "error": "model_configuration_invalid",
             }
         self._send(response)
+
+    def _rename_entity(self, message: dict) -> None:
+        request_id = str(message.get("request_id", ""))
+        entity_type = str(message.get("entity_type", ""))
+        entity_id = str(message.get("entity_id", ""))
+        display_name = str(message.get("display_name", "")).strip()
+        response = {
+            "type": "entity.rename.completed",
+            "request_id": request_id,
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "display_name": display_name,
+        }
+        try:
+            if not request_id or not display_name or len(display_name) > 200:
+                raise ValueError("invalid rename request")
+            if entity_type == "workspace":
+                self.config = self.store.load()
+                workspace = next(
+                    (item for item in self.config.workspaces if item.workspace_id == entity_id),
+                    None,
+                )
+                if workspace is None:
+                    raise ValueError("workspace not found")
+                previous = workspace.name
+                workspace.name = display_name
+                try:
+                    self.store.save_workspaces(self.config)
+                except Exception:
+                    workspace.name = previous
+                    raise
+                response["workspaces"] = [item.public_dict() for item in self.config.workspaces]
+            elif entity_type == "session":
+                if not _SESSION_ID.fullmatch(entity_id):
+                    raise ValueError("session not found")
+                session_store = SessionStore(self.store.root / "sessions")
+                session = session_store.load(entity_id)
+                if not any(
+                    item.workspace_id == session.get("workspace_id")
+                    for item in self.config.workspaces
+                ):
+                    raise ValueError("session workspace is unavailable")
+                session["title"] = display_name
+                session_store.save(session)
+            else:
+                raise ValueError("unsupported rename entity")
+            response["status"] = "completed"
+        except Exception:
+            response["status"] = "failed"
+            response["error"] = "rename_failed"
+        try:
+            self._send(response)
+            if response["status"] == "completed" and entity_type == "session":
+                self._start_session_sync()
+        except RuntimeError:
+            pass
 
     def _select_workspace(self, request_id: str, expires_at: str) -> None:
         if not self._workspace_lock.acquire(blocking=False):
@@ -617,3 +699,9 @@ def _clip_utf8(value: str, max_bytes: int) -> str:
     if len(encoded) <= max_bytes:
         return value
     return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def _runtime_reasoning_efforts() -> tuple[str, ...]:
+    from .runtime import _supported_reasoning_efforts
+
+    return _supported_reasoning_efforts()

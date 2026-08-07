@@ -18,7 +18,7 @@ from ..dependencies import (
     get_worker_hub,
     require_csrf,
 )
-from ..models import ConfigureWorkerModelRequest, PairWorkerRequest
+from ..models import ConfigureWorkerModelRequest, PairWorkerRequest, RenameEntityRequest
 
 router = APIRouter()
 WORKER_PROTOCOL_VERSION = 1
@@ -60,6 +60,7 @@ def list_devices(
             {
                 "device_id": device.device_id,
                 "name": device.name,
+                "display_name": device.name,
                 "online": device.device_id in online,
                 "model": device.model,
                 "model_configured": device.model_configured,
@@ -69,6 +70,8 @@ def list_devices(
                 "architecture": device.architecture,
                 "compatible": device.protocol_version == WORKER_PROTOCOL_VERSION,
                 "capabilities": device.capabilities,
+                "orchestration_backend": device.orchestration_backend,
+                "model_capabilities": device.model_capabilities,
                 "created_at": device.created_at,
                 "last_seen_at": device.last_seen_at,
                 "workspaces": [workspace.to_dict() for workspace in device.workspaces],
@@ -99,6 +102,7 @@ def list_online_workers(
                 "worker_id": device.device_id,
                 "device_id": device.device_id,
                 "name": device.name,
+                "display_name": device.name,
                 "online": True,
                 "version": device.version,
                 "protocol_version": device.protocol_version,
@@ -106,6 +110,8 @@ def list_online_workers(
                 "architecture": device.architecture,
                 "compatible": device.protocol_version == WORKER_PROTOCOL_VERSION,
                 "capabilities": device.capabilities,
+                "orchestration_backend": device.orchestration_backend,
+                "model_capabilities": device.model_capabilities,
                 "workspaces": [workspace.to_dict() for workspace in device.workspaces],
             }
         )
@@ -116,6 +122,42 @@ def list_online_workers(
             "multi_worker": "reserved",
         },
     }
+
+
+@router.patch("/api/v1/devices/{device_id}", dependencies=[Depends(require_csrf)])
+def rename_device(
+    device_id: str,
+    body: RenameEntityRequest,
+    actor: Actor = Depends(get_actor),
+    device_store: DeviceStore = Depends(get_device_store),
+) -> dict:
+    device = device_store.rename(device_id, actor.owner_id, body.display_name)
+    return {
+        "device_id": device.device_id,
+        "display_name": device.name,
+        "display_name_source": "user",
+        "display_name_updated_at": device.last_seen_at or device.created_at,
+    }
+
+
+@router.patch(
+    "/api/v1/devices/{device_id}/workspaces/{workspace_id}",
+    dependencies=[Depends(require_csrf)],
+)
+async def rename_workspace(
+    device_id: str,
+    workspace_id: str,
+    body: RenameEntityRequest,
+    actor: Actor = Depends(get_actor),
+    worker_hub: WorkerHub = Depends(get_worker_hub),
+) -> dict:
+    return await worker_hub.rename_entity(
+        device_id=device_id,
+        owner_id=actor.owner_id,
+        entity_type="workspace",
+        entity_id=workspace_id,
+        display_name=body.display_name,
+    )
 
 
 @router.post(

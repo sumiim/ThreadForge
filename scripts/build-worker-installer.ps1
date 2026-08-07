@@ -20,7 +20,9 @@ try {
         --name threadforge-worker `
         --paths local-worker/src `
         --paths pico-legacy-runtime `
+        --paths agent-orchestrator/src `
         --collect-submodules threadforge_worker `
+        --collect-submodules langgraph_pico `
         --hidden-import tkinter `
         --hidden-import tkinter.filedialog `
         --hidden-import win32api `
@@ -41,7 +43,9 @@ try {
         --name threadforge-worker-service `
         --paths local-worker/src `
         --paths pico-legacy-runtime `
+        --paths agent-orchestrator/src `
         --collect-submodules threadforge_worker `
+        --collect-submodules langgraph_pico `
         --hidden-import tkinter `
         --hidden-import tkinter.filedialog `
         --hidden-import win32api `

@@ -45,6 +45,8 @@ class ExecutionHooks(Protocol):
 
     def after_tool(self, task_state, result: Any) -> None: ...
 
+    def commentary(self, task_state, text: str) -> None: ...
+
 
 class NoopExecutionHooks:
     """Default hooks; CLI behavior is unchanged."""
@@ -62,4 +64,7 @@ class NoopExecutionHooks:
         return None
 
     def after_tool(self, task_state, result: Any) -> None:
+        return None
+
+    def commentary(self, task_state, text: str) -> None:
         return None

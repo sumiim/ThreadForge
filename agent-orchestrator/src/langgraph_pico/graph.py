@@ -32,6 +32,13 @@ from .intent import (
     parse_conversation_output,
     parse_intent_output,
 )
+from .planning import (
+    MAX_PLAN_ATTEMPTS,
+    PLANNER_MAX_NEW_TOKENS,
+    PlanValidationError,
+    build_plan_prompt,
+    parse_and_validate_plan,
+)
 
 
 MAX_FIX_ATTEMPTS = 2
@@ -45,7 +52,17 @@ COMPLETION_METADATA_KEYS = (
     "prompt_cache_supported",
     "prompt_cache_key",
     "prompt_cache_retention",
+    "requested_reasoning_effort",
+    "effective_reasoning_effort",
 )
+
+PLAN_MAXIMUM_BUDGETS = {
+    "model_rounds": 64,
+    "tool_calls": 25,
+    "input_tokens": 500_000,
+    "output_tokens": 32_000,
+    "elapsed_seconds": 3_600,
+}
 
 
 class AgentState(TypedDict):
@@ -71,6 +88,10 @@ class AgentState(TypedDict):
     terminal_reason: str
     delegate_failures: int
     final_result: str
+    planning_enabled: bool
+    plan: dict
+    plan_attempts: int
+    plan_error: str
 
 
 class GraphPersistenceError(RuntimeError):
@@ -97,6 +118,17 @@ def _safe_completion_metadata(agent, model_client):
     metadata = dict(getattr(model_client, "last_completion_metadata", {}) or {})
     filtered = {key: metadata[key] for key in COMPLETION_METADATA_KEYS if key in metadata}
     return agent.redact_artifact(filtered)
+
+
+def _complete_graph_model(agent, model_client, prompt, max_new_tokens):
+    agent.cancellation_token.raise_if_cancelled()
+    agent.execution_hooks.before_model(agent.current_task_state)
+    raw = model_client.complete(prompt, max_new_tokens)
+    metadata = dict(getattr(model_client, "last_completion_metadata", {}) or {})
+    agent.last_completion_metadata = metadata
+    agent.cancellation_token.raise_if_cancelled()
+    agent.execution_hooks.after_model(agent.current_task_state, metadata)
+    return raw
 
 
 def _record_graph_model_attempt(
@@ -161,7 +193,14 @@ def _create_isolated_executor(
         session=deepcopy(agent.session),
         run_store=agent.run_store,
         approval_policy=approval_policy,
+        approval_strategy=agent.approval_strategy,
+        cancellation_token=agent.cancellation_token,
+        execution_hooks=agent.execution_hooks,
         max_steps=max_steps,
+        max_total_steps=max(
+            int(agent.max_total_steps or 0),
+            max(max_steps * 3, max_steps + 4),
+        ),
         max_new_tokens=agent.max_new_tokens,
         depth=agent.depth,
         max_depth=agent.max_depth,
@@ -171,9 +210,118 @@ def _create_isolated_executor(
         secret_env_names=agent.secret_env_names,
         shell_env_allowlist=agent.shell_env_allowlist,
         progress_callback=agent.progress_callback,
+        shell_output_max_bytes=agent.shell_output_max_bytes,
+        shell_cleanup_grace_seconds=agent.shell_cleanup_grace_seconds,
+        max_read_files=agent.max_read_files,
         feature_flags=agent.feature_flags,
         allow_checkpoint=False,
         allow_durable_memory_write=False,
+    )
+
+
+def prepare_plan_node(state: AgentState, config: RunnableConfig) -> AgentState:
+    if not state["planning_enabled"]:
+        return state
+
+    configurable = config["configurable"]
+    agent = configurable["agent"]
+    metadata_collector = configurable["run_metadata_collector"]
+    available_tools = tuple(agent.allowed_tools or agent.tools)
+    error_code = ""
+    error_message = ""
+
+    for attempt in range(1, MAX_PLAN_ATTEMPTS + 1):
+        _record_graph_model_attempt(
+            agent,
+            metadata_collector,
+            event="plan_requested",
+            attempt=attempt,
+            counter_key="plan_attempts",
+        )
+        started_at = time.monotonic()
+        raw = _complete_graph_model(
+            agent,
+            agent.model_client,
+            build_plan_prompt(
+                state["task"],
+                state["intent_context"],
+                available_tools,
+                PLAN_MAXIMUM_BUDGETS,
+                retry=attempt > 1,
+            ),
+            PLANNER_MAX_NEW_TOKENS,
+        )
+        try:
+            plan = parse_and_validate_plan(
+                raw,
+                available_tools=available_tools,
+                maximum_budgets=PLAN_MAXIMUM_BUDGETS,
+            )
+        except PlanValidationError as exc:
+            error_code = exc.code
+            error_message = str(exc)
+            agent.current_task_state.record_malformed_output_recovered()
+            _write_graph_task_state(agent)
+            agent.emit_trace(
+                agent.current_task_state,
+                "plan_rejected",
+                {
+                    "attempt": attempt,
+                    "error_code": error_code,
+                    "duration_ms": int((time.monotonic() - started_at) * 1000),
+                    "completion_metadata": _safe_completion_metadata(agent, agent.model_client),
+                },
+            )
+            continue
+
+        task_state = agent.current_task_state
+        task_state.plan_id = plan["plan_id"]
+        task_state.plan_revision = plan["revision"]
+        task_state.intent = plan["intent"]
+        task_state.checklist = [step["goal"] for step in plan["steps"]]
+        task_state.done_when = [item for step in plan["steps"] for item in step["done_when"]]
+        _write_graph_task_state(agent)
+        agent.emit_trace(
+            task_state,
+            "plan_created",
+            {
+                "plan_id": plan["plan_id"],
+                "revision": plan["revision"],
+                "intent": plan["intent"],
+                "summary": plan["summary"],
+                "step_count": len(plan["steps"]),
+                "risk_level": plan["risk_level"],
+                "steps": [
+                    {
+                        "id": step["id"],
+                        "goal": step["goal"],
+                        "dependencies": list(step["dependencies"]),
+                        "done_when": list(step["done_when"]),
+                    }
+                    for step in plan["steps"]
+                ],
+                "duration_ms": int((time.monotonic() - started_at) * 1000),
+                "completion_metadata": _safe_completion_metadata(agent, agent.model_client),
+            },
+        )
+        return {
+            **state,
+            "acceptance": "\n".join(plan["acceptance"]),
+            "resolved_intent": plan["intent"],
+            "intent_source": "plan",
+            "plan": plan,
+            "plan_attempts": attempt,
+            "plan_error": "",
+        }
+
+    return _failed_state(
+        {
+            **state,
+            "plan_attempts": MAX_PLAN_ATTEMPTS,
+            "plan_error": error_code,
+        },
+        "retry_limit_reached",
+        f"Planning failed ({error_code}): {error_message}",
     )
 
 
@@ -221,7 +369,9 @@ def _classify_auto_intent(agent, router_client, metadata_collector, task, contex
             counter_key="intent_attempts",
         )
         started_at = time.monotonic()
-        raw = router_client.complete(
+        raw = _complete_graph_model(
+            agent,
+            router_client,
             build_intent_prompt(task, context, retry=attempt > 1),
             ROUTER_MAX_NEW_TOKENS,
         )
@@ -284,7 +434,27 @@ def intent_router_node(state: AgentState, config: RunnableConfig) -> AgentState:
     metadata_collector = configurable["run_metadata_collector"]
     mode = state["requested_task_mode"]
 
-    if mode != TASK_MODE_AUTO:
+    if state["terminal_reason"]:
+        route = route_after_intent(state)
+        _emit_route(agent, "intent_router", route, state["terminal_reason"])
+        return state
+    if state["planning_enabled"]:
+        planned_intent = state["resolved_intent"]
+        if mode != TASK_MODE_AUTO and planned_intent != mode:
+            next_state = _failed_state(
+                state,
+                "runtime_error",
+                "Validated plan intent conflicts with the explicit task mode.",
+            )
+            route = route_after_intent(next_state)
+            _emit_route(agent, "intent_router", route, next_state["terminal_reason"])
+            return next_state
+        decision = IntentDecision(
+            intent=planned_intent,
+            requires_research=planned_intent != INTENT_CONVERSATION,
+            source="plan",
+        )
+    elif mode != TASK_MODE_AUTO:
         decision = IntentDecision(
             intent=mode,
             requires_research=mode != INTENT_CONVERSATION,
@@ -326,6 +496,8 @@ def intent_router_node(state: AgentState, config: RunnableConfig) -> AgentState:
             "intent_attempts": decision.attempts,
         }
     )
+    agent.current_task_state.intent = decision.intent
+    _write_graph_task_state(agent)
 
     if not decision.intent:
         agent.emit_trace(
@@ -437,7 +609,9 @@ def _conversation_answer(state, config):
             counter_key="answer_attempts",
         )
         started_at = time.monotonic()
-        raw = agent.model_client.complete(
+        raw = _complete_graph_model(
+            agent,
+            agent.model_client,
             build_conversation_prompt(
                 state["task"],
                 state["intent_context"],
@@ -544,6 +718,18 @@ def _read_only_answer(state, config):
             task_state.stop_reason or "runtime_error",
             result,
         )
+    read_evidence = [
+        item
+        for item in task_state.evidence
+        if item.get("tool_name") in READ_ONLY_TOOLS
+        and item.get("status") in {"ok", "partial_success"}
+    ]
+    if state["planning_enabled"] and not read_evidence:
+        return _failed_state(
+            answer_state,
+            "missing_current_run_evidence",
+            "Read-only answer was rejected because this run produced no successful workspace evidence.",
+        )
     if not str(result).strip():
         return _failed_state(answer_state, "runtime_error", "Answer executor returned an empty result.")
     return {
@@ -636,13 +822,22 @@ def execute_change_node(state: AgentState, config: RunnableConfig) -> AgentState
                 "fix_attempts": fix_attempts,
                 "coordinator_steps_used": state["coordinator_steps_used"] + task_state.tool_steps,
             }
-            if review_focus_paths:
+            write_evidence = [
+                item
+                for item in task_state.evidence
+                if item.get("tool_name") in {"write_file", "patch_file", "run_shell"}
+                and item.get("status") in {"ok", "partial_success"}
+            ]
+            if review_focus_paths and (write_evidence or not state["planning_enabled"]):
                 next_state = updated
             else:
+                no_change_result = str(result).strip()
                 next_state = _failed_state(
                     updated,
                     "no_changes_to_review",
-                    str(result).strip() or "No reviewable path was produced.",
+                    no_change_result
+                    if no_change_result and not state["planning_enabled"]
+                    else "No successful write evidence and reviewable path were produced.",
                 )
 
     route = route_after_execute_change(next_state)
@@ -665,6 +860,13 @@ def route_finish_or_fix(state: AgentState):
 
 def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
     agent = config["configurable"]["agent"]
+    agent.current_task_state.review_status = "running"
+    _write_graph_task_state(agent)
+    agent.emit_trace(
+        agent.current_task_state,
+        "review_started",
+        {"attempt": state["fix_attempts"] + 1, "focus_paths": list(state["review_focus_paths"])},
+    )
     if state["step_budget"] - state["coordinator_steps_used"] < 1:
         next_state = _failed_state(
             state,
@@ -707,7 +909,21 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 "review_issues": review["text"],
                 "coordinator_steps_used": state["coordinator_steps_used"] + 1,
             }
+            agent.current_task_state.review_status = review["status"]
+            _write_graph_task_state(agent)
+            agent.emit_trace(
+                agent.current_task_state,
+                "review_completed",
+                {
+                    "status": review["status"],
+                    "attempt": state["fix_attempts"] + 1,
+                    "issue_count": len(review.get("issue_codes", [])),
+                },
+            )
             if review["status"] == "pass":
+                for item in agent.current_task_state.checklist:
+                    agent.current_task_state.complete_item(item)
+                _write_graph_task_state(agent)
                 next_state = {**updated, "completion_status": "success"}
             elif state["fix_attempts"] >= MAX_FIX_ATTEMPTS:
                 next_state = _failed_state(
@@ -717,6 +933,20 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 )
             else:
                 next_state = updated
+
+    if agent.current_task_state.review_status == "running":
+        terminal_review_status = next_state["review_status"] or "failed"
+        agent.current_task_state.review_status = terminal_review_status
+        _write_graph_task_state(agent)
+        agent.emit_trace(
+            agent.current_task_state,
+            "review_completed",
+            {
+                "status": terminal_review_status,
+                "attempt": state["fix_attempts"] + 1,
+                "issue_count": 0,
+            },
+        )
 
     route = route_finish_or_fix(next_state)
     _emit_route(
@@ -744,13 +974,15 @@ def finalize_node(state: AgentState) -> AgentState:
 
 def build_graph():
     builder = StateGraph(AgentState)
+    builder.add_node("prepare_plan", prepare_plan_node)
     builder.add_node("intent_router", intent_router_node)
     builder.add_node("research_delegate", research_node)
     builder.add_node("answer", answer_node)
     builder.add_node("execute_change", execute_change_node)
     builder.add_node("review_delegate", review_node)
     builder.add_node("finalize", finalize_node)
-    builder.add_edge(START, "intent_router")
+    builder.add_edge(START, "prepare_plan")
+    builder.add_edge("prepare_plan", "intent_router")
     builder.add_conditional_edges(
         "intent_router",
         route_after_intent,
