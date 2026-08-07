@@ -79,6 +79,7 @@ class ApprovalDecisionRequest(BaseModel):
 
 class RenameEntityRequest(BaseModel):
     display_name: str = Field(min_length=1, max_length=200)
+    expected_updated_at: str | None = Field(default=None, max_length=64)
 
     @field_validator("display_name")
     @classmethod

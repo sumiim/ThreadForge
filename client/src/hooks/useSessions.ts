@@ -30,6 +30,7 @@ import type {
   SessionMessage,
   ReasoningEffort,
   RunIndexItem,
+  SessionRun,
   SkillMetadata,
   ToolCall,
   Workspace,
@@ -40,10 +41,39 @@ import { workspaceKey } from '../features/sessions/workspaceIdentity'
 let idCounter = 0
 const nextId = (prefix: string) => `${prefix}-${Date.now()}-${idCounter++}`
 
+const automaticSessionTitle = (request: string) => request.trim().replace(/\s+/g, ' ').slice(0, 200) || '新会话'
+
 // 与后端 TaskStatus 对齐
-const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'failed'])
+const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'failed', 'interrupted', 'blocked'])
 const RUNNING_STATUSES = new Set(['queued', 'running', 'waiting_for_approval', 'cancel_requested'])
-const TERMINAL_EVENTS = new Set(['task.completed', 'task.cancelled', 'task.failed'])
+const TERMINAL_EVENTS = new Set([
+  'task.completed',
+  'task.cancelled',
+  'task.failed',
+  'task.interrupted',
+  'task.blocked',
+])
+
+const modelFailureMessages: Record<string, string> = {
+  model_rate_limited: '模型服务当前请求过多，已自动重试，请稍后再试。',
+  model_timeout: '模型服务响应超时，已自动重试，请稍后再试。',
+  model_connection_error: '无法稳定连接模型服务，已自动重试，请检查网络后再试。',
+  model_server_error: '模型服务暂时不可用，已自动重试，请稍后再试。',
+  model_auth_error: '模型服务认证失败，请在 Worker 中重新配置 API 密钥。',
+  model_request_rejected: '模型服务拒绝了请求，请检查模型与推理强度配置。',
+  model_response_invalid: '模型服务返回了无法解析的响应，请稍后再试。',
+  model_provider_error: '模型服务返回错误，请检查供应商配置后再试。',
+  model_call_failed: '模型调用失败，请稍后再试。',
+}
+
+function terminalFailureMessage(data: Record<string, unknown>): string {
+  const code = String(data.error_code ?? '')
+  if (code && modelFailureMessages[code]) return modelFailureMessages[code]
+  const status = String(data.status ?? '')
+  if (status === 'interrupted') return '运行因服务重启或连接中断而终止，请重新执行。'
+  if (status === 'blocked') return '运行未通过完成门禁，请根据当前提示调整后重试。'
+  return status === 'failed' ? 'Agent 运行失败，请稍后重试。' : ''
+}
 
 function sessionModel(
   workspaceId: string,
@@ -336,6 +366,11 @@ export function useSessions(): UseSessions {
           'tool.started': '工具开始',
           'tool.completed': '工具完成',
           'tool.failed': '工具失败',
+          'task.completed': '运行完成',
+          'task.cancelled': '运行已取消',
+          'task.failed': '运行失败',
+          'task.interrupted': '运行已中断',
+          'task.blocked': '运行受阻',
         }
         if (!labels[envelope.type]) return
         const item: RunIndexItem = {
@@ -348,11 +383,42 @@ export function useSessions(): UseSessions {
           intent: envelope.data.intent ? String(envelope.data.intent) : undefined,
           step_count: envelope.data.step_count == null ? undefined : Number(envelope.data.step_count),
           status: envelope.data.status ? String(envelope.data.status) : undefined,
+          run_id: envelope.run_id,
         }
         updateSession(sessionId, (session) => {
           const current = session.runIndex ?? []
           if (current.some((entry) => entry.event_id === item.event_id)) return session
-          return { ...session, runIndex: [...current.slice(-499), item] }
+          const runs = [...(session.runs ?? [])]
+          const runPosition = runs.findIndex((run) => run.runId === envelope.run_id)
+          const terminalStatus = envelope.type.startsWith('task.')
+            ? envelope.type.slice('task.'.length)
+            : undefined
+          if (runPosition >= 0) {
+            const run = runs[runPosition]
+            if (!run.items.some((entry) => entry.event_id === item.event_id)) {
+              runs[runPosition] = {
+                ...run,
+                status: terminalStatus ?? run.status,
+                updatedAt: envelope.timestamp,
+                items: [...run.items.slice(-499), item],
+              }
+            }
+          } else {
+            runs.push({
+              taskId,
+              runId: envelope.run_id,
+              status: terminalStatus ?? 'running',
+              startedAt: envelope.timestamp,
+              updatedAt: envelope.timestamp,
+              items: [item],
+            })
+          }
+          return {
+            ...session,
+            runIndex: [...current.slice(-499), item],
+            runs,
+            activeRunId: envelope.run_id,
+          }
         })
       }
 
@@ -367,9 +433,19 @@ export function useSessions(): UseSessions {
               updateSession(sessionId, (session) => ({
                 ...session,
                 runIndex: data.run_index as RunIndexItem[],
+                runs: (session.runs ?? []).map((run) =>
+                  run.runId === String(data.run_id ?? envelope.run_id)
+                    ? {
+                        ...run,
+                        status,
+                        updatedAt: String(data.updated_at ?? run.updatedAt),
+                        items: data.run_index as RunIndexItem[],
+                      }
+                    : run,
+                ),
               }))
             }
-            const finalAnswer = getFinalAnswer(data)
+            const finalAnswer = getFinalAnswer(data) ?? terminalFailureMessage(data)
             if (finalAnswer) {
               updateSessionMessages(sessionId, (messages) =>
                 messages.map((m) => (m.id === assistantId ? { ...m, content: finalAnswer } : m)),
@@ -496,8 +572,13 @@ export function useSessions(): UseSessions {
           }
           case 'task.completed':
           case 'task.cancelled':
-          case 'task.failed': {
-            const finalAnswer = getFinalAnswer(data)
+          case 'task.failed':
+          case 'task.interrupted':
+          case 'task.blocked': {
+            const finalAnswer = getFinalAnswer(data) ?? terminalFailureMessage({
+              ...data,
+              status: type.slice('task.'.length),
+            })
             if (finalAnswer) {
               updateSessionMessages(sessionId, (messages) =>
                 messages.map((m) => (m.id === assistantId ? { ...m, content: finalAnswer } : m)),
@@ -562,6 +643,8 @@ export function useSessions(): UseSessions {
         'task.completed',
         'task.cancelled',
         'task.failed',
+        'task.interrupted',
+        'task.blocked',
       ]
       NAMED.forEach((name) => es.addEventListener(name, onFrame))
       es.addEventListener('message', onFrame)
@@ -595,6 +678,9 @@ export function useSessions(): UseSessions {
             id: item.session_id,
             title: item.title,
             createdAt: item.created_at,
+            displayNameSource: item.display_name_source,
+            displayNameUpdatedAt: item.display_name_updated_at ?? item.created_at,
+            draft: item.has_started === false,
             workspaceId: item.workspace_id,
             executionEnvironment: item.execution_environment,
             deviceId: item.device_id,
@@ -651,10 +737,24 @@ export function useSessions(): UseSessions {
             status: 'done' as const,
           }))
         const lastTask = getLatestTask(detail.tasks)
+        const runs: SessionRun[] = detail.tasks
+          .slice()
+          .sort((a, b) => a.created_at.localeCompare(b.created_at))
+          .map((task) => ({
+            taskId: task.task_id,
+            runId: task.run_id,
+            status: task.status,
+            startedAt: task.created_at,
+            updatedAt: task.updated_at,
+            items: task.run_index ?? [],
+          }))
         const loaded: Session = {
           id: detail.session_id,
           title: detail.title,
           createdAt: detail.created_at,
+          displayNameSource: detail.display_name_source,
+          displayNameUpdatedAt: detail.display_name_updated_at ?? detail.created_at,
+          draft: detail.has_started === false,
           workspaceId: detail.workspace_id,
           executionEnvironment: detail.execution_environment,
           deviceId: detail.device_id,
@@ -676,6 +776,8 @@ export function useSessions(): UseSessions {
           lastTaskId: lastTask?.task_id,
           lastRunId: lastTask?.run_id,
           runIndex: lastTask?.run_index ?? [],
+          runs,
+          activeRunId: lastTask?.run_id,
         }
         setSessions((prev) =>
           prev.map((s) => (s.id === detail.session_id ? { ...s, ...loaded } : s)),
@@ -734,6 +836,9 @@ export function useSessions(): UseSessions {
             id: res.session_id,
             title: res.title,
             createdAt: res.created_at,
+            displayNameSource: res.display_name_source,
+            displayNameUpdatedAt: res.display_name_updated_at ?? res.created_at,
+            draft: true,
             workspaceId: res.workspace_id,
             executionEnvironment: res.execution_environment,
             deviceId: res.device_id,
@@ -772,6 +877,10 @@ export function useSessions(): UseSessions {
       setAgentProgress(null)
 
       const now = new Date().toISOString()
+      const activeSession = sessionsRef.current.find((session) => session.id === sessionId)
+      const firstRequestTitle = activeSession?.draft && activeSession.displayNameSource !== 'user'
+        ? automaticSessionTitle(content)
+        : undefined
       const userId = nextId('m-user')
       const assistantId = nextId('m-agent')
       updateSessionMessages(sessionId, (messages) => [
@@ -779,6 +888,11 @@ export function useSessions(): UseSessions {
         { id: userId, role: 'user', content: content.trim(), createdAt: now },
         { id: assistantId, role: 'assistant', content: '', createdAt: now, status: 'streaming' },
       ])
+      updateSession(sessionId, (session) => ({
+        ...session,
+        draft: false,
+        title: firstRequestTitle ?? session.title,
+      }))
 
       ;(async () => {
         try {
@@ -800,6 +914,18 @@ export function useSessions(): UseSessions {
             lastTaskId: queued.task_id,
             lastRunId: queued.run_id,
             runIndex: [],
+            runs: [
+              ...(s.runs ?? []),
+              {
+                taskId: queued.task_id,
+                runId: queued.run_id,
+                status: queued.status,
+                startedAt: now,
+                updatedAt: now,
+                items: [],
+              },
+            ],
+            activeRunId: queued.run_id,
           }))
           attachEventStream(queued.task_id, sessionId, assistantId)
         } catch (err) {
@@ -874,13 +1000,16 @@ export function useSessions(): UseSessions {
 
   const renameDevice = useCallback(async (deviceId: string, displayName: string) => {
     try {
-      const result = await apiRenameDevice(deviceId, displayName)
+      const expectedUpdatedAt = workspaces.find((workspace) => workspace.device_id === deviceId)
+        ?.device_display_name_updated_at
+      const result = await apiRenameDevice(deviceId, displayName, expectedUpdatedAt)
       setWorkspaces((current) => current.map((workspace) =>
         workspace.device_id === deviceId
           ? {
               ...workspace,
               device_name: result.display_name,
               device_display_name: result.display_name,
+              device_display_name_updated_at: result.display_name_updated_at,
               display_path: `${result.display_name} / ${workspace.name}`,
             }
           : workspace,
@@ -889,7 +1018,7 @@ export function useSessions(): UseSessions {
       notify.error(friendlyMessage(error))
       throw error
     }
-  }, [])
+  }, [workspaces])
 
   const renameWorkspace = useCallback(async (
     deviceId: string,
@@ -897,13 +1026,21 @@ export function useSessions(): UseSessions {
     displayName: string,
   ) => {
     try {
-      const result = await apiRenameWorkspace(deviceId, workspaceId, displayName)
+      const workspace = workspaces.find((item) =>
+        item.device_id === deviceId && item.workspace_id === workspaceId)
+      const result = await apiRenameWorkspace(
+        deviceId,
+        workspaceId,
+        displayName,
+        workspace?.display_name_updated_at,
+      )
       setWorkspaces((current) => current.map((workspace) =>
         workspace.device_id === deviceId && workspace.workspace_id === workspaceId
           ? {
               ...workspace,
               name: result.display_name,
               display_name: result.display_name,
+              display_name_updated_at: result.display_name_updated_at,
               display_path: `${workspace.device_name ?? 'Worker'} / ${result.display_name}`,
             }
           : workspace,
@@ -912,12 +1049,18 @@ export function useSessions(): UseSessions {
       notify.error(friendlyMessage(error))
       throw error
     }
-  }, [])
+  }, [workspaces])
 
   const renameSession = useCallback(async (sessionId: string, displayName: string) => {
     try {
-      const result = await apiRenameSession(sessionId, displayName)
-      updateSession(sessionId, (session) => ({ ...session, title: result.display_name }))
+      const current = sessionsRef.current.find((session) => session.id === sessionId)
+      const result = await apiRenameSession(sessionId, displayName, current?.displayNameUpdatedAt)
+      updateSession(sessionId, (session) => ({
+        ...session,
+        title: result.display_name,
+        displayNameSource: result.display_name_source,
+        displayNameUpdatedAt: result.display_name_updated_at,
+      }))
     } catch (error) {
       notify.error(friendlyMessage(error))
       throw error

@@ -23,7 +23,13 @@ class EventPublisher:
                 counter = itertools.count()
                 self._sequences[task_id] = counter
             sequence = next(counter)
-        if event_type in {"task.completed", "task.cancelled", "task.failed"}:
+        if event_type in {
+            "task.completed",
+            "task.cancelled",
+            "task.failed",
+            "task.interrupted",
+            "task.blocked",
+        }:
             with self._lock:
                 self._sequences.pop(task_id, None)
         event = PublicEvent(

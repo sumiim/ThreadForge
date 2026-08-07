@@ -31,6 +31,7 @@ from ..domain.errors import (
     ApprovalStaleError,
     NotFoundError,
     PersistenceUnavailableError,
+    RenameConflictError,
     WorkerCapabilityUnavailableError,
     WorkerCommandFailedError,
     WorkerOfflineError,
@@ -354,16 +355,21 @@ class WorkerHub:
         entity_type: str,
         entity_id: str,
         display_name: str,
+        expected_updated_at: str | None = None,
     ) -> dict:
         device = self._devices.get_for_owner(device_id, owner_id)
         display_name = str(display_name).strip()
         if not display_name or len(display_name) > 200:
             raise ValueError("invalid display name")
         if entity_type == "workspace":
-            if not _WORKSPACE_ID.fullmatch(entity_id) or not any(
-                item.workspace_id == entity_id for item in device.workspaces
-            ):
+            workspace = next(
+                (item for item in device.workspaces if item.workspace_id == entity_id),
+                None,
+            )
+            if not _WORKSPACE_ID.fullmatch(entity_id) or workspace is None:
                 raise NotFoundError("workspace not found")
+            if expected_updated_at and expected_updated_at != workspace.display_name_updated_at:
+                raise RenameConflictError("workspace display name changed on another client")
         elif entity_type == "session":
             if not _SESSION_ID.fullmatch(entity_id):
                 raise NotFoundError("session not found")
@@ -374,6 +380,11 @@ class WorkerHub:
                 or session.get("execution_environment") != "local_worker"
             ):
                 raise NotFoundError("session not found")
+            display_name_updated_at = str(
+                session.get("display_name_updated_at", session.get("created_at", ""))
+            )
+            if expected_updated_at and expected_updated_at != display_name_updated_at:
+                raise RenameConflictError("session display name changed on another client")
         else:
             raise ValueError("unsupported rename entity type")
 
@@ -408,12 +419,21 @@ class WorkerHub:
                 "local rename was rejected",
                 {"reason": result.get("error", "rename_failed")},
             )
+        if entity_type == "workspace":
+            stored_device = self._devices.get_for_owner(device_id, owner_id)
+            stored = next(
+                item for item in stored_device.workspaces if item.workspace_id == entity_id
+            )
+            updated_at = stored.display_name_updated_at
+        else:
+            stored_session = self._session_store.load(entity_id)
+            updated_at = str(stored_session.get("display_name_updated_at", ""))
         return {
             "entity_type": entity_type,
             "entity_id": entity_id,
             "display_name": display_name,
             "display_name_source": "user",
-            "display_name_updated_at": utc_now(),
+            "display_name_updated_at": updated_at,
         }
 
     def _register_pending_request(
@@ -428,6 +448,11 @@ class WorkerHub:
     ) -> asyncio.Future:
         with self._lock:
             self._expire_pending_requests_locked()
+            if requests is self._rename_requests and any(
+                item.device_id == device_id and item.subject_id == subject_id
+                for item in requests.values()
+            ):
+                raise RenameConflictError("entity rename is already in progress")
             connection = self._connections.get(device_id)
             if connection is None or not connection.ready:
                 raise WorkerOfflineError("local Worker is offline")
@@ -759,10 +784,18 @@ class WorkerHub:
             ):
                 raise WorkerProtocolError("local session identity conflicts with control-plane data")
             changes = {
-                "title": summary["title"],
                 "local_message_total": summary["message_total"],
                 "local_updated_at": summary["updated_at"],
             }
+            if summary["first_request_at"]:
+                changes["first_request_at"] = summary["first_request_at"]
+            if current.get("display_name_source", "auto") != "user":
+                changes["title"] = summary["title"]
+                if summary["display_name_updated_at"]:
+                    changes["display_name_source"] = summary["display_name_source"]
+                    changes["display_name_updated_at"] = summary[
+                        "display_name_updated_at"
+                    ]
             changed = any(current.get(key) != value for key, value in changes.items())
             if changed:
                 current.update(changes)
@@ -783,6 +816,11 @@ class WorkerHub:
                 "device_id": connection.device.device_id,
                 "owner_id": connection.device.owner_id,
                 "title": summary["title"] or f"Session {session_id[-8:]}",
+                "display_name_source": summary["display_name_source"],
+                "display_name_updated_at": (
+                    summary["display_name_updated_at"] or summary["created_at"] or utc_now()
+                ),
+                "first_request_at": summary["first_request_at"],
                 "history": [],
                 "memory": default_memory_state(),
                 "local_message_total": summary["message_total"],
@@ -950,6 +988,12 @@ class WorkerHub:
                     for item in workspaces
                 ):
                     raise WorkerProtocolError("renamed workspace metadata is inconsistent")
+                connection.device, _ = self._devices.set_workspace_display_name(
+                    request.device_id,
+                    request.owner_id,
+                    entity_id,
+                    display_name,
+                )
             elif entity_type == "session":
                 session = self._session_store.load(entity_id)
                 if (
@@ -958,7 +1002,9 @@ class WorkerHub:
                 ):
                     raise WorkerProtocolError("renamed session ownership changed")
                 session["title"] = display_name[:200]
-                session["updated_at"] = utc_now()
+                session["display_name_source"] = "user"
+                session["display_name_updated_at"] = utc_now()
+                session["updated_at"] = session["display_name_updated_at"]
                 self._session_store.save(session)
             else:
                 raise WorkerProtocolError("invalid renamed entity type")
@@ -1143,6 +1189,8 @@ class WorkerHub:
             "completed": TaskStatus.COMPLETED,
             "cancelled": TaskStatus.CANCELLED,
             "failed": TaskStatus.FAILED,
+            "interrupted": TaskStatus.INTERRUPTED,
+            "blocked": TaskStatus.BLOCKED,
         }.get(status_text)
         if status is None:
             raise WorkerProtocolError("invalid terminal status")
@@ -1159,20 +1207,37 @@ class WorkerHub:
         if not isinstance(session_persisted, bool):
             raise WorkerProtocolError("invalid local session persistence flag")
         self._update_local_session_count(task, message_total, session_persisted)
+        error = _sanitize_terminal_error(message.get("error", {}))
         self._cancel_pending_approvals(task, stop_reason)
         self._task_repo.update(
             task_id,
-            lambda item: _set_terminal(item, status, stop_reason, ""),
+            lambda item: _set_terminal(item, status, stop_reason, "", error=error),
         )
         terminal_event = {
             TaskStatus.COMPLETED: "task.completed",
             TaskStatus.CANCELLED: "task.cancelled",
             TaskStatus.FAILED: "task.failed",
+            TaskStatus.INTERRUPTED: "task.interrupted",
+            TaskStatus.BLOCKED: "task.blocked",
         }[status]
         if status is TaskStatus.COMPLETED:
             self._remember_terminal_answer(task_id, final_answer)
             self._publisher.publish(task_id, task.run_id, "message.completed", {"text": final_answer})
-        self._publisher.publish(task_id, task.run_id, terminal_event, {"final_answer": final_answer, "stop_reason": stop_reason})
+        terminal_data = {
+            "final_answer": final_answer,
+            "stop_reason": stop_reason,
+            **error,
+        }
+        terminal_envelope = self._publisher.publish(
+            task_id,
+            task.run_id,
+            terminal_event,
+            terminal_data,
+        )
+        self._task_repo.update(
+            task_id,
+            lambda item: _append_run_index(item, terminal_envelope.to_dict(), terminal_data),
+        )
         self._release(task_id, connection.device.device_id)
 
     def _update_local_session_count(
@@ -1416,6 +1481,9 @@ def _parse_session_summary(raw, workspace_ids: set[str]) -> dict:
     title = str(redact_artifact(raw.get("title", ""))).strip()[:200]
     created_at = str(raw.get("created_at", ""))[:40]
     updated_at = str(raw.get("updated_at", ""))[:40]
+    display_name_source = str(raw.get("display_name_source", "auto"))
+    display_name_updated_at = str(raw.get("display_name_updated_at", ""))[:40]
+    first_request_at = str(raw.get("first_request_at", ""))[:40]
     message_total = raw.get("message_total", 0)
     if (
         not _SESSION_ID.fullmatch(session_id)
@@ -1423,6 +1491,7 @@ def _parse_session_summary(raw, workspace_ids: set[str]) -> dict:
         or not isinstance(message_total, int)
         or message_total < 0
         or message_total > 10_000_000
+        or display_name_source not in {"auto", "user"}
     ):
         raise WorkerProtocolError("invalid local session summary")
     return {
@@ -1431,6 +1500,9 @@ def _parse_session_summary(raw, workspace_ids: set[str]) -> dict:
         "title": title,
         "created_at": created_at,
         "updated_at": updated_at,
+        "display_name_source": display_name_source,
+        "display_name_updated_at": display_name_updated_at,
+        "first_request_at": first_request_at,
         "message_total": message_total,
     }
 
@@ -1511,11 +1583,16 @@ def _clear_approval(task):
     return task
 
 
-def _set_terminal(task, status: TaskStatus, stop_reason: str, final_answer: str):
+def _set_terminal(task, status: TaskStatus, stop_reason: str, final_answer: str, *, error=None):
     task.status = status
     task.stop_reason = stop_reason
     task.final_answer = final_answer or None
     task.pending_approval = None
+    error = dict(error or {})
+    task.error_stage = str(error.get("error_stage", ""))
+    task.error_code = str(error.get("error_code", ""))
+    task.error_retryable = bool(error.get("error_retryable", False))
+    task.error_attempts = _nonnegative_int(error.get("error_attempts", 0))
     task.updated_at = utc_now()
     return task
 
@@ -1537,9 +1614,15 @@ def _append_run_index(task, event: dict, data: dict):
         "tool.started": "工具开始",
         "tool.completed": "工具完成",
         "tool.failed": "工具失败",
+        "task.completed": "运行完成",
+        "task.cancelled": "运行已取消",
+        "task.failed": "运行失败",
+        "task.interrupted": "运行已中断",
+        "task.blocked": "运行受阻",
     }
     item = {
         "event_id": str(event.get("event_id", ""))[:64],
+        "run_id": str(event.get("run_id", ""))[:128],
         "type": event_type[:64],
         "timestamp": str(event.get("timestamp", ""))[:40],
         "label": labels.get(event_type, event_type)[:64],
@@ -1552,6 +1635,8 @@ def _append_run_index(task, event: dict, data: dict):
         item["step_count"] = _nonnegative_int(data.get("step_count", 0))
     elif event_type == "review.completed":
         item["status"] = str(data.get("status", ""))[:32]
+    elif event_type.startswith("task."):
+        item["status"] = event_type.removeprefix("task.")[:32]
     task.run_index = [*task.run_index[-499:], item]
     task.updated_at = utc_now()
     return task
@@ -1661,6 +1746,20 @@ def _sanitize_event_data(event_type: str, data: dict) -> dict:
     if event_type == "policy.violation":
         safe["policy_code"] = str(data.get("policy_code", ""))[:100]
     return redact_artifact(safe)
+
+
+def _sanitize_terminal_error(value) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    code = str(value.get("code", ""))[:100]
+    if not code:
+        return {}
+    return {
+        "error_stage": str(value.get("stage", ""))[:64],
+        "error_code": code,
+        "error_retryable": bool(value.get("retryable", False)),
+        "error_attempts": min(10, _nonnegative_int(value.get("attempts", 0))),
+    }
 
 
 def _nonnegative_int(value) -> int:

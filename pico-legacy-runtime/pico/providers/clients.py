@@ -6,12 +6,56 @@ runtime 只关心一件事：给我一个 prompt，我拿回一段文本。
 """
 
 import json
+import socket
 import time
 import urllib.error
 import urllib.request
 from http.client import RemoteDisconnected
 
 OPENAI_COMPATIBLE_USER_AGENT = "pico/0.1"
+RETRYABLE_HTTP_STATUSES = {408, 425, 429}
+
+
+class ModelProviderError(RuntimeError):
+    """Sanitized provider failure safe to persist and expose to clients."""
+
+    def __init__(self, code, *, retryable=False, attempts=1, status_code=None):
+        super().__init__(str(code))
+        self.code = str(code)
+        self.retryable = bool(retryable)
+        self.attempts = max(1, int(attempts))
+        self.status_code = int(status_code) if status_code is not None else None
+
+
+def _provider_http_error(code, attempts):
+    status = int(code)
+    retryable = status in RETRYABLE_HTTP_STATUSES or status >= 500
+    if status == 429:
+        error_code = "model_rate_limited"
+    elif status in {408, 425}:
+        error_code = "model_timeout"
+    elif status >= 500:
+        error_code = "model_server_error"
+    elif status in {401, 403}:
+        error_code = "model_auth_error"
+    else:
+        error_code = "model_request_rejected"
+    return ModelProviderError(
+        error_code,
+        retryable=retryable,
+        attempts=attempts,
+        status_code=status,
+    )
+
+
+def _retry_delay(attempt, retry_after=""):
+    try:
+        value = float(str(retry_after).strip())
+    except (TypeError, ValueError):
+        value = 0.0
+    if value > 0:
+        return min(value, 8.0)
+    return min(0.5 * (2 ** max(0, int(attempt) - 1)), 4.0)
 
 
 class FakeModelClient:
@@ -245,7 +289,7 @@ class OpenAICompatibleModelClient:
         self.supported_reasoning_efforts = tuple(
             str(value).strip() for value in supported_reasoning_efforts if str(value).strip()
         )
-        self.reasoning_effort = str(reasoning_effort or "").strip()
+        self.reasoning_effort = str(reasoning_effort or "").strip().lower()
         if self.reasoning_effort and self.reasoning_effort not in self.supported_reasoning_efforts:
             raise ValueError("reasoning_effort is not supported by this provider/model")
         self.supports_temperature_with_reasoning = bool(supports_temperature_with_reasoning)
@@ -318,7 +362,7 @@ class OpenAICompatibleModelClient:
             headers=headers,
             method="POST",
         )
-        for attempt in range(self.max_attempts):
+        for attempt in range(1, self.max_attempts + 1):
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
                     body_text = response.read().decode("utf-8")
@@ -326,20 +370,42 @@ class OpenAICompatibleModelClient:
                     content_type = headers.get("Content-Type", "")
                 break
             except urllib.error.HTTPError as exc:
-                body = exc.read().decode("utf-8", errors="replace")
-                if exc.code >= 500 and attempt < self.max_attempts - 1:
-                    time.sleep(0.5 * (attempt + 1))
+                provider_error = _provider_http_error(exc.code, attempt)
+                if provider_error.retryable and attempt < self.max_attempts:
+                    time.sleep(
+                        _retry_delay(
+                            attempt,
+                            (getattr(exc, "headers", None) or {}).get("Retry-After", ""),
+                        )
+                    )
                     continue
-                raise RuntimeError(f"OpenAI-compatible request failed with HTTP {exc.code}: {body}") from exc
-            except (urllib.error.URLError, RemoteDisconnected) as exc:
-                if attempt < self.max_attempts - 1:
-                    time.sleep(0.5 * (attempt + 1))
+                self.last_completion_metadata = {
+                    "provider_error_code": provider_error.code,
+                    "provider_error_retryable": provider_error.retryable,
+                    "provider_request_attempts": provider_error.attempts,
+                }
+                raise provider_error from exc
+            except (urllib.error.URLError, RemoteDisconnected, TimeoutError, socket.timeout, ConnectionError) as exc:
+                if attempt < self.max_attempts:
+                    time.sleep(_retry_delay(attempt))
                     continue
-                raise RuntimeError(
-                    "Could not reach the OpenAI-compatible backend.\n"
-                    f"Base URL: {self.base_url}\n"
-                    f"Model: {self.model}"
-                ) from exc
+                reason = getattr(exc, "reason", exc)
+                code = (
+                    "model_timeout"
+                    if isinstance(reason, (TimeoutError, socket.timeout))
+                    else "model_connection_error"
+                )
+                provider_error = ModelProviderError(
+                    code,
+                    retryable=True,
+                    attempts=attempt,
+                )
+                self.last_completion_metadata = {
+                    "provider_error_code": provider_error.code,
+                    "provider_error_retryable": True,
+                    "provider_request_attempts": attempt,
+                }
+                raise provider_error from exc
 
         # 有些兼容后端返回普通 JSON，有些返回 SSE。
         # 这里两种都接住，并尽量统一抽取文本和 usage/cache 元数据。
@@ -358,16 +424,14 @@ class OpenAICompatibleModelClient:
                 }
             if text:
                 return text
-            raise RuntimeError("OpenAI-compatible error: could not extract text from event stream response")
+            raise ModelProviderError("model_response_invalid", attempts=attempt)
 
         try:
             data = json.loads(body_text)
         except json.JSONDecodeError as exc:
-            raise RuntimeError(
-                "OpenAI-compatible error: backend returned non-JSON content that could not be parsed"
-            ) from exc
+            raise ModelProviderError("model_response_invalid", attempts=attempt) from exc
         if data.get("error"):
-            raise RuntimeError(f"OpenAI-compatible error: {data['error']}")
+            raise ModelProviderError("model_provider_error", attempts=attempt)
         self.last_completion_metadata = {
             "requested_reasoning_effort": self.reasoning_effort,
             "effective_reasoning_effort": self.reasoning_effort,
@@ -376,7 +440,10 @@ class OpenAICompatibleModelClient:
             "prompt_cache_retention": prompt_cache_retention,
             **_extract_usage_cache_details(data),
         }
-        return _extract_openai_text(data)
+        text = _extract_openai_text(data)
+        if not text:
+            raise ModelProviderError("model_response_invalid", attempts=attempt)
+        return text
 
 
 def _extract_anthropic_text(data):

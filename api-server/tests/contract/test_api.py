@@ -112,6 +112,50 @@ def test_session_create_list_get(client):
     assert detail.json()["tasks"] == []
 
 
+def test_first_request_becomes_stable_automatic_session_title(client, model_outputs):
+    created = client.post("/api/v1/sessions", json={"workspace_id": "w1"}).json()
+    assert created["has_started"] is False
+    assert created["display_name_source"] == "auto"
+
+    model_outputs[:] = ["<final>first</final>", "<final>second</final>"]
+    first = client.post(
+        "/api/v1/tasks",
+        json={"session_id": created["session_id"], "input": "  修复\n Worker 自动更新  "},
+    ).json()
+    wait_for_terminal(client, first["task_id"])
+
+    after_first = client.get(f"/api/v1/sessions/{created['session_id']}").json()
+    assert after_first["title"] == "修复 Worker 自动更新"
+    assert after_first["display_name_source"] == "auto"
+    assert after_first["has_started"] is True
+
+    second = client.post(
+        "/api/v1/tasks",
+        json={"session_id": created["session_id"], "input": "不要覆盖现有标题"},
+    ).json()
+    wait_for_terminal(client, second["task_id"])
+    after_second = client.get(f"/api/v1/sessions/{created['session_id']}").json()
+    assert after_second["title"] == "修复 Worker 自动更新"
+
+
+def test_first_request_preserves_user_session_title(client, model_outputs):
+    created = client.post(
+        "/api/v1/sessions",
+        json={"workspace_id": "w1", "title": "手动标题"},
+    ).json()
+    model_outputs[:] = ["<final>done</final>"]
+    task = client.post(
+        "/api/v1/tasks",
+        json={"session_id": created["session_id"], "input": "首条请求"},
+    ).json()
+    wait_for_terminal(client, task["task_id"])
+
+    detail = client.get(f"/api/v1/sessions/{created['session_id']}").json()
+    assert detail["title"] == "手动标题"
+    assert detail["display_name_source"] == "user"
+    assert detail["has_started"] is True
+
+
 def test_identity_header_cannot_override_instance_owner(client, settings):
     foreign_owner = "22222222-2222-4222-8222-222222222222"
     response = client.post(

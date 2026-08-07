@@ -19,6 +19,7 @@ from pico.session_store import (
 from ..domain.entities import utc_now
 from ..domain.errors import (
     PersistenceUnavailableError,
+    RenameConflictError,
     SessionCorruptedError,
     SessionNotFoundError,
     WorkerOfflineError,
@@ -85,15 +86,20 @@ class SessionService:
             execution_environment = "backend_process"
             device_id = ""
         session_id = "ses_" + uuid.uuid4().hex
+        created_at = utc_now()
+        display_name = (title or "").strip() or f"{DEFAULT_SESSION_TITLE_PREFIX} {session_id[-8:]}"
         session = {
             "id": session_id,
-            "created_at": utc_now(),
+            "created_at": created_at,
             "workspace_root": workspace_root,
             "workspace_id": workspace_id,
             "execution_environment": execution_environment,
             "device_id": device_id,
             "owner_id": owner_id,
-            "title": (title or "").strip() or f"{DEFAULT_SESSION_TITLE_PREFIX} {session_id[-8:]}",
+            "title": display_name,
+            "display_name_source": "user" if (title or "").strip() else "auto",
+            "display_name_updated_at": created_at,
+            "first_request_at": "",
             "history": [],
             "memory": default_memory_state(),
         }
@@ -109,6 +115,9 @@ class SessionService:
             "workspace_id": session["workspace_id"],
             "title": redact_artifact(session["title"]),
             "created_at": session["created_at"],
+            "display_name_source": session["display_name_source"],
+            "display_name_updated_at": session["display_name_updated_at"],
+            "has_started": False,
             "execution_environment": execution_environment,
             "device_id": device_id,
         }
@@ -178,6 +187,10 @@ class SessionService:
                         else _clip(redact_artifact(task.final_answer), MESSAGE_CONTENT_MAX)
                     ),
                     "stop_reason": task.stop_reason,
+                    "error_stage": task.error_stage,
+                    "error_code": task.error_code,
+                    "error_retryable": task.error_retryable,
+                    "error_attempts": task.error_attempts,
                     "created_at": task.created_at,
                     "updated_at": task.updated_at,
                     "model_id": task.model_id,
@@ -219,6 +232,12 @@ class SessionService:
             "workspace_id": session.get("workspace_id"),
             "title": redact_artifact(session.get("title", "")),
             "created_at": session.get("created_at"),
+            "updated_at": session.get("updated_at", session.get("created_at", "")),
+            "display_name_source": session.get("display_name_source", "auto"),
+            "display_name_updated_at": session.get(
+                "display_name_updated_at", session.get("created_at", "")
+            ),
+            "has_started": self._has_started(session),
             "execution_environment": session.get("execution_environment", "backend_process"),
             "device_id": session.get("device_id", ""),
             "message_total": message_total,
@@ -231,13 +250,43 @@ class SessionService:
     def load_raw(self, session_id: str, owner_id: str) -> dict:
         return self._load(session_id, owner_id)
 
-    def rename_session(self, session_id: str, display_name: str, owner_id: str) -> dict:
+    def initialize_from_first_request(self, session: dict, request_text: str) -> dict:
+        if self._has_started(session):
+            return session
+        timestamp = utc_now()
+        if session.get("display_name_source", "auto") != "user":
+            session["title"] = self._automatic_title(request_text)
+            session["display_name_source"] = "auto"
+            session["display_name_updated_at"] = timestamp
+        session["first_request_at"] = timestamp
+        session["updated_at"] = timestamp
+        try:
+            self._session_store.save(session)
+        except OSError as exc:
+            raise PersistenceUnavailableError("session storage unavailable") from exc
+        return session
+
+    def rename_session(
+        self,
+        session_id: str,
+        display_name: str,
+        owner_id: str,
+        *,
+        expected_updated_at: str | None = None,
+    ) -> dict:
         display_name = str(display_name).strip()
         if not display_name or len(display_name) > 200:
             raise ValueError("invalid session display name")
         session = self._load(session_id, owner_id)
+        display_name_updated_at = str(
+            session.get("display_name_updated_at", session.get("created_at", ""))
+        )
+        if expected_updated_at and expected_updated_at != display_name_updated_at:
+            raise RenameConflictError("session display name changed on another client")
         session["title"] = display_name
-        session["updated_at"] = utc_now()
+        session["display_name_source"] = "user"
+        session["display_name_updated_at"] = utc_now()
+        session["updated_at"] = session["display_name_updated_at"]
         self._session_store.save(session)
         return self._summary(session)
 
@@ -249,6 +298,12 @@ class SessionService:
             "workspace_id": session.get("workspace_id"),
             "title": redact_artifact(session.get("title", "")),
             "created_at": session.get("created_at"),
+            "updated_at": session.get("updated_at", session.get("created_at", "")),
+            "display_name_source": session.get("display_name_source", "auto"),
+            "display_name_updated_at": session.get(
+                "display_name_updated_at", session.get("created_at", "")
+            ),
+            "has_started": SessionService._has_started(session),
             "message_total": (
                 int(session.get("local_message_total", 0) or 0)
                 if is_local
@@ -257,3 +312,20 @@ class SessionService:
             "execution_environment": session.get("execution_environment", "backend_process"),
             "device_id": session.get("device_id", ""),
         }
+
+    @staticmethod
+    def _automatic_title(request_text: str) -> str:
+        normalized = " ".join(str(request_text).split())
+        return normalized[:200] or "新会话"
+
+    @staticmethod
+    def _has_started(session: dict) -> bool:
+        try:
+            local_message_total = int(session.get("local_message_total", 0) or 0)
+        except (TypeError, ValueError):
+            local_message_total = 0
+        return bool(
+            str(session.get("first_request_at", "")).strip()
+            or session.get("history")
+            or local_message_total > 0
+        )

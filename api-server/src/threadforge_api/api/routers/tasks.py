@@ -23,7 +23,7 @@ from ..models import ApprovalDecisionRequest, CreateTaskRequest, TaskQueuedRespo
 
 router = APIRouter()
 
-_TERMINAL_STATUSES = {"completed", "cancelled", "failed"}
+_TERMINAL_STATUSES = {"completed", "cancelled", "failed", "interrupted", "blocked"}
 
 
 @router.post(
@@ -127,7 +127,13 @@ async def task_events(
         "data": snapshot,
     }
 
-    _TERMINAL_TYPES = {"task.completed", "task.cancelled", "task.failed"}
+    _TERMINAL_TYPES = {
+        "task.completed",
+        "task.cancelled",
+        "task.failed",
+        "task.interrupted",
+        "task.blocked",
+    }
 
     async def event_stream():
         try:

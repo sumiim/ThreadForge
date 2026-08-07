@@ -63,9 +63,10 @@ export default function SessionPanel({
     (workspace) => workspace.available && workspaceKey(workspace) === selectedWorkspaceKey,
   ) ?? available ?? null
 
+  const visibleSessions = sessions.filter((session) => !session.draft)
   const filtered = query.trim()
-    ? sessions.filter((s) => s.title.toLowerCase().includes(query.trim().toLowerCase()))
-    : sessions
+    ? visibleSessions.filter((s) => s.title.toLowerCase().includes(query.trim().toLowerCase()))
+    : visibleSessions
   const deviceGroups = buildDeviceGroups(workspaces, filtered, !query.trim())
 
   const handleCreate = () => {
@@ -134,7 +135,7 @@ export default function SessionPanel({
       <div className="min-h-0 flex-1 overflow-y-auto px-2">
         {deviceGroups.length === 0 ? (
           <div className="px-3 py-4 text-center text-xs text-stone-400">
-            {sessions.length === 0 ? '暂无会话，点击上方「新建会话」开始' : '未找到匹配的会话'}
+            {visibleSessions.length === 0 ? '暂无会话，点击上方「新建会话」开始' : '未找到匹配的会话'}
           </div>
         ) : (
           <Collapse
@@ -159,7 +160,7 @@ export default function SessionPanel({
                   items={device.workspaces.map((workspace) => ({
                     key: workspace.key,
                     label: (
-                      <span className="flex min-w-0 items-center gap-2 text-xs text-stone-600">
+                      <span className="flex min-w-0 items-center gap-1 text-xs text-stone-600">
                         <InlineName
                           value={workspace.label}
                           disabled={!workspace.deviceId}
@@ -167,6 +168,20 @@ export default function SessionPanel({
                           onSave={(value) => onRenameWorkspace(workspace.deviceId!, workspace.workspaceId, value)}
                         />
                         <span className="font-mono text-[10px] text-stone-400">{workspace.sessions.length}</span>
+                        <button
+                          type="button"
+                          title="在此工作区新建会话"
+                          aria-label={`在 ${workspace.label} 新建会话`}
+                          onClick={(event) => {
+                            event.preventDefault()
+                            event.stopPropagation()
+                            onCreate(workspace.workspaceId, workspace.deviceId)
+                            onNavigate('chat')
+                          }}
+                          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-stone-400 hover:bg-white hover:text-blue-700"
+                        >
+                          <PlusOutlined className="text-[10px]" />
+                        </button>
                       </span>
                     ),
                     children: workspace.sessions.length > 0 ? (

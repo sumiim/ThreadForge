@@ -56,7 +56,28 @@ STOP_REASON_MAP = {
     "runtime_error": STOP_REASON_RUNTIME_ERROR,
     "persistence_error": STOP_REASON_PERSISTENCE_ERROR,
     "missing_current_run_evidence": STOP_REASON_RUNTIME_ERROR,
+    "completion_gate_failed": STOP_REASON_RUNTIME_ERROR,
 }
+
+MODEL_ERROR_MESSAGES = {
+    "model_rate_limited": "模型服务当前请求过多，已自动重试，请稍后再试。",
+    "model_timeout": "模型服务响应超时，已自动重试，请稍后再试。",
+    "model_connection_error": "无法稳定连接模型服务，已自动重试，请检查网络后再试。",
+    "model_server_error": "模型服务暂时不可用，已自动重试，请稍后再试。",
+    "model_auth_error": "模型服务认证失败，请在 Worker 中重新配置 API 密钥。",
+    "model_request_rejected": "模型服务拒绝了请求，请检查模型与推理强度配置。",
+    "model_response_invalid": "模型服务返回了无法解析的响应，请稍后再试。",
+    "model_provider_error": "模型服务返回错误，请检查供应商配置后再试。",
+    "model_call_failed": "模型调用失败，请稍后再试。",
+}
+
+
+def _safe_execution_failure(exc):
+    code = str(getattr(exc, "code", "") or "")
+    if getattr(exc, "stop_reason", "") == STOP_REASON_MODEL_ERROR:
+        code = code or "model_call_failed"
+        return code, MODEL_ERROR_MESSAGES.get(code, MODEL_ERROR_MESSAGES["model_call_failed"])
+    return "runtime_error", "Agent 运行失败，请稍后重试。"
 
 
 def _initial_state_snapshot(agent):
@@ -67,6 +88,66 @@ def _initial_state_snapshot(agent):
         "initial_task_summary_empty": not str(memory_state["working"]["task_summary"]).strip(),
         "initial_episodic_notes_empty": not memory_state["episodic_notes"],
     }
+
+
+def _enrich_evidence(evidence, *, task_state, plan, intent, workspace_id, step_id=""):
+    item = dict(evidence)
+    item.update(
+        {
+            "run_id": task_state.run_id,
+            "plan_id": str(plan.get("plan_id", "")),
+            "step_id": step_id,
+            "intent": str(intent),
+            "workspace_id": str(workspace_id),
+            "freshness": str(item.get("freshness", "current_run")),
+            "sensitivity": str(item.get("sensitivity", "workspace")),
+        }
+    )
+    item.setdefault("relative_paths", list(item.get("affected_paths", [])))
+    return item
+
+
+def _assign_evidence_steps(evidence_items, plan):
+    observed_by_step = {
+        str(step.get("id", "")): set()
+        for step in plan.get("steps", [])
+    }
+    assigned = []
+    for evidence in evidence_items:
+        tool_name = str(evidence.get("tool_name", ""))
+        step_id = ""
+        for step in plan.get("steps", []):
+            candidate = str(step.get("id", ""))
+            if (
+                tool_name in step.get("required_tools", [])
+                and tool_name not in observed_by_step[candidate]
+            ):
+                step_id = candidate
+                observed_by_step[candidate].add(tool_name)
+                break
+        assigned.append((evidence, step_id))
+    return assigned
+
+
+def _complete_satisfied_plan_steps(task_state, plan, *, final_answer, intent):
+    successful = [
+        item
+        for item in task_state.evidence
+        if item.get("status") in {"ok", "partial_success"}
+    ]
+    for step in plan.get("steps", []):
+        required_tools = set(step.get("required_tools", []))
+        observed_tools = {
+            str(item.get("tool_name", ""))
+            for item in successful
+            if item.get("step_id") == step.get("id")
+        }
+        if (required_tools and required_tools <= observed_tools) or (
+            not required_tools
+            and intent == INTENT_CONVERSATION
+            and str(final_answer).strip()
+        ):
+            task_state.complete_item(step.get("goal", ""))
 
 
 def _materialize_focus_paths(focus_paths):
@@ -148,6 +229,7 @@ def run_agent(
     enable_planning=False,
     task_id=None,
     run_id=None,
+    workspace_id="",
 ):
     """Run the routed LangGraph workflow with an already configured Pico instance."""
     task_input = str(task_input).strip()
@@ -230,6 +312,7 @@ def run_agent(
         budget_task_states = [task_state]
         graph_state = {
             "task": task_input,
+            "workspace_id": str(workspace_id),
             "acceptance": str(acceptance or task_input),
             "requested_task_mode": normalized_mode,
             "resolved_intent": "",
@@ -255,6 +338,11 @@ def run_agent(
             "plan": {},
             "plan_attempts": 0,
             "plan_error": "",
+            "plan_history": [],
+            "replan_requested": False,
+            "replan_reason": "",
+            "replan_attempts": 0,
+            "started_monotonic": started_at,
         }
 
         try:
@@ -270,11 +358,40 @@ def run_agent(
                 },
             )
             task_state.record_affected_paths(result["affected_paths"])
-            for child_state in node_child_states:
-                for evidence in child_state.evidence:
-                    task_state.record_evidence(evidence)
+            all_children = []
+            seen_child_runs = set()
+            for child_state in [*agent.child_task_states, *node_child_states]:
+                if child_state.run_id in seen_child_runs:
+                    continue
+                seen_child_runs.add(child_state.run_id)
+                all_children.append(child_state)
+            raw_evidence = [
+                evidence
+                for child_state in all_children
+                for evidence in child_state.evidence
+            ]
+            for evidence, step_id in _assign_evidence_steps(raw_evidence, result["plan"]):
+                task_state.record_evidence(
+                    _enrich_evidence(
+                        evidence,
+                        task_state=task_state,
+                        plan=result["plan"],
+                        intent=result["resolved_intent"],
+                        workspace_id=workspace_id,
+                        step_id=step_id,
+                    )
+                )
             task_state.plan_id = str(result["plan"].get("plan_id", ""))
             task_state.plan_revision = int(result["plan"].get("revision", 0))
+            task_state.plan_history = [
+                *[dict(item) for item in result.get("plan_history", [])],
+                dict(result["plan"]),
+            ]
+            task_state.replan_reasons = [
+                str(item.get("replan_reason", ""))
+                for item in task_state.plan_history
+                if str(item.get("replan_reason", "")).strip()
+            ]
             task_state.intent = result["resolved_intent"]
             task_state.review_status = result["review_status"]
             budget_task_states = [task_state, *node_child_states]
@@ -306,13 +423,35 @@ def run_agent(
                 raise RuntimeError("graph run metadata drift")
 
             final_answer = result["final_result"]
+            if enable_planning:
+                _complete_satisfied_plan_steps(
+                    task_state,
+                    result["plan"],
+                    final_answer=final_answer,
+                    intent=result["resolved_intent"],
+                )
             if result["completion_status"] == "success" and not result["terminal_reason"]:
-                task_state.finish_success(final_answer)
+                if (
+                    enable_planning
+                    and task_state.checklist
+                    and set(task_state.completed_items) != set(task_state.checklist)
+                ):
+                    task_state.stop(
+                        STOP_REASON_RUNTIME_ERROR,
+                        status=STATUS_FAILED,
+                        final_answer="任务未通过确定性完成门禁，请重试。",
+                    )
+                    task_state.record_error(
+                        stage="completion_gate",
+                        code="completion_gate_failed",
+                    )
+                else:
+                    task_state.finish_success(final_answer)
             else:
                 stop_reason = STOP_REASON_MAP[result["terminal_reason"]]
                 task_state.stop(stop_reason, status=STATUS_FAILED, final_answer=final_answer)
         except Exception as exc:
-            final_answer = f"LangGraph execution failed: {type(exc).__name__}"
+            error_code, final_answer = _safe_execution_failure(exc)
             stop_reason = getattr(exc, "stop_reason", STOP_REASON_RUNTIME_ERROR)
             if stop_reason not in {
                 STOP_REASON_MODEL_ERROR,
@@ -320,6 +459,12 @@ def run_agent(
                 STOP_REASON_PERSISTENCE_ERROR,
             }:
                 stop_reason = STOP_REASON_RUNTIME_ERROR
+            task_state.record_error(
+                stage=getattr(exc, "stage", "runtime"),
+                code=error_code,
+                retryable=getattr(exc, "retryable", False),
+                attempts=getattr(exc, "attempts", 1),
+            )
             task_state.stop(stop_reason, status=STATUS_FAILED, final_answer=final_answer)
         finally:
             budget_task_states = [task_state, *node_child_states]

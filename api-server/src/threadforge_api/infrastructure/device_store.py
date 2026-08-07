@@ -16,6 +16,7 @@ from ..domain.errors import (
     AuthorizationDeniedError,
     DeviceNotFoundError,
     PairingCodeInvalidError,
+    RenameConflictError,
 )
 from ..domain.identity import canonical_owner_id
 from .jsonutil import read_json, secure_directory, write_json_atomic
@@ -28,13 +29,16 @@ class WorkerWorkspace:
     workspace_id: str
     name: str
     is_git: bool = False
+    display_name_source: str = "auto"
+    display_name_updated_at: str = ""
 
     def to_dict(self) -> dict:
         return {
             "workspace_id": self.workspace_id,
             "name": self.name,
             "display_name": self.name,
-            "display_name_source": "user",
+            "display_name_source": self.display_name_source,
+            "display_name_updated_at": self.display_name_updated_at,
             "is_git": self.is_git,
         }
 
@@ -47,6 +51,8 @@ class Device:
     token_digest: str
     created_at: str = field(default_factory=utc_now)
     last_seen_at: str = ""
+    display_name_source: str = "auto"
+    display_name_updated_at: str = ""
     model: str = ""
     model_configured: bool = False
     version: str = ""
@@ -68,6 +74,8 @@ class Device:
             "token_digest": self.token_digest,
             "created_at": self.created_at,
             "last_seen_at": self.last_seen_at,
+            "display_name_source": self.display_name_source,
+            "display_name_updated_at": self.display_name_updated_at,
             "model": self.model,
             "model_configured": self.model_configured,
             "version": self.version,
@@ -90,6 +98,10 @@ class Device:
             token_digest=str(payload["token_digest"]),
             created_at=str(payload.get("created_at", "")),
             last_seen_at=str(payload.get("last_seen_at", "")),
+            display_name_source=str(payload.get("display_name_source", "auto")),
+            display_name_updated_at=str(
+                payload.get("display_name_updated_at", payload.get("created_at", ""))
+            ),
             model=str(payload.get("model", "")),
             model_configured=bool(payload.get("model_configured", False)),
             version=str(payload.get("version", ""))[:32],
@@ -117,6 +129,8 @@ class Device:
                     workspace_id=str(item["workspace_id"]),
                     name=str(item["name"]),
                     is_git=bool(item.get("is_git", False)),
+                    display_name_source=str(item.get("display_name_source", "auto")),
+                    display_name_updated_at=str(item.get("display_name_updated_at", "")),
                 )
                 for item in payload.get("workspaces", [])
                 if isinstance(item, dict)
@@ -182,7 +196,9 @@ class DeviceStore:
             owner_id=owner_id,
             name=name.strip(),
             token_digest=self._token_digest(token),
+            display_name_source="user",
         )
+        device.display_name_updated_at = device.created_at
         with self._lock:
             write_json_atomic(self.root / f"{device_id}.json", device.to_dict())
         return device, token
@@ -245,6 +261,35 @@ class DeviceStore:
             raise ValueError("workspace ids must be unique per Worker")
         with self._lock:
             device = self.get(device_id)
+            existing = {workspace.workspace_id: workspace for workspace in device.workspaces}
+            presence_time = utc_now()
+            workspaces = [
+                WorkerWorkspace(
+                    workspace_id=workspace.workspace_id,
+                    name=(
+                        existing[workspace.workspace_id].name
+                        if workspace.workspace_id in existing
+                        and existing[workspace.workspace_id].display_name_source == "user"
+                        else workspace.name
+                    ),
+                    is_git=workspace.is_git,
+                    display_name_source=(
+                        existing[workspace.workspace_id].display_name_source
+                        if workspace.workspace_id in existing
+                        else "auto"
+                    ),
+                    display_name_updated_at=(
+                        existing[workspace.workspace_id].display_name_updated_at
+                        if workspace.workspace_id in existing
+                        and (
+                            existing[workspace.workspace_id].display_name_source == "user"
+                            or existing[workspace.workspace_id].name == workspace.name
+                        )
+                        else presence_time
+                    ),
+                )
+                for workspace in workspaces
+            ]
             device.last_seen_at = utc_now()
             device.model = model[:200]
             device.model_configured = bool(model_configured)
@@ -262,6 +307,35 @@ class DeviceStore:
             device.workspaces = list(workspaces)
             write_json_atomic(self.root / f"{device_id}.json", device.to_dict())
             return device
+
+    def set_workspace_display_name(
+        self,
+        device_id: str,
+        owner_id: str,
+        workspace_id: str,
+        display_name: str,
+    ) -> tuple[Device, WorkerWorkspace]:
+        with self._lock:
+            device = self.get_for_owner(device_id, owner_id)
+            updated_workspace = None
+            workspaces = []
+            for workspace in device.workspaces:
+                if workspace.workspace_id == workspace_id:
+                    updated_workspace = WorkerWorkspace(
+                        workspace_id=workspace.workspace_id,
+                        name=str(display_name).strip()[:200],
+                        is_git=workspace.is_git,
+                        display_name_source="user",
+                        display_name_updated_at=utc_now(),
+                    )
+                    workspaces.append(updated_workspace)
+                else:
+                    workspaces.append(workspace)
+            if updated_workspace is None:
+                raise DeviceNotFoundError(workspace_id)
+            device.workspaces = workspaces
+            write_json_atomic(self.root / f"{device_id}.json", device.to_dict())
+            return device, updated_workspace
 
     def update_worker_status(self, device_id: str, update_status: dict) -> Device:
         with self._lock:
@@ -288,13 +362,24 @@ class DeviceStore:
                     return device, workspace
         return None
 
-    def rename(self, device_id: str, owner_id: str, display_name: str) -> Device:
+    def rename(
+        self,
+        device_id: str,
+        owner_id: str,
+        display_name: str,
+        *,
+        expected_updated_at: str | None = None,
+    ) -> Device:
         display_name = str(display_name).strip()
         if not display_name or len(display_name) > 200:
             raise ValueError("invalid device display name")
         with self._lock:
             device = self.get_for_owner(device_id, owner_id)
+            if expected_updated_at and expected_updated_at != device.display_name_updated_at:
+                raise RenameConflictError("device display name changed on another client")
             device.name = display_name
+            device.display_name_source = "user"
+            device.display_name_updated_at = utc_now()
             write_json_atomic(self.root / f"{device_id}.json", device.to_dict())
             return device
 

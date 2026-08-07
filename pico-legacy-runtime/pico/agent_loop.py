@@ -219,6 +219,7 @@ class AgentLoop:
                 prompt_cache_retention=prompt_cache_retention,
             )
             completion_metadata = dict(getattr(agent.model_client, "last_completion_metadata", {}) or {})
+            task_state.record_model_usage(completion_metadata)
             if completion_metadata:
                 # 把后端返回的 usage/cache 统计并回 prompt_metadata，
                 # 方便统一写入 report 和 trace。
@@ -303,13 +304,21 @@ class AgentLoop:
                 task_state.record_affected_paths(tool_result.metadata.get("affected_paths", []))
                 tool_status = str(tool_result.metadata.get("tool_status", "unknown"))
                 if tool_status in {"ok", "partial_success"}:
+                    affected_paths = list(tool_result.metadata.get("affected_paths", []))
+                    relative_paths = list(affected_paths)
+                    requested_path = args.get("path") if isinstance(args, dict) else None
+                    if isinstance(requested_path, str) and requested_path.strip():
+                        relative_paths.append(requested_path.strip().replace("\\", "/"))
                     task_state.record_evidence(
                         {
                             "tool_call_id": tool_call_id,
                             "tool_name": name,
                             "status": tool_status,
                             "read_only": bool(tool_result.metadata.get("read_only", False)),
-                            "affected_paths": list(tool_result.metadata.get("affected_paths", [])),
+                            "affected_paths": affected_paths,
+                            "relative_paths": sorted(set(relative_paths)),
+                            "freshness": "current_run",
+                            "sensitivity": "workspace",
                             "summary": agent.summarize_tool_result(name, args, tool_result),
                         }
                     )

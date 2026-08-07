@@ -85,10 +85,18 @@ class TaskState:
     max_total_steps: int = 18
     plan_id: str = ""
     plan_revision: int = 0
+    plan_history: list[dict] = field(default_factory=list)
+    replan_reasons: list[str] = field(default_factory=list)
     intent: str = ""
     review_status: str = ""
     talk_steps: int = 0
     evidence: list[dict] = field(default_factory=list)
+    input_tokens: int = 0
+    output_tokens: int = 0
+    error_stage: str = ""
+    error_code: str = ""
+    error_retryable: bool = False
+    error_attempts: int = 0
 
     @classmethod
     def create(
@@ -146,10 +154,22 @@ class TaskState:
             max_total_steps=max(1, int(data.get("max_total_steps", 18))),
             plan_id=str(data.get("plan_id", "")),
             plan_revision=max(0, int(data.get("plan_revision", 0))),
+            plan_history=[
+                dict(item) for item in data.get("plan_history", []) if isinstance(item, dict)
+            ],
+            replan_reasons=[
+                str(item) for item in data.get("replan_reasons", []) if str(item).strip()
+            ],
             intent=str(data.get("intent", "")),
             review_status=str(data.get("review_status", "")),
             talk_steps=max(0, int(data.get("talk_steps", 0))),
             evidence=[dict(item) for item in data.get("evidence", []) if isinstance(item, dict)],
+            input_tokens=max(0, int(data.get("input_tokens", 0) or 0)),
+            output_tokens=max(0, int(data.get("output_tokens", 0) or 0)),
+            error_stage=str(data.get("error_stage", "")),
+            error_code=str(data.get("error_code", "")),
+            error_retryable=bool(data.get("error_retryable", False)),
+            error_attempts=max(0, int(data.get("error_attempts", 0) or 0)),
         )
 
     def set_phase(self, phase, *, next_step="", completed_item=""):
@@ -209,6 +229,19 @@ class TaskState:
         self.talk_steps += 1
         return self
 
+    def record_model_usage(self, metadata):
+        metadata = dict(metadata or {})
+        self.input_tokens += max(0, int(metadata.get("input_tokens") or 0))
+        self.output_tokens += max(0, int(metadata.get("output_tokens") or 0))
+        return self
+
+    def record_error(self, *, stage="", code="", retryable=False, attempts=0):
+        self.error_stage = str(stage or "")[:64]
+        self.error_code = str(code or "")[:100]
+        self.error_retryable = bool(retryable)
+        self.error_attempts = max(0, int(attempts or 0))
+        return self
+
     def record_evidence(self, evidence):
         if not isinstance(evidence, dict):
             raise TypeError("evidence must be a dictionary")
@@ -256,7 +289,6 @@ class TaskState:
         self.stop_reason = STOP_REASON_FINAL_ANSWER_RETURNED
         self.final_answer = str(final_answer)
         self.requires_post_tool_reasoning = False
-        self.completed_items = list(self.checklist)
         self.set_phase(PHASE_FINAL, next_step="Task complete")
         return self
 
@@ -288,8 +320,16 @@ class TaskState:
             "max_total_steps": self.max_total_steps,
             "plan_id": self.plan_id,
             "plan_revision": self.plan_revision,
+            "plan_history": [dict(item) for item in self.plan_history],
+            "replan_reasons": list(self.replan_reasons),
             "intent": self.intent,
             "review_status": self.review_status,
             "talk_steps": self.talk_steps,
             "evidence": [dict(item) for item in self.evidence],
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "error_stage": self.error_stage,
+            "error_code": self.error_code,
+            "error_retryable": self.error_retryable,
+            "error_attempts": self.error_attempts,
         }

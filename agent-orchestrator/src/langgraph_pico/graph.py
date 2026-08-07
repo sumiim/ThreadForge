@@ -42,6 +42,7 @@ from .planning import (
 
 
 MAX_FIX_ATTEMPTS = 2
+MAX_REPLAN_ATTEMPTS = 2
 READ_ONLY_TOOLS = ("list_files", "read_file", "search")
 COMPLETION_METADATA_KEYS = (
     "input_tokens",
@@ -67,6 +68,7 @@ PLAN_MAXIMUM_BUDGETS = {
 
 class AgentState(TypedDict):
     task: str
+    workspace_id: str
     acceptance: str
     requested_task_mode: str
     resolved_intent: str
@@ -92,6 +94,11 @@ class AgentState(TypedDict):
     plan: dict
     plan_attempts: int
     plan_error: str
+    plan_history: list[dict]
+    replan_requested: bool
+    replan_reason: str
+    replan_attempts: int
+    started_monotonic: float
 
 
 class GraphPersistenceError(RuntimeError):
@@ -120,12 +127,65 @@ def _safe_completion_metadata(agent, model_client):
     return agent.redact_artifact(filtered)
 
 
-def _complete_graph_model(agent, model_client, prompt, max_new_tokens):
+def _plan_limits(state, agent):
+    limits = dict(PLAN_MAXIMUM_BUDGETS)
+    limits["tool_calls"] = min(limits["tool_calls"], max(1, int(state["step_budget"])))
+    limits["model_rounds"] = min(
+        limits["model_rounds"],
+        max(1, int(agent.max_total_steps or limits["model_rounds"])),
+    )
+    return limits
+
+
+def _run_budget_usage(state, config):
+    configurable = config["configurable"]
+    agent = configurable["agent"]
+    states = [agent.current_task_state]
+    states.extend(agent.child_task_states)
+    states.extend(configurable["node_child_states"])
+    unique = {item.run_id: item for item in states if item is not None}
+    return {
+        "model_rounds": sum(item.attempts for item in unique.values()),
+        "tool_calls": sum(item.tool_steps for item in unique.values()),
+        "input_tokens": sum(item.input_tokens for item in unique.values()),
+        "output_tokens": sum(item.output_tokens for item in unique.values()),
+        "elapsed_seconds": max(0, int(time.monotonic() - state["started_monotonic"])),
+    }
+
+
+def _budget_failure(state, config):
+    if not state["planning_enabled"] or not state["plan"]:
+        return None
+    usage = _run_budget_usage(state, config)
+    budgets = state["plan"].get("budgets", {})
+    exceeded = [key for key, value in usage.items() if value > int(budgets.get(key, 0))]
+    if not exceeded:
+        return None
+    agent = config["configurable"]["agent"]
+    agent.emit_trace(
+        agent.current_task_state,
+        "plan_budget_exhausted",
+        {"budget_keys": exceeded, "usage": usage},
+    )
+    return _failed_state(
+        state,
+        "budget_exhausted",
+        "Run budget was exhausted: " + ", ".join(exceeded),
+    )
+
+
+def _complete_graph_model(agent, model_client, prompt, max_new_tokens, *, stage):
     agent.cancellation_token.raise_if_cancelled()
     agent.execution_hooks.before_model(agent.current_task_state)
-    raw = model_client.complete(prompt, max_new_tokens)
+    try:
+        raw = model_client.complete(prompt, max_new_tokens)
+    except Exception as exc:
+        if hasattr(exc, "at_stage"):
+            exc.at_stage(stage)
+        raise
     metadata = dict(getattr(model_client, "last_completion_metadata", {}) or {})
     agent.last_completion_metadata = metadata
+    agent.current_task_state.record_model_usage(metadata)
     agent.cancellation_token.raise_if_cancelled()
     agent.execution_hooks.after_model(agent.current_task_state, metadata)
     return raw
@@ -175,6 +235,10 @@ def _call_graph_role_delegate(agent, spec):
         child, text = create_role_delegate(agent, spec)
         return {"ok": True, "text": text, "child": child}
     except Exception as exc:
+        if getattr(exc, "stop_reason", "") == "model_error":
+            if hasattr(exc, "at_stage"):
+                exc.at_stage(str(spec.role))
+            raise
         return {"ok": False, "text": "", "error_type": type(exc).__name__}
 
 
@@ -226,7 +290,19 @@ def prepare_plan_node(state: AgentState, config: RunnableConfig) -> AgentState:
     configurable = config["configurable"]
     agent = configurable["agent"]
     metadata_collector = configurable["run_metadata_collector"]
-    available_tools = tuple(agent.allowed_tools or agent.tools)
+    available_tools = tuple(
+        name for name in (agent.allowed_tools or agent.tools) if name != "delegate"
+    )
+    is_replan = bool(state["plan"] and state["replan_requested"])
+    if is_replan and state["replan_attempts"] >= MAX_REPLAN_ATTEMPTS:
+        return _failed_state(
+            state,
+            "review_retry_limit_reached",
+            "Replanning retry limit was reached.",
+        )
+    expected_revision = int(state["plan"].get("revision", 0)) + 1 if is_replan else 1
+    expected_plan_id = str(state["plan"].get("plan_id", "")) if is_replan else ""
+    maximum_budgets = _plan_limits(state, agent)
     error_code = ""
     error_message = ""
 
@@ -246,16 +322,22 @@ def prepare_plan_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 state["task"],
                 state["intent_context"],
                 available_tools,
-                PLAN_MAXIMUM_BUDGETS,
+                maximum_budgets,
                 retry=attempt > 1,
+                expected_revision=expected_revision,
+                previous_plan=state["plan"] if is_replan else None,
+                replan_reason=state["replan_reason"] if is_replan else "",
             ),
             PLANNER_MAX_NEW_TOKENS,
+            stage="planning",
         )
         try:
             plan = parse_and_validate_plan(
                 raw,
                 available_tools=available_tools,
-                maximum_budgets=PLAN_MAXIMUM_BUDGETS,
+                maximum_budgets=maximum_budgets,
+                expected_revision=expected_revision,
+                expected_plan_id=expected_plan_id,
             )
         except PlanValidationError as exc:
             error_code = exc.code
@@ -280,6 +362,7 @@ def prepare_plan_node(state: AgentState, config: RunnableConfig) -> AgentState:
         task_state.intent = plan["intent"]
         task_state.checklist = [step["goal"] for step in plan["steps"]]
         task_state.done_when = [item for step in plan["steps"] for item in step["done_when"]]
+        task_state.completed_items = []
         _write_graph_task_state(agent)
         agent.emit_trace(
             task_state,
@@ -301,6 +384,7 @@ def prepare_plan_node(state: AgentState, config: RunnableConfig) -> AgentState:
                     for step in plan["steps"]
                 ],
                 "duration_ms": int((time.monotonic() - started_at) * 1000),
+                "replan_reason": state["replan_reason"] if is_replan else "",
                 "completion_metadata": _safe_completion_metadata(agent, agent.model_client),
             },
         )
@@ -310,8 +394,20 @@ def prepare_plan_node(state: AgentState, config: RunnableConfig) -> AgentState:
             "resolved_intent": plan["intent"],
             "intent_source": "plan",
             "plan": plan,
+            "plan_history": [
+                *state["plan_history"],
+                {
+                    **deepcopy(state["plan"]),
+                    "replan_reason": state["replan_reason"],
+                },
+            ]
+            if is_replan
+            else state["plan_history"],
             "plan_attempts": attempt,
             "plan_error": "",
+            "replan_requested": False,
+            "replan_reason": "",
+            "replan_attempts": state["replan_attempts"] + (1 if is_replan else 0),
         }
 
     return _failed_state(
@@ -332,6 +428,8 @@ def _run_isolated_executor(executor, prompt, config, *, collect_answer_attempts=
         return executor.ask(prompt)
     except Exception as exc:
         error = exc
+        if hasattr(exc, "at_stage"):
+            exc.at_stage("execute")
         raise
     finally:
         task_state = executor.current_task_state
@@ -374,6 +472,7 @@ def _classify_auto_intent(agent, router_client, metadata_collector, task, contex
             router_client,
             build_intent_prompt(task, context, retry=attempt > 1),
             ROUTER_MAX_NEW_TOKENS,
+            stage="intent",
         )
         protocol_status = "valid"
         try:
@@ -433,6 +532,12 @@ def intent_router_node(state: AgentState, config: RunnableConfig) -> AgentState:
     agent = configurable["agent"]
     metadata_collector = configurable["run_metadata_collector"]
     mode = state["requested_task_mode"]
+
+    budget_failure = _budget_failure(state, config)
+    if budget_failure is not None:
+        route = route_after_intent(budget_failure)
+        _emit_route(agent, "intent_router", route, "budget_exhausted")
+        return budget_failure
 
     if state["terminal_reason"]:
         route = route_after_intent(state)
@@ -552,6 +657,10 @@ def route_after_research(state: AgentState):
 
 def research_node(state: AgentState, config: RunnableConfig) -> AgentState:
     agent = config["configurable"]["agent"]
+    budget_failure = _budget_failure(state, config)
+    if budget_failure is not None:
+        _emit_route(agent, "research_delegate", "finalize", "budget_exhausted")
+        return budget_failure
     minimum_remaining = 2 if state["resolved_intent"] == INTENT_READ_ONLY else 3
     if state["step_budget"] - state["coordinator_steps_used"] < minimum_remaining:
         next_state = _failed_state(
@@ -582,6 +691,7 @@ def research_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 "research_result": call["text"],
                 "coordinator_steps_used": state["coordinator_steps_used"] + 1,
             }
+    next_state = _budget_failure(next_state, config) or next_state
     route = route_after_research(next_state)
     _emit_route(
         agent,
@@ -618,6 +728,7 @@ def _conversation_answer(state, config):
                 retry=attempt > 1,
             ),
             agent.max_new_tokens,
+            stage="execute",
         )
         protocol_status = "valid"
         try:
@@ -741,6 +852,9 @@ def _read_only_answer(state, config):
 
 def answer_node(state: AgentState, config: RunnableConfig) -> AgentState:
     agent = config["configurable"]["agent"]
+    budget_failure = _budget_failure(state, config)
+    if budget_failure is not None:
+        return budget_failure
     if state["resolved_intent"] == INTENT_CONVERSATION:
         next_state = _conversation_answer(state, config)
     elif state["resolved_intent"] == INTENT_READ_ONLY:
@@ -748,6 +862,7 @@ def answer_node(state: AgentState, config: RunnableConfig) -> AgentState:
     else:
         raise RuntimeError("answer node received code_change")
 
+    next_state = _budget_failure(next_state, config) or next_state
     if next_state["completion_status"] == "success":
         child_task_id = ""
         if state["resolved_intent"] == INTENT_READ_ONLY:
@@ -762,7 +877,15 @@ def answer_node(state: AgentState, config: RunnableConfig) -> AgentState:
     return next_state
 
 
+def route_after_answer(state: AgentState):
+    if state["terminal_reason"]:
+        return "finalize"
+    return "review" if state["planning_enabled"] else "finalize"
+
+
 def route_after_execute_change(state: AgentState):
+    if state["replan_requested"] and not state["terminal_reason"]:
+        return "replan"
     return "finalize" if state["terminal_reason"] else "review"
 
 
@@ -770,6 +893,10 @@ def execute_change_node(state: AgentState, config: RunnableConfig) -> AgentState
     if state["resolved_intent"] != INTENT_CODE_CHANGE:
         raise RuntimeError("execute_change received a non-code intent")
     agent = config["configurable"]["agent"]
+    budget_failure = _budget_failure(state, config)
+    if budget_failure is not None:
+        _emit_route(agent, "execute_change", "finalize", "budget_exhausted")
+        return budget_failure
     remaining = state["step_budget"] - state["coordinator_steps_used"]
     if remaining <= 1:
         next_state = _failed_state(
@@ -828,8 +955,14 @@ def execute_change_node(state: AgentState, config: RunnableConfig) -> AgentState
                 if item.get("tool_name") in {"write_file", "patch_file", "run_shell"}
                 and item.get("status") in {"ok", "partial_success"}
             ]
-            if review_focus_paths and (write_evidence or not state["planning_enabled"]):
+            if affected and (write_evidence or not state["planning_enabled"]):
                 next_state = updated
+            elif state["planning_enabled"] and state["replan_attempts"] < MAX_REPLAN_ATTEMPTS:
+                next_state = {
+                    **updated,
+                    "replan_requested": True,
+                    "replan_reason": "execution produced no successful write evidence and affected path",
+                }
             else:
                 no_change_result = str(result).strip()
                 next_state = _failed_state(
@@ -840,6 +973,7 @@ def execute_change_node(state: AgentState, config: RunnableConfig) -> AgentState
                     else "No successful write evidence and reviewable path were produced.",
                 )
 
+    next_state = _budget_failure(next_state, config) or next_state
     route = route_after_execute_change(next_state)
     _emit_route(
         agent,
@@ -854,12 +988,16 @@ def route_finish_or_fix(state: AgentState):
     if state["terminal_reason"] or state["review_status"] == "pass":
         return "finalize"
     if state["review_status"] == "needs_fix":
-        return "execute_change"
+        return "replan" if state["planning_enabled"] else "execute_change"
     raise RuntimeError("review route received an unresolved status")
 
 
 def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
     agent = config["configurable"]["agent"]
+    budget_failure = _budget_failure(state, config)
+    if budget_failure is not None:
+        _emit_route(agent, "review_delegate", "finalize", "budget_exhausted")
+        return budget_failure
     agent.current_task_state.review_status = "running"
     _write_graph_task_state(agent)
     agent.emit_trace(
@@ -873,6 +1011,59 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
             "budget_exhausted",
             "Coordinator step budget was exhausted.",
         )
+    elif state["resolved_intent"] != INTENT_CODE_CHANGE:
+        task_state = agent.current_task_state
+        task_state.record_attempt()
+        _write_graph_task_state(agent)
+        raw = _complete_graph_model(
+            agent,
+            agent.model_client,
+            (
+                "Review this candidate answer against the request and acceptance criteria. "
+                "Do not expose hidden reasoning. The first non-empty line must be exactly "
+                "status: pass or status: needs_fix, followed by a concise issue summary.\n"
+                f"REQUEST={state['task']}\n"
+                f"ACCEPTANCE={state['acceptance']}\n"
+                f"INTENT={state['resolved_intent']}\n"
+                f"CANDIDATE={state['execution_result']}"
+            ),
+            agent.max_new_tokens,
+            stage="review",
+        )
+        review = normalize_review_result(raw)
+        updated = {
+            **state,
+            "review_status": review["status"],
+            "review_issues": review["text"],
+            "coordinator_steps_used": state["coordinator_steps_used"] + 1,
+        }
+        task_state.review_status = review["status"]
+        if review["recovered"]:
+            task_state.record_malformed_output_recovered()
+        _write_graph_task_state(agent)
+        agent.emit_trace(
+            task_state,
+            "review_completed",
+            {
+                "status": review["status"],
+                "attempt": state["fix_attempts"] + 1,
+                "issue_count": len(review.get("issue_codes", [])),
+            },
+        )
+        if review["status"] == "pass":
+            next_state = {**updated, "completion_status": "success"}
+        elif state["replan_attempts"] >= MAX_REPLAN_ATTEMPTS:
+            next_state = _failed_state(
+                updated,
+                "review_retry_limit_reached",
+                review["text"],
+            )
+        else:
+            next_state = {
+                **updated,
+                "replan_requested": True,
+                "replan_reason": review["text"],
+            }
     else:
         call = _call_graph_role_delegate(
             agent,
@@ -921,9 +1112,6 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 },
             )
             if review["status"] == "pass":
-                for item in agent.current_task_state.checklist:
-                    agent.current_task_state.complete_item(item)
-                _write_graph_task_state(agent)
                 next_state = {**updated, "completion_status": "success"}
             elif state["fix_attempts"] >= MAX_FIX_ATTEMPTS:
                 next_state = _failed_state(
@@ -932,7 +1120,11 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
                     review["text"],
                 )
             else:
-                next_state = updated
+                next_state = {
+                    **updated,
+                    "replan_requested": bool(state["planning_enabled"]),
+                    "replan_reason": review["text"] if state["planning_enabled"] else "",
+                }
 
     if agent.current_task_state.review_status == "running":
         terminal_review_status = next_state["review_status"] or "failed"
@@ -948,6 +1140,7 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
             },
         )
 
+    next_state = _budget_failure(next_state, config) or next_state
     route = route_finish_or_fix(next_state)
     _emit_route(
         agent,
@@ -980,6 +1173,7 @@ def build_graph():
     builder.add_node("answer", answer_node)
     builder.add_node("execute_change", execute_change_node)
     builder.add_node("review_delegate", review_node)
+    builder.add_node("replan", prepare_plan_node)
     builder.add_node("finalize", finalize_node)
     builder.add_edge(START, "prepare_plan")
     builder.add_edge("prepare_plan", "intent_router")
@@ -1002,16 +1196,21 @@ def build_graph():
             "finalize": "finalize",
         },
     )
-    builder.add_edge("answer", "finalize")
+    builder.add_conditional_edges(
+        "answer",
+        route_after_answer,
+        {"review": "review_delegate", "finalize": "finalize"},
+    )
     builder.add_conditional_edges(
         "execute_change",
         route_after_execute_change,
-        {"review": "review_delegate", "finalize": "finalize"},
+        {"review": "review_delegate", "replan": "replan", "finalize": "finalize"},
     )
     builder.add_conditional_edges(
         "review_delegate",
         route_finish_or_fix,
-        {"execute_change": "execute_change", "finalize": "finalize"},
+        {"execute_change": "execute_change", "replan": "replan", "finalize": "finalize"},
     )
+    builder.add_edge("replan", "intent_router")
     builder.add_edge("finalize", END)
     return builder.compile()

@@ -73,6 +73,8 @@ def run_artifacts_match(data_dir, task) -> bool:
         TaskStatus.COMPLETED: STATUS_COMPLETED,
         TaskStatus.CANCELLED: STATUS_STOPPED,
         TaskStatus.FAILED: STATUS_FAILED,
+        TaskStatus.INTERRUPTED: STATUS_FAILED,
+        TaskStatus.BLOCKED: STATUS_FAILED,
     }.get(task.status)
     return (
         expected_status is not None
@@ -107,7 +109,19 @@ def terminal_task_from_run(data_dir, task) -> tuple[TaskStatus, str, str] | None
     elif state.status == STATUS_STOPPED and state.stop_reason == STOP_REASON_USER_CANCELLED:
         public_status = TaskStatus.CANCELLED
     elif state.status in {STATUS_STOPPED, STATUS_FAILED}:
-        public_status = TaskStatus.FAILED
+        if state.stop_reason in {"service_restarted", "service_shutdown_timeout"}:
+            public_status = TaskStatus.INTERRUPTED
+        elif state.stop_reason in {
+            "approval_denied",
+            "budget_exhausted",
+            "no_changes_to_review",
+            "retry_limit_reached",
+            "review_retry_limit_reached",
+            "step_limit_reached",
+        }:
+            public_status = TaskStatus.BLOCKED
+        else:
+            public_status = TaskStatus.FAILED
     else:
         return None
     return public_status, state.stop_reason, state.final_answer

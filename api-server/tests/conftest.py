@@ -72,7 +72,7 @@ def wait_for_terminal(client, task_id, timeout=10.0):
     last = {}
     while time.monotonic() < deadline:
         last = client.get(f"/api/v1/tasks/{task_id}").json()
-        if last["status"] in {"completed", "cancelled", "failed"}:
+        if last["status"] in {"completed", "cancelled", "failed", "interrupted", "blocked"}:
             return last
         time.sleep(0.05)
     raise AssertionError(f"task did not reach terminal: {last}")

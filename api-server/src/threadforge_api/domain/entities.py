@@ -13,7 +13,7 @@ from typing import Any
 from .enums import ApprovalStatus, TaskStatus
 from .identity import canonical_owner_id
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def utc_now() -> str:
@@ -39,6 +39,10 @@ class Task:
     run_index: list[dict] = field(default_factory=list)
     final_answer: str | None = None
     stop_reason: str | None = None
+    error_stage: str = ""
+    error_code: str = ""
+    error_retryable: bool = False
+    error_attempts: int = 0
     pending_approval: dict | None = None
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)

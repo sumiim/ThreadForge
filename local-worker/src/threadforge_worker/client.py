@@ -320,6 +320,11 @@ class WorkerClient:
                     "title": str(session.get("title", ""))[:200],
                     "created_at": str(session.get("created_at", ""))[:40],
                     "updated_at": str(session.get("updated_at", ""))[:40],
+                    "display_name_source": str(session.get("display_name_source", "auto"))[:16],
+                    "display_name_updated_at": str(
+                        session.get("display_name_updated_at", session.get("created_at", ""))
+                    )[:40],
+                    "first_request_at": str(session.get("first_request_at", ""))[:40],
                     "message_total": len(session.get("history", [])),
                 }
             )

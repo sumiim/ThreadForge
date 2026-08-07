@@ -101,7 +101,10 @@ export default function ChatView({ session, running, agentProgress, onSend, onSt
       ) : (
         <MessageList messages={session.messages} onApprove={onApprove} onReject={onReject} />
       )}
-      <RunMinimap items={session.runIndex ?? []} />
+      <RunMinimap
+        runs={session.runs ?? []}
+        activeRunId={session.activeRunId ?? session.lastRunId}
+      />
       </div>
 
       <ApprovalNotice count={pendingApprovals.length} onLocate={locatePending} />

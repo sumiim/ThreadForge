@@ -57,6 +57,11 @@ class ActiveTaskExistsError(AppError):
         super().__init__("another root task is active", {"task_id": task_id})
 
 
+class RenameConflictError(AppError):
+    http_status = 409
+    code = "rename_conflict"
+
+
 class ApprovalAlreadyResolvedError(AppError):
     http_status = 409
     code = "approval_already_resolved"

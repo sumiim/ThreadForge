@@ -52,7 +52,8 @@ def test_tool_result_enters_post_tool_reasoning_and_persists_agent_state(tmp_pat
     assert state.phase == "FINAL"
     assert state.read_files == 1
     assert state.checklist
-    assert set(state.checklist).issubset(state.completed_items)
+    assert "Gather the minimum workspace context" in state.completed_items
+    assert "Analyze evidence and choose the next action" in state.completed_items
     trace = agent.run_store.trace_path(state).read_text(encoding="utf-8")
     assert '"event": "agent_state_changed"' in trace
     assert '"event": "post_tool_reasoning"' in trace

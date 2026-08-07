@@ -75,6 +75,8 @@ def list_devices(
                 "update_status": device.update_status,
                 "created_at": device.created_at,
                 "last_seen_at": device.last_seen_at,
+                "display_name_source": device.display_name_source,
+                "display_name_updated_at": device.display_name_updated_at,
                 "workspaces": [workspace.to_dict() for workspace in device.workspaces],
             }
             for device in device_store.list_for_owner(actor.owner_id)
@@ -132,12 +134,17 @@ def rename_device(
     actor: Actor = Depends(get_actor),
     device_store: DeviceStore = Depends(get_device_store),
 ) -> dict:
-    device = device_store.rename(device_id, actor.owner_id, body.display_name)
+    device = device_store.rename(
+        device_id,
+        actor.owner_id,
+        body.display_name,
+        expected_updated_at=body.expected_updated_at,
+    )
     return {
         "device_id": device.device_id,
         "display_name": device.name,
-        "display_name_source": "user",
-        "display_name_updated_at": device.last_seen_at or device.created_at,
+        "display_name_source": device.display_name_source,
+        "display_name_updated_at": device.display_name_updated_at,
     }
 
 
@@ -158,6 +165,7 @@ async def rename_workspace(
         entity_type="workspace",
         entity_id=workspace_id,
         display_name=body.display_name,
+        expected_updated_at=body.expected_updated_at,
     )
 
 

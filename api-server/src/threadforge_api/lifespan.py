@@ -298,7 +298,7 @@ class AppContainer:
         converge_run_artifacts(
             self.settings.data_dir,
             task,
-            status=TaskStatus.FAILED,
+            status=TaskStatus.INTERRUPTED,
             stop_reason="service_restarted",
             final_answer="agent run interrupted by service restart",
         )
@@ -309,7 +309,7 @@ class AppContainer:
 
 
 def _set_failed_restarted(task):
-    task.status = TaskStatus.FAILED
+    task.status = TaskStatus.INTERRUPTED
     task.stop_reason = "service_restarted"
     task.pending_approval = None
     return task
