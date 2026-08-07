@@ -79,9 +79,19 @@ def main(argv=None) -> int:
             print(f"{workspace.workspace_id}\t{workspace.name}\t{workspace.path}")
         return 0
     if args.command == "status":
+        from .updater import load_update_status
+
         print(f"Server: {config.server_url}")
         print(f"Device: {config.device_name or '-'} ({config.device_id or 'not paired'})")
         print(f"Workspaces: {len(config.workspaces)}")
+        update_status = load_update_status(store)
+        if update_status:
+            print(
+                "Update: "
+                f"{update_status['status']} "
+                f"({update_status['current_version']} -> "
+                f"{update_status['target_version'] or '-'})"
+            )
         return 0
     if args.command == "service":
         from .service import run_service, start_service_background

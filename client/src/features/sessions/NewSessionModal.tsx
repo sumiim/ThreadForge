@@ -85,6 +85,19 @@ export default function NewSessionModal({
   const outdatedDevices = release
     ? (devices ?? []).filter((device) => workerNeedsUpdate(device, release))
     : []
+  const activeUpdate = outdatedDevices.find((device) =>
+    ['checking', 'downloading', 'installing'].includes(device.update_status?.status ?? ''),
+  )
+  const activeUpdateProgress = activeUpdate?.update_status?.total_bytes
+    ? Math.min(
+        100,
+        Math.round(
+          ((activeUpdate.update_status.downloaded_bytes ?? 0) /
+            activeUpdate.update_status.total_bytes) *
+            100,
+        ),
+      )
+    : null
   const selectedDevice =
     compatibleDevices.find((device) => device.device_id === selectedDeviceId) ?? compatibleDevices[0] ?? null
   const addWorkspaceTarget = selectable.find(
@@ -125,6 +138,19 @@ export default function NewSessionModal({
     return () => {
       active = false
     }
+  }, [devices, noWorkspace, open])
+
+  useEffect(() => {
+    if (!open || !noWorkspace || devices === null) return
+    const timer = window.setInterval(() => {
+      void listDevices()
+        .then(({ items }) => {
+          setDevices(items)
+          setDeviceError('')
+        })
+        .catch((cause: unknown) => setDeviceError(friendlyMessage(cause)))
+    }, 5_000)
+    return () => window.clearInterval(timer)
   }, [devices, noWorkspace, open])
 
   const resetState = () => {
@@ -297,6 +323,29 @@ export default function NewSessionModal({
           showIcon
           message={`检测到旧版 Worker ${outdatedDevices.map((device) => device.version || '版本未知').join('、')}，当前稳定版为 ${release.version}`}
           description="旧版 Worker 不会调用目录选择器，请下载并运行最新安装程序；更新后会保留现有配对和工作区。"
+        />
+      ) : null}
+      {activeUpdate ? (
+        <Alert
+          type="info"
+          showIcon
+          message={`Worker 正在自动更新至 ${activeUpdate.update_status?.target_version || release?.version || '最新版本'}`}
+          description={
+            activeUpdate.update_status?.status === 'installing'
+              ? '安装程序正在替换旧版本，Worker 会自动重启并重新连接。'
+              : '下载支持断点续传；网络中断后会自动继续，不需要重复手动下载。'
+          }
+        />
+      ) : null}
+      {activeUpdateProgress !== null ? (
+        <Progress percent={activeUpdateProgress} status="active" />
+      ) : null}
+      {outdatedDevices.some((device) => device.update_status?.status === 'failed') ? (
+        <Alert
+          type="warning"
+          showIcon
+          message="Worker 自动更新暂时失败，后台将在 30 秒后续传重试"
+          description="你也可以使用下面的手动下载安装作为备用方式。"
         />
       ) : null}
       <div className="flex items-center justify-between gap-3 border-b border-stone-200 pb-3">

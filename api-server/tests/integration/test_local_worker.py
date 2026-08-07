@@ -109,6 +109,36 @@ def test_companion_workspace_selection_roundtrip(client):
         ]
 
 
+def test_companion_reports_bounded_update_progress(client):
+    paired = _pair(client)
+    headers = {"Authorization": f"Bearer {paired['device_token']}"}
+    with client.websocket_connect("/api/v1/workers/connect", headers=headers) as socket:
+        _hello(socket, capabilities=["auto_update", "resumable_auto_update"])
+        socket.send_json(
+            {
+                "type": "update.status",
+                "status": "downloading",
+                "current_version": "0.3.0",
+                "target_version": "0.3.1",
+                "downloaded_bytes": 25,
+                "total_bytes": 100,
+                "error": "",
+                "updated_at": "2026-08-07T12:00:00+00:00",
+            }
+        )
+        assert socket.receive_json() == {"type": "update.status.ack"}
+        device = client.get("/api/v1/devices").json()["items"][0]
+        assert device["update_status"] == {
+            "status": "downloading",
+            "current_version": "0.3.0",
+            "target_version": "0.3.1",
+            "downloaded_bytes": 25,
+            "total_bytes": 100,
+            "error": "",
+            "updated_at": "2026-08-07T12:00:00+00:00",
+        }
+
+
 def test_online_worker_pool_supports_multiple_connections_and_capability_filter(client):
     first = _pair(client, "First laptop")
     second = _pair(client, "Second server")

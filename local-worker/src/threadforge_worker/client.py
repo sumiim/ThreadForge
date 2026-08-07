@@ -27,6 +27,7 @@ from .config import (
     WorkspacePathError,
 )
 from .runtime import ActiveRun, CancellationToken, RemoteApprovalStrategy, run_task
+from .updater import load_update_status
 
 _SESSION_ID = re.compile(r"^ses_[a-f0-9]{32}$")
 _SESSION_SYNC_CHUNK_SIZE = 100
@@ -60,7 +61,6 @@ class WorkerClient:
         *,
         workspace_selector: Callable[[str], str | None] | None = None,
         status_callback: Callable[[str], None] | None = None,
-        ready_callback: Callable[[], None] | None = None,
     ):
         self.store = store
         self.config = config
@@ -71,10 +71,9 @@ class WorkerClient:
         self._activity_lock = threading.Lock()
         self._workspace_selector = workspace_selector
         self._status_callback = status_callback
-        self._ready_callback = ready_callback
         self._stop_event = threading.Event()
         self._updating = threading.Event()
-        self._update_started = threading.Event()
+        self._ready_event = threading.Event()
 
     @property
     def connected(self) -> bool:
@@ -105,6 +104,16 @@ class WorkerClient:
 
     def wait_for_stop(self, timeout_seconds: float) -> bool:
         return self._stop_event.wait(timeout_seconds)
+
+    def report_update_status(self, status: dict) -> None:
+        if not self._ready_event.is_set():
+            return
+        try:
+            self._send({"type": "update.status", **status})
+        except RuntimeError:
+            # The current state is also persisted locally and included in the
+            # next hello, so a disconnected control plane does not lose it.
+            pass
 
     def sync_workspaces(self) -> bool:
         self.config = self.store.load()
@@ -163,6 +172,7 @@ class WorkerClient:
             ping_timeout=20,
         ) as websocket:
             self._socket = websocket
+            self._ready_event.clear()
             self._send(
                 {
                     "type": "hello",
@@ -173,6 +183,7 @@ class WorkerClient:
                     "model": os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4"),
                     "model_configured": bool(os.environ.get("PICO_OPENAI_API_KEY", "").strip()),
                     "orchestration_backend": "langgraph-v1.1",
+                    "update_status": load_update_status(self.store),
                     "model_capabilities": {
                         "provider": "openai-compatible",
                         "models": [
@@ -187,6 +198,7 @@ class WorkerClient:
                         "local_history",
                         "model_configuration",
                         "auto_update",
+                        "resumable_auto_update",
                         "langgraph_v1_1",
                         "run_model_settings",
                         "rename_entities",
@@ -208,6 +220,7 @@ class WorkerClient:
                     if active.thread is not None:
                         active.thread.join()
                 self._socket = None
+                self._ready_event.clear()
 
     def _handle(self, message: dict) -> None:
         message_type = str(message.get("type", ""))
@@ -235,14 +248,8 @@ class WorkerClient:
         elif message_type == "entity.rename":
             self._rename_entity(message)
         elif message_type == "hello.ack":
+            self._ready_event.set()
             self._start_session_sync()
-            if self._ready_callback is not None and not self._update_started.is_set():
-                self._update_started.set()
-                threading.Thread(
-                    target=self._ready_callback,
-                    name="worker-auto-update",
-                    daemon=True,
-                ).start()
         elif message_type in {
             "heartbeat.ack",
             "workspaces.updated.ack",
@@ -250,6 +257,7 @@ class WorkerClient:
             "workspace.selection.ack",
             "model.configuration.ack",
             "approval.registered",
+            "update.status.ack",
         }:
             return
         elif message_type == "protocol.error":

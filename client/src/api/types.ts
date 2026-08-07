@@ -54,9 +54,20 @@ export interface Device {
   display_name?: string
   orchestration_backend?: string
   model_capabilities?: ModelCapabilities
+  update_status?: WorkerUpdateStatus
   created_at: string
   last_seen_at: string
   workspaces: WorkerWorkspace[]
+}
+
+export interface WorkerUpdateStatus {
+  status: 'checking' | 'downloading' | 'installing' | 'current' | 'failed' | 'unsupported' | ''
+  current_version: string
+  target_version: string
+  downloaded_bytes: number
+  total_bytes: number
+  error: string
+  updated_at: string
 }
 
 /** 在线 Worker 池条目；用于未来的多 Worker 路由/故障转移。 */

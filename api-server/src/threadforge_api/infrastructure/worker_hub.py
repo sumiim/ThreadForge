@@ -666,6 +666,8 @@ class WorkerHub:
             self._handle_model_configuration_completed(connection, message)
         elif message_type == "entity.rename.completed":
             self._handle_rename_completed(connection, message)
+        elif message_type == "update.status":
+            self._handle_update_status(connection, message)
         elif message_type == "heartbeat":
             self._send(connection.device.device_id, {"type": "heartbeat.ack"})
         else:
@@ -684,6 +686,7 @@ class WorkerHub:
         architecture = _parse_platform_value(
             message.get("architecture", "unknown"), "architecture"
         )
+        update_status = _parse_update_status(message.get("update_status", {}))
         connection.device = self._devices.update_presence(
             connection.device.device_id,
             model=str(message.get("model", "")),
@@ -696,12 +699,22 @@ class WorkerHub:
             workspaces=workspaces,
             orchestration_backend=str(message.get("orchestration_backend", ""))[:64],
             model_capabilities=model_capabilities,
+            update_status=update_status,
         )
         connection.ready = True
         self._send(
             connection.device.device_id,
             {"type": "hello.ack", "device_id": connection.device.device_id, "server_time": utc_now()},
         )
+
+    def _handle_update_status(self, connection: WorkerConnection, message: dict) -> None:
+        if not connection.ready or "auto_update" not in connection.device.capabilities:
+            raise WorkerProtocolError("Worker cannot report update status before Companion hello")
+        connection.device = self._devices.update_worker_status(
+            connection.device.device_id,
+            _parse_update_status(message),
+        )
+        self._send(connection.device.device_id, {"type": "update.status.ack"})
 
     def _handle_workspaces_updated(self, connection: WorkerConnection, message: dict) -> None:
         if not connection.ready or "workspace_selection" not in connection.device.capabilities:
@@ -1298,6 +1311,39 @@ def _parse_capabilities(raw_capabilities) -> list[str]:
         if capability not in capabilities:
             capabilities.append(capability)
     return capabilities
+
+
+def _parse_update_status(raw) -> dict:
+    if raw is None or raw == "":
+        return {}
+    if not isinstance(raw, dict):
+        raise WorkerProtocolError("update_status must be an object")
+    status = str(raw.get("status", ""))
+    allowed = {"", "checking", "downloading", "installing", "current", "failed", "unsupported"}
+    if status not in allowed:
+        raise WorkerProtocolError("invalid Worker update status")
+    try:
+        downloaded_bytes = int(raw.get("downloaded_bytes", 0))
+        total_bytes = int(raw.get("total_bytes", 0))
+    except (TypeError, ValueError) as exc:
+        raise WorkerProtocolError("invalid Worker update progress") from exc
+    if (
+        downloaded_bytes < 0
+        or total_bytes < 0
+        or downloaded_bytes > 128 * 1024 * 1024
+        or total_bytes > 128 * 1024 * 1024
+        or (total_bytes and downloaded_bytes > total_bytes)
+    ):
+        raise WorkerProtocolError("invalid Worker update progress")
+    return {
+        "status": status,
+        "current_version": str(raw.get("current_version", ""))[:32],
+        "target_version": str(raw.get("target_version", ""))[:32],
+        "downloaded_bytes": downloaded_bytes,
+        "total_bytes": total_bytes,
+        "error": str(raw.get("error", ""))[:500],
+        "updated_at": str(raw.get("updated_at", ""))[:40],
+    }
 
 
 def _parse_model_capabilities(raw, fallback_model: str) -> dict:

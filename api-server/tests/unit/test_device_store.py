@@ -61,3 +61,21 @@ def test_expired_pairing_code_is_rejected(monkeypatch):
 
     with pytest.raises(PairingCodeInvalidError):
         store.consume(code)
+
+
+def test_worker_update_status_is_persisted(tmp_path):
+    store = DeviceStore(tmp_path)
+    device, _ = store.create(OWNER_A, "Laptop")
+    update_status = {
+        "status": "downloading",
+        "current_version": "0.3.0",
+        "target_version": "0.3.1",
+        "downloaded_bytes": 10,
+        "total_bytes": 100,
+        "error": "",
+        "updated_at": "2026-08-07T12:00:00+00:00",
+    }
+
+    store.update_worker_status(device.device_id, update_status)
+
+    assert DeviceStore(tmp_path).get(device.device_id).update_status == update_status
