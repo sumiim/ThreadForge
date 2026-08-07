@@ -7,14 +7,15 @@ check only delays the next attempt; the current Worker keeps serving requests.
 
 from __future__ import annotations
 
-import sys
+import logging
 from collections.abc import Callable
 
 from .config import ConfigStore
-from .updater import apply_update
+from .updater import UpdateStatusCallback, apply_update
 
 DEFAULT_CHECK_INTERVAL_SECONDS = 5 * 60
-DEFAULT_RETRY_INTERVAL_SECONDS = 30 * 60
+DEFAULT_RETRY_INTERVAL_SECONDS = 30
+LOGGER = logging.getLogger(__name__)
 
 
 def run_auto_update_loop(
@@ -23,7 +24,8 @@ def run_auto_update_loop(
     *,
     check_interval_seconds: float = DEFAULT_CHECK_INTERVAL_SECONDS,
     retry_interval_seconds: float = DEFAULT_RETRY_INTERVAL_SECONDS,
-    apply_update_fn: Callable[[ConfigStore], bool] = apply_update,
+    apply_update_fn: Callable[[ConfigStore, UpdateStatusCallback | None], bool] = apply_update,
+    status_callback: UpdateStatusCallback | None = None,
 ) -> None:
     """Check for signed updates until the Worker stops or updates itself.
 
@@ -39,12 +41,12 @@ def run_auto_update_loop(
             # A task is active; try again on the normal interval.
             continue
         try:
-            if apply_update_fn(store):
+            if apply_update_fn(store, status_callback):
                 # The installer replaces the binaries after this process exits.
                 client.stop()
                 return
         except Exception as exc:
-            print(f"Worker update check skipped: {exc}", file=sys.stderr)
+            LOGGER.warning("Worker update check skipped: %s", exc)
             next_wait = max(1.0, retry_interval_seconds)
         finally:
             client.end_update()

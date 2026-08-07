@@ -56,6 +56,7 @@ class Device:
     capabilities: list[str] = field(default_factory=list)
     orchestration_backend: str = ""
     model_capabilities: dict = field(default_factory=dict)
+    update_status: dict = field(default_factory=dict)
     workspaces: list[WorkerWorkspace] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -76,6 +77,7 @@ class Device:
             "capabilities": list(self.capabilities),
             "orchestration_backend": self.orchestration_backend,
             "model_capabilities": dict(self.model_capabilities),
+            "update_status": dict(self.update_status),
             "workspaces": [workspace.to_dict() for workspace in self.workspaces],
         }
 
@@ -103,6 +105,11 @@ class Device:
             model_capabilities=(
                 dict(payload.get("model_capabilities", {}))
                 if isinstance(payload.get("model_capabilities", {}), dict)
+                else {}
+            ),
+            update_status=(
+                dict(payload.get("update_status", {}))
+                if isinstance(payload.get("update_status", {}), dict)
                 else {}
             ),
             workspaces=[
@@ -230,6 +237,7 @@ class DeviceStore:
         workspaces: list[WorkerWorkspace],
         orchestration_backend: str | None = None,
         model_capabilities: dict | None = None,
+        update_status: dict | None = None,
     ) -> Device:
         if len(workspaces) > 100:
             raise ValueError("a Worker may register at most 100 workspaces")
@@ -249,7 +257,16 @@ class DeviceStore:
                 device.orchestration_backend = str(orchestration_backend)[:64]
             if model_capabilities is not None:
                 device.model_capabilities = dict(model_capabilities)
+            if update_status is not None:
+                device.update_status = dict(update_status)
             device.workspaces = list(workspaces)
+            write_json_atomic(self.root / f"{device_id}.json", device.to_dict())
+            return device
+
+    def update_worker_status(self, device_id: str, update_status: dict) -> Device:
+        with self._lock:
+            device = self.get(device_id)
+            device.update_status = dict(update_status)
             write_json_atomic(self.root / f"{device_id}.json", device.to_dict())
             return device
 

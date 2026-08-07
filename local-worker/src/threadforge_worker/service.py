@@ -303,14 +303,22 @@ def run_service(data_dir: str | None = None) -> int:
             def auto_update() -> None:
                 if client is None:
                     return
-                run_auto_update_loop(store, client)
+                run_auto_update_loop(
+                    store,
+                    client,
+                    status_callback=client.report_update_status,
+                )
 
             client = WorkerClient(
                 store,
                 config,
                 workspace_selector=select_directory,
-                ready_callback=auto_update,
             )
+            threading.Thread(
+                target=auto_update,
+                name="worker-auto-update",
+                daemon=True,
+            ).start()
             client.run_forever()
     except ServiceAlreadyRunningError:
         return 0

@@ -350,7 +350,7 @@ def test_auto_update_checks_immediately_and_stops_after_verified_update(tmp_path
     run_auto_update_loop(
         ConfigStore(tmp_path),
         Client(),
-        apply_update_fn=lambda _store: True,
+        apply_update_fn=lambda _store, _callback: True,
     )
 
     assert events == [("wait", 0.0), ("begin",), ("stop",), ("end",)]
@@ -380,7 +380,7 @@ def test_auto_update_retries_after_failure_and_can_be_stopped(tmp_path):
         Client(),
         check_interval_seconds=10,
         retry_interval_seconds=20,
-        apply_update_fn=lambda _store: (_ for _ in ()).throw(RuntimeError("offline")),
+        apply_update_fn=lambda _store, _callback: (_ for _ in ()).throw(RuntimeError("offline")),
     )
 
     assert events == [

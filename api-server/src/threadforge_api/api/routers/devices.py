@@ -72,6 +72,7 @@ def list_devices(
                 "capabilities": device.capabilities,
                 "orchestration_backend": device.orchestration_backend,
                 "model_capabilities": device.model_capabilities,
+                "update_status": device.update_status,
                 "created_at": device.created_at,
                 "last_seen_at": device.last_seen_at,
                 "workspaces": [workspace.to_dict() for workspace in device.workspaces],

@@ -15,7 +15,7 @@ try {
     python -m PyInstaller `
         --clean `
         --noconfirm `
-        --onefile `
+        --onedir `
         --noupx `
         --name threadforge-worker `
         --paths local-worker/src `
@@ -70,10 +70,14 @@ try {
         throw "NSIS compiler is unavailable"
     }
 
-    $workerExe = (Resolve-Path "dist/threadforge-worker.exe").Path
+    $workerDir = (Resolve-Path "dist/threadforge-worker").Path
+    $workerExe = Join-Path $workerDir "threadforge-worker.exe"
     $serviceDir = (Resolve-Path "dist/threadforge-worker-service").Path
+    # Both launchers contain the same Python application and dependency set.
+    # Ship the console launcher beside the windowless service so they share
+    # one _internal runtime instead of compressing two copies into every update.
+    Copy-Item -LiteralPath $workerExe -Destination (Join-Path $serviceDir "threadforge-worker.exe") -Force
     & $makensis `
-        "/DWORKER_EXE=$workerExe" `
         "/DWORKER_SERVICE_DIR=$serviceDir" `
         "/DOUTPUT_FILE=$outputPath" `
         "/DWORKER_VERSION=$Version" `

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Alert, Button, Form, Input, Modal, Popconfirm, Spin, Tag, Tooltip, Typography } from 'antd'
+import { Alert, Button, Form, Input, Modal, Popconfirm, Progress, Spin, Tag, Tooltip, Typography } from 'antd'
 import {
   DeleteOutlined,
   FolderOpenOutlined,
@@ -203,6 +203,10 @@ export default function WorkerDevices() {
           {devices.map((device) => {
             const canSelectWorkspace =
               workerIsReady(device, release) && (device.capabilities ?? []).includes('workspace_selection')
+            const updateStatus = device.update_status
+            const updateProgress = updateStatus?.total_bytes
+              ? Math.min(100, Math.round((updateStatus.downloaded_bytes / updateStatus.total_bytes) * 100))
+              : null
             return (
               <div key={device.device_id} className="rounded-xl border border-stone-200 p-3">
                 <div className="flex items-center gap-2">
@@ -227,6 +231,20 @@ export default function WorkerDevices() {
                   {device.version || '旧版'} · {device.workspaces.length} 个工作区 ·{' '}
                   {device.model_configured ? device.model : '模型未配置'}
                 </div>
+                {updateStatus?.status === 'downloading' && updateProgress !== null ? (
+                  <div className="mt-2">
+                    <div className="mb-1 text-[11px] text-stone-500">
+                      正在自动更新至 {updateStatus.target_version}，支持断点续传
+                    </div>
+                    <Progress percent={updateProgress} size="small" />
+                  </div>
+                ) : null}
+                {updateStatus?.status === 'installing' ? (
+                  <Alert className="mt-2" type="info" showIcon message="正在安装更新，Worker 将自动重启" />
+                ) : null}
+                {updateStatus?.status === 'failed' ? (
+                  <Alert className="mt-2" type="warning" showIcon message="自动更新失败，30 秒后自动续传重试" />
+                ) : null}
                 {device.workspaces.length > 0 ? (
                   <div className="mt-2 flex flex-wrap gap-1">
                     {device.workspaces.map((workspace) => (

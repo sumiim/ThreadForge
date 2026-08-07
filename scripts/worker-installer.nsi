@@ -1,9 +1,6 @@
 Unicode True
 RequestExecutionLevel user
 
-!ifndef WORKER_EXE
-  !error "WORKER_EXE is required"
-!endif
 !ifndef OUTPUT_FILE
   !error "OUTPUT_FILE is required"
 !endif
@@ -44,10 +41,9 @@ Section "Install"
 
 install_files:
   SetOutPath "$INSTDIR"
-  File "/oname=threadforge-worker.exe" "${WORKER_EXE}"
   ; Keep the service executable at the historical root path, but ship its
-  ; PyInstaller dependencies as a directory. This avoids onefile _MEI
-  ; extraction and reduces antivirus false positives for cryptography/rust.pyd.
+  ; PyInstaller dependencies as a shared directory for both launchers. This
+  ; avoids onefile _MEI extraction, duplicate runtimes and antivirus churn.
   File /r "${WORKER_SERVICE_DIR}\*"
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
