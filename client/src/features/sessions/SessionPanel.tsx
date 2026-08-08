@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import type { ReactNode } from 'react'
-import { Button, Collapse, Input, Spin } from 'antd'
+import { Button, Collapse, Input, Popconfirm, Spin, Tooltip } from 'antd'
 import {
   ApiOutlined,
+  DeleteOutlined,
   MoonOutlined,
   PlusOutlined,
   RightOutlined,
@@ -33,6 +34,8 @@ interface SessionPanelProps {
   onRenameDevice: (deviceId: string, displayName: string) => Promise<void>
   onRenameWorkspace: (deviceId: string, workspaceId: string, displayName: string) => Promise<void>
   onRenameSession: (sessionId: string, displayName: string) => Promise<void>
+  onDeleteWorkspace: (deviceId: string, workspaceId: string) => Promise<void>
+  onDeleteSession: (sessionId: string) => Promise<void>
   themeMode: ThemeMode
   onToggleTheme: () => void
 }
@@ -52,6 +55,8 @@ export default function SessionPanel({
   onRenameDevice,
   onRenameWorkspace,
   onRenameSession,
+  onDeleteWorkspace,
+  onDeleteSession,
   themeMode,
   onToggleTheme,
 }: SessionPanelProps) {
@@ -189,6 +194,30 @@ export default function SessionPanel({
                         >
                           <PlusOutlined className="text-[10px]" />
                         </button>
+                        {workspace.deviceId ? (
+                          <Popconfirm
+                            title={`删除工作区“${workspace.label}”？`}
+                            description={`将永久删除该工作区的 ${workspace.sessions.length} 个 ThreadForge 会话和运行记录，但不会删除真实目录或项目文件。`}
+                            okText="删除工作区"
+                            okButtonProps={{ danger: true }}
+                            cancelText="取消"
+                            onConfirm={() => onDeleteWorkspace(workspace.deviceId!, workspace.workspaceId)}
+                          >
+                            <Tooltip title="删除工作区">
+                              <button
+                                type="button"
+                                aria-label={`删除工作区 ${workspace.label}`}
+                                onClick={(event) => {
+                                  event.preventDefault()
+                                  event.stopPropagation()
+                                }}
+                                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-stone-400 hover:bg-red-50 hover:text-red-600"
+                              >
+                                <DeleteOutlined className="text-[10px]" />
+                              </button>
+                            </Tooltip>
+                          </Popconfirm>
+                        ) : null}
                       </span>
                     ),
                     children: workspace.sessions.length > 0 ? (
@@ -210,7 +239,7 @@ export default function SessionPanel({
                                   onNavigate('chat')
                                 }
                               }}
-                              className={`relative flex h-10 w-full items-center rounded-xl px-3 text-left transition-all ${
+                              className={`group relative flex h-10 w-full items-center rounded-xl px-3 text-left transition-all ${
                                 active ? 'bg-white shadow-[0_1px_3px_rgba(28,25,23,0.1)]' : 'hover:bg-white/70'
                               }`}
                             >
@@ -230,6 +259,28 @@ export default function SessionPanel({
                                   {formatTime(session.createdAt)}
                                 </span>
                               </span>
+                              <Popconfirm
+                                title={`永久删除会话“${session.title}”？`}
+                                description="本地会话正文和对应运行记录都会删除，且无法恢复。"
+                                okText="永久删除"
+                                okButtonProps={{ danger: true }}
+                                cancelText="取消"
+                                onConfirm={() => onDeleteSession(session.id)}
+                              >
+                                <Tooltip title="删除会话">
+                                  <button
+                                    type="button"
+                                    aria-label={`删除会话 ${session.title}`}
+                                    onClick={(event) => {
+                                      event.preventDefault()
+                                      event.stopPropagation()
+                                    }}
+                                    className="ml-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-stone-400 opacity-0 transition-opacity hover:bg-red-50 hover:text-red-600 focus:opacity-100 group-hover:opacity-100"
+                                  >
+                                    <DeleteOutlined className="text-[11px]" />
+                                  </button>
+                                </Tooltip>
+                              </Popconfirm>
                             </div>
                           )
                         })}

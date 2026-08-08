@@ -188,6 +188,10 @@ export function revokeDevice(deviceId: string): Promise<{ status: string; device
   return request(`/api/v1/devices/${encodeURIComponent(deviceId)}`, { method: 'DELETE' })
 }
 
+export function uninstallWorker(deviceId: string): Promise<{ status: string; device_id: string }> {
+  return request(`/api/v1/devices/${encodeURIComponent(deviceId)}/uninstall`, { method: 'POST' })
+}
+
 export function requestWorkspaceSelection(deviceId: string): Promise<WorkspaceSelectionRequest> {
   return request(`/api/v1/devices/${encodeURIComponent(deviceId)}/workspace-selection-requests`, {
     method: 'POST',
@@ -450,6 +454,16 @@ export function renameWorkspace(
   )
 }
 
+export function deleteWorkspace(
+  deviceId: string,
+  workspaceId: string,
+): Promise<{ status: string; entity_id: string; deleted_session_ids: string[] }> {
+  return request(
+    `/api/v1/devices/${encodeURIComponent(deviceId)}/workspaces/${encodeURIComponent(workspaceId)}`,
+    { method: 'DELETE' },
+  )
+}
+
 export function renameSession(
   sessionId: string,
   displayName: string,
@@ -459,6 +473,12 @@ export function renameSession(
     method: 'PATCH',
     body: JSON.stringify({ display_name: displayName, expected_updated_at: expectedUpdatedAt ?? null }),
   })
+}
+
+export function deleteSession(
+  sessionId: string,
+): Promise<{ status: string; deleted_session_ids: string[] }> {
+  return request(`/api/v1/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
 }
 
 export function getTask(taskId: string): Promise<TaskSnapshot> {

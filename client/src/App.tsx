@@ -55,6 +55,8 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
     renameDevice,
     renameWorkspace,
     renameSession,
+    deleteSession,
+    deleteWorkspace,
   } = useSessions()
   const { mode, toggle: toggleTheme } = useTheme()
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -81,6 +83,11 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
     : runtimeConfig?.container_sandbox_enabled
       ? '独立容器沙盒'
       : '后端进程 · 无独立容器沙盒'
+  const modelScope = activeWorkspace?.execution_environment === 'local_worker'
+    ? `${activeWorkspace.device_name ?? '本地设备'} · Worker 默认`
+    : activeWorkspace
+      ? 'API Server 默认'
+      : '未选择会话'
 
   useEffect(() => {
     void getLatestWorkerRelease().catch(() => undefined)
@@ -109,6 +116,8 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
             onRenameDevice={renameDevice}
             onRenameWorkspace={renameWorkspace}
             onRenameSession={renameSession}
+            onDeleteWorkspace={deleteWorkspace}
+            onDeleteSession={deleteSession}
             themeMode={mode}
             onToggleTheme={toggleTheme}
           />
@@ -192,12 +201,19 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
         <Drawer title="设置" open={settingsOpen} onClose={() => setSettingsOpen(false)} size={320}>
           <div className="space-y-5">
             <div>
-              <div className="mb-1.5 text-sm font-medium text-stone-800">模型</div>
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <div className="text-sm font-medium text-stone-800">当前会话模型</div>
+                <Tag className="!mr-0">{modelScope}</Tag>
+              </div>
               <Input value={activeWorkspace?.model ?? runtimeConfig?.model ?? '正在读取后端配置'} readOnly />
               <p className="mt-1.5 text-xs text-stone-500">
                 {activeWorkspace?.execution_environment === 'local_worker'
-                  ? (activeWorkspace.model_configured ? '模型配置来自当前本地 Worker。' : '当前 Worker 尚未配置模型密钥。')
-                  : (runtimeConfig?.model_configured ? '模型已由后端配置。' : '后端尚未配置模型密钥，无法启动任务。')}
+                  ? (activeWorkspace.model_configured
+                      ? '该配置只作用于这台 Worker 上的工作区，不影响其他设备。'
+                      : '当前 Worker 尚未配置模型密钥。')
+                  : (runtimeConfig?.model_configured
+                      ? '该配置作用于 API Server 直接执行的工作区。'
+                      : '后端尚未配置模型密钥，无法启动任务。')}
               </p>
             </div>
             <div>

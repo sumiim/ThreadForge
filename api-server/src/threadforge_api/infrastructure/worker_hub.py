@@ -127,6 +127,8 @@ class WorkerHub:
         self._history_requests: dict[str, PendingWorkerRequest] = {}
         self._model_requests: dict[str, PendingWorkerRequest] = {}
         self._rename_requests: dict[str, PendingWorkerRequest] = {}
+        self._delete_requests: dict[str, PendingWorkerRequest] = {}
+        self._uninstall_requests: dict[str, PendingWorkerRequest] = {}
         self._terminal_answers: dict[str, tuple[float, str]] = {}
         self._agent_progress: dict[str, tuple[float, dict]] = {}
         self._lock = threading.RLock()
@@ -436,6 +438,100 @@ class WorkerHub:
             "display_name_updated_at": updated_at,
         }
 
+    async def delete_entity(
+        self,
+        *,
+        device_id: str,
+        owner_id: str,
+        entity_type: str,
+        entity_id: str,
+        session_ids: list[str] | None = None,
+        run_ids: list[str] | None = None,
+    ) -> dict:
+        device = self._devices.get_for_owner(device_id, owner_id)
+        if entity_type == "workspace":
+            if not _WORKSPACE_ID.fullmatch(entity_id) or not any(
+                item.workspace_id == entity_id for item in device.workspaces
+            ):
+                raise NotFoundError("workspace not found")
+        elif entity_type == "session":
+            if not _SESSION_ID.fullmatch(entity_id):
+                raise NotFoundError("session not found")
+            session = self._session_store.load(entity_id)
+            if (
+                session.get("owner_id") != owner_id
+                or session.get("device_id") != device_id
+                or session.get("execution_environment") != "local_worker"
+            ):
+                raise NotFoundError("session not found")
+        else:
+            raise ValueError("unsupported delete entity type")
+
+        request_id = "delete_" + uuid.uuid4().hex
+        future = self._register_pending_request(
+            self._delete_requests,
+            request_id=request_id,
+            device_id=device_id,
+            owner_id=owner_id,
+            capability="delete_entities",
+            subject_id=entity_id,
+        )
+        try:
+            self._send(
+                device_id,
+                {
+                    "type": "entity.delete",
+                    "request_id": request_id,
+                    "entity_type": entity_type,
+                    "entity_id": entity_id,
+                    "session_ids": list(session_ids or []),
+                    "run_ids": list(run_ids or []),
+                },
+            )
+            result = await asyncio.wait_for(future, timeout=15)
+        except asyncio.TimeoutError as exc:
+            raise WorkerOfflineError("delete request timed out") from exc
+        finally:
+            with self._lock:
+                self._delete_requests.pop(request_id, None)
+        if result.get("status") != "completed":
+            raise WorkerCommandFailedError(
+                "local delete was rejected",
+                {"reason": result.get("error", "delete_failed")},
+            )
+        return {
+            "status": "deleted",
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "deleted_session_ids": result.get("deleted_session_ids", []),
+        }
+
+    async def uninstall_worker(self, *, device_id: str, owner_id: str) -> dict:
+        self._devices.get_for_owner(device_id, owner_id)
+        request_id = "uninstall_" + uuid.uuid4().hex
+        future = self._register_pending_request(
+            self._uninstall_requests,
+            request_id=request_id,
+            device_id=device_id,
+            owner_id=owner_id,
+            capability="worker_uninstall",
+            subject_id=device_id,
+        )
+        try:
+            self._send(device_id, {"type": "worker.uninstall", "request_id": request_id})
+            result = await asyncio.wait_for(future, timeout=10)
+        except asyncio.TimeoutError as exc:
+            raise WorkerOfflineError("Worker uninstall request timed out") from exc
+        finally:
+            with self._lock:
+                self._uninstall_requests.pop(request_id, None)
+        if result.get("status") != "completed":
+            raise WorkerCommandFailedError(
+                "Worker uninstall was rejected",
+                {"reason": result.get("error", "uninstall_failed")},
+            )
+        return {"status": "uninstalling", "device_id": device_id}
+
     def _register_pending_request(
         self,
         requests: dict[str, PendingWorkerRequest],
@@ -448,7 +544,7 @@ class WorkerHub:
     ) -> asyncio.Future:
         with self._lock:
             self._expire_pending_requests_locked()
-            if requests is self._rename_requests and any(
+            if (requests is self._rename_requests or requests is self._delete_requests) and any(
                 item.device_id == device_id and item.subject_id == subject_id
                 for item in requests.values()
             ):
@@ -468,7 +564,13 @@ class WorkerHub:
 
     def _expire_pending_requests_locked(self) -> None:
         cutoff = time.monotonic() - 60
-        for requests in (self._history_requests, self._model_requests, self._rename_requests):
+        for requests in (
+            self._history_requests,
+            self._model_requests,
+            self._rename_requests,
+            self._delete_requests,
+            self._uninstall_requests,
+        ):
             expired = [
                 request_id
                 for request_id, request in requests.items()
@@ -691,6 +793,10 @@ class WorkerHub:
             self._handle_model_configuration_completed(connection, message)
         elif message_type == "entity.rename.completed":
             self._handle_rename_completed(connection, message)
+        elif message_type == "entity.delete.completed":
+            self._handle_delete_completed(connection, message)
+        elif message_type == "worker.uninstall.completed":
+            self._handle_uninstall_completed(connection, message)
         elif message_type == "update.status":
             self._handle_update_status(connection, message)
         elif message_type == "heartbeat":
@@ -1016,6 +1122,77 @@ class WorkerHub:
         if not request.future.done():
             request.future.set_result(result)
 
+    def _handle_delete_completed(self, connection: WorkerConnection, message: dict) -> None:
+        request_id = str(message.get("request_id", ""))
+        with self._lock:
+            request = self._delete_requests.get(request_id)
+            if (
+                request is None
+                or request.device_id != connection.device.device_id
+                or request.owner_id != connection.device.owner_id
+            ):
+                raise WorkerProtocolError("delete request is not pending")
+        entity_type = str(message.get("entity_type", ""))
+        entity_id = str(message.get("entity_id", ""))
+        if entity_id != request.subject_id or entity_type not in {"session", "workspace"}:
+            raise WorkerProtocolError("deleted entity does not match request")
+        status = str(message.get("status", ""))
+        if status == "completed":
+            raw_deleted = message.get("deleted_session_ids", [])
+            if not isinstance(raw_deleted, list) or len(raw_deleted) > 1000:
+                raise WorkerProtocolError("invalid deleted session list")
+            deleted_session_ids = [str(item) for item in raw_deleted]
+            if any(not _SESSION_ID.fullmatch(item) for item in deleted_session_ids):
+                raise WorkerProtocolError("invalid deleted session id")
+            if entity_type == "session" and entity_id not in deleted_session_ids:
+                raise WorkerProtocolError("deleted session is missing from result")
+            if entity_type == "workspace":
+                self._update_workspace_presence(connection, message.get("workspaces", []))
+            result = {
+                "status": "completed",
+                "deleted_session_ids": deleted_session_ids,
+            }
+        elif status == "failed":
+            result = {
+                "status": "failed",
+                "error": _safe_error_code(message.get("error"), "delete_failed"),
+            }
+        else:
+            raise WorkerProtocolError("invalid delete result")
+        if not request.future.done():
+            request.future.set_result(result)
+        self._send(
+            connection.device.device_id,
+            {"type": "entity.delete.ack", "request_id": request_id},
+        )
+
+    def _handle_uninstall_completed(self, connection: WorkerConnection, message: dict) -> None:
+        request_id = str(message.get("request_id", ""))
+        with self._lock:
+            request = self._uninstall_requests.get(request_id)
+            if (
+                request is None
+                or request.device_id != connection.device.device_id
+                or request.owner_id != connection.device.owner_id
+            ):
+                raise WorkerProtocolError("uninstall request is not pending")
+        status = str(message.get("status", ""))
+        if status == "completed":
+            result = {"status": "completed"}
+        elif status == "failed":
+            result = {
+                "status": "failed",
+                "error": _safe_error_code(message.get("error"), "uninstall_failed"),
+            }
+        else:
+            raise WorkerProtocolError("invalid uninstall result")
+        if not request.future.done():
+            request.future.set_result(result)
+        self._send(
+            connection.device.device_id,
+            {"type": "worker.uninstall.ack", "request_id": request_id},
+        )
+
     def _update_workspace_presence(
         self, connection: WorkerConnection, raw_workspaces
     ) -> list[WorkerWorkspace]:
@@ -1058,7 +1235,13 @@ class WorkerHub:
                 request.error = reason
 
     def _fail_pending_requests_locked(self, device_id: str, reason: str) -> None:
-        for requests in (self._history_requests, self._model_requests, self._rename_requests):
+        for requests in (
+            self._history_requests,
+            self._model_requests,
+            self._rename_requests,
+            self._delete_requests,
+            self._uninstall_requests,
+        ):
             for request in requests.values():
                 if request.device_id == device_id and not request.future.done():
                     self._loop.call_soon_threadsafe(
@@ -1384,12 +1567,23 @@ def _parse_update_status(raw) -> dict:
     if not isinstance(raw, dict):
         raise WorkerProtocolError("update_status must be an object")
     status = str(raw.get("status", ""))
-    allowed = {"", "checking", "downloading", "installing", "current", "failed", "unsupported"}
+    allowed = {
+        "",
+        "checking",
+        "downloading",
+        "retrying",
+        "installing",
+        "current",
+        "failed",
+        "unsupported",
+    }
     if status not in allowed:
         raise WorkerProtocolError("invalid Worker update status")
     try:
         downloaded_bytes = int(raw.get("downloaded_bytes", 0))
         total_bytes = int(raw.get("total_bytes", 0))
+        bytes_per_second = int(raw.get("bytes_per_second", 0))
+        retry_count = int(raw.get("retry_count", 0))
     except (TypeError, ValueError) as exc:
         raise WorkerProtocolError("invalid Worker update progress") from exc
     if (
@@ -1397,6 +1591,10 @@ def _parse_update_status(raw) -> dict:
         or total_bytes < 0
         or downloaded_bytes > 128 * 1024 * 1024
         or total_bytes > 128 * 1024 * 1024
+        or bytes_per_second < 0
+        or bytes_per_second > 1024 * 1024 * 1024
+        or retry_count < 0
+        or retry_count > 100
         or (total_bytes and downloaded_bytes > total_bytes)
     ):
         raise WorkerProtocolError("invalid Worker update progress")
@@ -1406,6 +1604,8 @@ def _parse_update_status(raw) -> dict:
         "target_version": str(raw.get("target_version", ""))[:32],
         "downloaded_bytes": downloaded_bytes,
         "total_bytes": total_bytes,
+        "bytes_per_second": bytes_per_second,
+        "retry_count": retry_count,
         "error": str(raw.get("error", ""))[:500],
         "updated_at": str(raw.get("updated_at", ""))[:40],
     }

@@ -18,11 +18,14 @@ import {
   listDevices,
   requestWorkspaceSelection,
   revokeDevice,
+  uninstallWorker,
 } from '../../api/client'
 import type { Device, WorkerReleaseManifest } from '../../api/types'
 import { workerIsReady } from './worker-version'
 
 const delay = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+
+const formatBytes = (value: number) => `${(value / (1024 * 1024)).toFixed(1)} MiB`
 
 const selectionErrors: Record<string, string> = {
   selection_busy: '上一次目录选择窗口仍在等待处理；请切回桌面完成操作，窗口超时后会自动关闭',
@@ -43,6 +46,8 @@ export default function WorkerDevices() {
   const [selectionDeviceId, setSelectionDeviceId] = useState('')
   const [modelDevice, setModelDevice] = useState<Device | null>(null)
   const [modelSaving, setModelSaving] = useState(false)
+  const [uninstallingDeviceId, setUninstallingDeviceId] = useState('')
+  const [statusClock, setStatusClock] = useState(0)
   const [modelForm] = Form.useForm<{ base_url: string; api_key: string; model: string }>()
   const operationVersion = useRef(0)
   const workerServer = window.threadforge?.apiBaseUrl ?? window.location.origin
@@ -53,6 +58,7 @@ export default function WorkerDevices() {
       const [deviceResponse, manifest] = await Promise.all([listDevices(), getLatestWorkerRelease()])
       setDevices(deviceResponse.items)
       setRelease(manifest)
+      setStatusClock(Date.now())
     } catch (cause) {
       setError(friendlyMessage(cause))
     } finally {
@@ -68,6 +74,7 @@ export default function WorkerDevices() {
         if (!active) return
         setDevices(response.items)
         setRelease(manifest)
+        setStatusClock(Date.now())
         setError('')
       } catch (cause: unknown) {
         if (active) setError(friendlyMessage(cause))
@@ -114,13 +121,19 @@ export default function WorkerDevices() {
     await refresh()
   }
 
-  const uninstallLocalWorker = async () => {
-    operationVersion.current += 1
-    setError('')
-    setNotice('已请求系统打开 ThreadForge Worker 卸载程序')
-    window.location.href = 'threadforge://worker/uninstall'
-    await delay(2_000)
-    await refresh()
+  const uninstall = async (device: Device) => {
+    try {
+      setError('')
+      setUninstallingDeviceId(device.device_id)
+      await uninstallWorker(device.device_id)
+      setNotice(`已请求 ${device.name} 启动卸载程序；设备稍后会离线，但仍会保留绑定记录和本地数据。`)
+      await delay(2_000)
+      await refresh()
+    } catch (cause) {
+      setError(friendlyMessage(cause))
+    } finally {
+      setUninstallingDeviceId('')
+    }
   }
 
   const selectWorkspace = async (deviceId: string) => {
@@ -203,10 +216,25 @@ export default function WorkerDevices() {
           {devices.map((device) => {
             const canSelectWorkspace =
               workerIsReady(device, release) && (device.capabilities ?? []).includes('workspace_selection')
+            const canUninstall = device.online && (device.capabilities ?? []).includes('worker_uninstall')
             const updateStatus = device.update_status
             const updateProgress = updateStatus?.total_bytes
               ? Math.min(100, Math.round((updateStatus.downloaded_bytes / updateStatus.total_bytes) * 100))
               : null
+            const updateSpeed = updateStatus?.bytes_per_second
+              ? `${updateStatus.bytes_per_second >= 1024 * 1024
+                  ? (updateStatus.bytes_per_second / (1024 * 1024)).toFixed(1) + ' MiB/s'
+                  : Math.max(1, Math.round(updateStatus.bytes_per_second / 1024)) + ' KiB/s'}`
+              : ''
+            const updateProgressText = updateStatus?.total_bytes
+              ? `${formatBytes(updateStatus.downloaded_bytes)} / ${formatBytes(updateStatus.total_bytes)}`
+              : ''
+            const updateStalled = Boolean(
+              updateStatus &&
+                ['downloading', 'retrying'].includes(updateStatus.status) &&
+                updateStatus.updated_at &&
+                statusClock - Date.parse(updateStatus.updated_at) > 45_000,
+            )
             return (
               <div key={device.device_id} className="rounded-xl border border-stone-200 p-3">
                 <div className="flex items-center gap-2">
@@ -225,25 +253,63 @@ export default function WorkerDevices() {
                   >
                     <Button type="text" danger size="small">解绑设备</Button>
                   </Popconfirm>
+                  <Popconfirm
+                    title={`卸载 ${device.name} 上的 Worker？`}
+                    description="目标电脑会打开卸载程序并停止 Worker；本地会话、工作区授权、模型配置和设备绑定都会保留。"
+                    okText="卸载 Worker"
+                    okButtonProps={{ danger: true }}
+                    cancelText="取消"
+                    disabled={!canUninstall}
+                    onConfirm={() => void uninstall(device)}
+                  >
+                    <Tooltip title={canUninstall ? '卸载这台设备上的 Worker' : '设备离线或 Worker 版本过旧，请先更新'}>
+                      <span>
+                        <Button
+                          type="text"
+                          danger
+                          size="small"
+                          icon={<DeleteOutlined />}
+                          disabled={!canUninstall}
+                          loading={uninstallingDeviceId === device.device_id}
+                        >
+                          卸载
+                        </Button>
+                      </span>
+                    </Tooltip>
+                  </Popconfirm>
                 </div>
                 <div className="mt-2 text-[11px] text-stone-500">
                   {device.platform || 'unknown'} / {device.architecture || 'unknown'} · Worker{' '}
                   {device.version || '旧版'} · {device.workspaces.length} 个工作区 ·{' '}
                   {device.model_configured ? device.model : '模型未配置'}
                 </div>
-                {updateStatus?.status === 'downloading' && updateProgress !== null ? (
+                {updateStatus &&
+                ['downloading', 'retrying'].includes(updateStatus.status) &&
+                updateProgress !== null ? (
                   <div className="mt-2">
                     <div className="mb-1 text-[11px] text-stone-500">
-                      正在自动更新至 {updateStatus.target_version}，支持断点续传
+                      {updateStatus.status === 'retrying' || updateStalled
+                        ? `下载连接暂无进度，正在从 ${formatBytes(updateStatus.downloaded_bytes)} 继续${updateStatus.retry_count ? `（第 ${updateStatus.retry_count} 次重连）` : ''}`
+                        : `正在自动更新至 ${updateStatus.target_version} · ${updateProgressText}${updateSpeed ? ` · ${updateSpeed}` : ''}`}
                     </div>
-                    <Progress percent={updateProgress} size="small" />
+                    <Progress
+                      percent={updateProgress}
+                      size="small"
+                      status={updateStatus.status === 'retrying' || updateStalled ? 'exception' : 'active'}
+                    />
                   </div>
                 ) : null}
                 {updateStatus?.status === 'installing' ? (
                   <Alert className="mt-2" type="info" showIcon message="正在安装更新，Worker 将自动重启" />
                 ) : null}
                 {updateStatus?.status === 'failed' ? (
-                  <Alert className="mt-2" type="warning" showIcon message="自动更新失败，30 秒后自动续传重试" />
+                  <Alert
+                    className="mt-2"
+                    type="warning"
+                    showIcon
+                    message="自动更新失败，30 秒后自动续传重试"
+                    description={updateStatus.error || undefined}
+                  />
                 ) : null}
                 {device.workspaces.length > 0 ? (
                   <div className="mt-2 flex flex-wrap gap-1">
@@ -277,11 +343,6 @@ export default function WorkerDevices() {
                   {device.online && (!canSelectWorkspace || !device.compatible) ? (
                     <Tag color="warning">需要更新 Worker</Tag>
                   ) : null}
-                  {!device.online ? (
-                    <Button size="small" icon={<PoweroffOutlined />} onClick={() => void startLocalService()}>
-                      启动本机 Worker
-                    </Button>
-                  ) : null}
                 </div>
               </div>
             )
@@ -291,18 +352,14 @@ export default function WorkerDevices() {
       <Button className="mt-3" block icon={<LinkOutlined />} onClick={() => void createCode()}>
         绑定新设备
       </Button>
-      <Popconfirm
-        title="卸载本机 Worker？"
-        description="仅移除这台电脑上的 Worker 程序和自启动项；本地会话、工作区与模型配置会保留。"
-        okText="打开卸载程序"
-        okButtonProps={{ danger: true }}
-        cancelText="取消"
-        onConfirm={() => void uninstallLocalWorker()}
+      <Button
+        className="mt-2"
+        block
+        icon={<PoweroffOutlined />}
+        onClick={() => void startLocalService()}
       >
-        <Button className="mt-2" danger block icon={<DeleteOutlined />}>
-          卸载本机 Worker
-        </Button>
-      </Popconfirm>
+        启动这台电脑的 Worker
+      </Button>
       {pairing ? (
         <div className="mt-3 rounded-xl bg-stone-100 p-3">
           <div className="text-xs text-stone-500">

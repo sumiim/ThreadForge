@@ -107,6 +107,19 @@ class SessionStore:
             raise SessionCorruptedError(session_id)
         return data
 
+    def delete(self, session_id):
+        session_id = str(session_id)
+        if not _SESSION_ID_PATTERN.fullmatch(session_id):
+            raise SessionNotFoundError(session_id)
+        path = self.path(session_id)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            raise SessionNotFoundError(session_id) from None
+        except OSError as exc:
+            raise SessionStoreUnavailableError(session_id) from exc
+        self._fsync_directory(self.root)
+
     def list_ids(self):
         """Stable listing ordered by `updated_at DESC, id DESC`."""
         items = []
@@ -151,6 +164,14 @@ class InMemorySessionStore:
         if key not in self._sessions:
             raise SessionNotFoundError(session_id)
         return deepcopy(self._sessions[key])
+
+    def delete(self, session_id):
+        key = str(session_id)
+        if key not in self._sessions:
+            raise SessionNotFoundError(session_id)
+        del self._sessions[key]
+        if self._latest_id == key:
+            self._latest_id = next(reversed(self._sessions), None)
 
     def list_ids(self):
         return list(self._sessions.keys())

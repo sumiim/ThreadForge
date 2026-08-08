@@ -7,7 +7,9 @@ import logging
 import os
 import platform
 import re
+import shutil
 import threading
+import time
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
@@ -30,6 +32,7 @@ from .runtime import ActiveRun, CancellationToken, RemoteApprovalStrategy, run_t
 from .updater import load_update_status
 
 _SESSION_ID = re.compile(r"^ses_[a-f0-9]{32}$")
+_RUN_ID = re.compile(r"^run_[a-f0-9]{32}$")
 _SESSION_SYNC_CHUNK_SIZE = 100
 _MESSAGE_CONTENT_MAX = 4000
 _HISTORY_PAYLOAD_CONTENT_BUDGET = 1700 * 1024
@@ -61,6 +64,7 @@ class WorkerClient:
         *,
         workspace_selector: Callable[[str], str | None] | None = None,
         status_callback: Callable[[str], None] | None = None,
+        uninstall_callback: Callable[[], None] | None = None,
     ):
         self.store = store
         self.config = config
@@ -71,6 +75,7 @@ class WorkerClient:
         self._activity_lock = threading.Lock()
         self._workspace_selector = workspace_selector
         self._status_callback = status_callback
+        self._uninstall_callback = uninstall_callback
         self._stop_event = threading.Event()
         self._updating = threading.Event()
         self._ready_event = threading.Event()
@@ -202,6 +207,8 @@ class WorkerClient:
                         "langgraph_v1_1",
                         "run_model_settings",
                         "rename_entities",
+                        "delete_entities",
+                        *(["worker_uninstall"] if self._uninstall_callback else []),
                         *(["workspace_selection"] if self._workspace_selector else []),
                     ],
                     "workspaces": [workspace.public_dict() for workspace in self.config.workspaces],
@@ -247,6 +254,10 @@ class WorkerClient:
             self._configure_model(message)
         elif message_type == "entity.rename":
             self._rename_entity(message)
+        elif message_type == "entity.delete":
+            self._delete_entity(message)
+        elif message_type == "worker.uninstall":
+            self._uninstall_worker(message)
         elif message_type == "hello.ack":
             self._ready_event.set()
             self._start_session_sync()
@@ -256,6 +267,8 @@ class WorkerClient:
             "sessions.updated.ack",
             "workspace.selection.ack",
             "model.configuration.ack",
+            "entity.delete.ack",
+            "worker.uninstall.ack",
             "approval.registered",
             "update.status.ack",
         }:
@@ -478,6 +491,121 @@ class WorkerClient:
         except RuntimeError:
             pass
 
+    def _delete_entity(self, message: dict) -> None:
+        request_id = str(message.get("request_id", ""))
+        entity_type = str(message.get("entity_type", ""))
+        entity_id = str(message.get("entity_id", ""))
+        requested_sessions = message.get("session_ids", [])
+        requested_runs = message.get("run_ids", [])
+        response = {
+            "type": "entity.delete.completed",
+            "request_id": request_id,
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+        }
+        try:
+            if not request_id or not isinstance(requested_sessions, list) or not isinstance(requested_runs, list):
+                raise ValueError("invalid delete request")
+            if len(requested_sessions) > 1000 or len(requested_runs) > 1000:
+                raise ValueError("delete request is too large")
+            session_ids = {str(item) for item in requested_sessions}
+            run_ids = {str(item) for item in requested_runs}
+            if any(not _SESSION_ID.fullmatch(item) for item in session_ids):
+                raise ValueError("invalid session id")
+            if any(not _RUN_ID.fullmatch(item) for item in run_ids):
+                raise ValueError("invalid run id")
+            self.config = self.store.load()
+            with self._activity_lock:
+                active = self.active
+                if active is not None and (
+                    (entity_type == "session" and active.session_id == entity_id)
+                    or (entity_type == "workspace" and active.workspace_id == entity_id)
+                ):
+                    raise RuntimeError("entity_busy")
+            if entity_type == "session":
+                if not _SESSION_ID.fullmatch(entity_id):
+                    raise ValueError("session not found")
+                session_ids.add(entity_id)
+            elif entity_type == "workspace":
+                workspace = next(
+                    (item for item in self.config.workspaces if item.workspace_id == entity_id),
+                    None,
+                )
+                if workspace is None:
+                    raise ValueError("workspace not found")
+                session_store = SessionStore(self.store.root / "sessions")
+                for session_id in session_store.list_ids():
+                    if not _SESSION_ID.fullmatch(session_id):
+                        continue
+                    session = session_store.load(session_id)
+                    if session.get("workspace_id") == entity_id:
+                        session_ids.add(session_id)
+            else:
+                raise ValueError("unsupported delete entity")
+
+            self._delete_run_artifacts(run_ids)
+            session_store = SessionStore(self.store.root / "sessions")
+            for session_id in session_ids:
+                if session_store.exists(session_id):
+                    session_store.delete(session_id)
+            if entity_type == "workspace" and not self.store.remove_workspace(self.config, entity_id):
+                raise ValueError("workspace not found")
+            response.update(
+                {
+                    "status": "completed",
+                    "deleted_session_ids": sorted(session_ids),
+                    "workspaces": [item.public_dict() for item in self.config.workspaces],
+                }
+            )
+        except RuntimeError as exc:
+            response["status"] = "failed"
+            response["error"] = "entity_busy" if str(exc) == "entity_busy" else "delete_failed"
+        except Exception:
+            response["status"] = "failed"
+            response["error"] = "delete_failed"
+        try:
+            self._send(response)
+            if response["status"] == "completed":
+                self._start_session_sync()
+        except RuntimeError:
+            pass
+
+    def _delete_run_artifacts(self, run_ids: set[str]) -> None:
+        runs_root = (self.store.root / "runs").resolve()
+        for run_id in run_ids:
+            run_dir = (runs_root / run_id).resolve()
+            if run_dir.parent != runs_root:
+                raise ValueError("invalid run artifact path")
+            if run_dir.exists():
+                shutil.rmtree(run_dir, ignore_errors=False)
+
+    def _uninstall_worker(self, message: dict) -> None:
+        request_id = str(message.get("request_id", ""))
+        response = {
+            "type": "worker.uninstall.completed",
+            "request_id": request_id,
+        }
+        with self._activity_lock:
+            busy = self.active is not None or self._updating.is_set()
+        if not request_id or self._uninstall_callback is None:
+            response.update(status="failed", error="uninstall_unavailable")
+        elif busy:
+            response.update(status="failed", error="worker_busy")
+        else:
+            response["status"] = "completed"
+        self._send(response)
+        if response["status"] != "completed":
+            return
+
+        def launch() -> None:
+            time.sleep(0.25)
+            try:
+                self._uninstall_callback()
+            finally:
+                self.stop()
+
+        threading.Thread(target=launch, name="worker-uninstaller", daemon=True).start()
+
     def _select_workspace(self, request_id: str, expires_at: str) -> None:
         if not self._workspace_lock.acquire(blocking=False):
             self._send_workspace_selection_result(request_id, "failed", error="selection_busy")
@@ -582,7 +710,13 @@ class WorkerClient:
             if not updating:
                 token = CancellationToken()
                 approval = RemoteApprovalStrategy(self._send, str(task["task_id"]), token)
-                active = ActiveRun(task_id=str(task["task_id"]), token=token, approval=approval)
+                active = ActiveRun(
+                    task_id=str(task["task_id"]),
+                    token=token,
+                    approval=approval,
+                    session_id=str(task.get("session_id", "")),
+                    workspace_id=workspace_id,
+                )
                 self.active = active
 
         if updating:

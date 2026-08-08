@@ -110,6 +110,8 @@ class AppContainer:
             self.session_store,
             self.workspace_catalog,
             self.task_repo,
+            approval_repo=self.approval_repo,
+            runs_root=self.runs_dir,
             device_store=self.device_store,
             worker_hub=self.worker_hub,
             allow_backend_workspaces=settings.identity_mode != "github_oauth",

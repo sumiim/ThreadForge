@@ -35,3 +35,13 @@ def test_in_memory_session_store_deep_copies_sessions():
     assert path.as_posix() == ".memory-sessions/session-1.json"
     assert store.latest() == "session-1"
     assert store.load("session-1")["history"][0]["content"] == "original"
+
+
+def test_session_stores_delete_threadforge_sessions(tmp_path):
+    session_id = "ses_" + "b" * 32
+    disk = SessionStore(tmp_path / "sessions")
+    memory = InMemorySessionStore()
+    for store in (disk, memory):
+        store.save({"id": session_id, "history": []})
+        store.delete(session_id)
+        assert store.exists(session_id) is False

@@ -221,6 +221,25 @@ def test_session_detail_contains_task_summaries(client, session_id, model_output
     assert detail["tasks"][0]["status"] == "completed"
 
 
+def test_session_delete_removes_history_tasks_and_run_artifacts(
+    client, session_id, model_outputs, workspace_env
+):
+    model_outputs[:] = ["<final>delete me</final>"]
+    created = client.post(
+        "/api/v1/tasks", json={"session_id": session_id, "input": "temporary"}
+    ).json()
+    terminal = wait_for_terminal(client, created["task_id"])
+    assert (workspace_env["data_dir"] / "runs" / terminal["run_id"]).is_dir()
+
+    response = client.delete(f"/api/v1/sessions/{session_id}")
+
+    assert response.status_code == 200
+    assert response.json()["deleted_session_ids"] == [session_id]
+    assert client.get(f"/api/v1/sessions/{session_id}").status_code == 404
+    assert client.get(f"/api/v1/tasks/{created['task_id']}").status_code == 404
+    assert not (workspace_env["data_dir"] / "runs" / terminal["run_id"]).exists()
+
+
 def test_session_404(client):
     resp = client.get("/api/v1/sessions/ses_missing")
     assert resp.status_code == 404

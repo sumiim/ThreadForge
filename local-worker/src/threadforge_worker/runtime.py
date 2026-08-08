@@ -266,6 +266,8 @@ class ActiveRun:
     approval: RemoteApprovalStrategy
     thread: threading.Thread | None = None
     pico: Pico | None = None
+    session_id: str = ""
+    workspace_id: str = ""
 
     def cancel(self, cleanup_grace: float) -> None:
         self.token.cancel()

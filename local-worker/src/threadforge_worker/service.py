@@ -313,6 +313,7 @@ def run_service(data_dir: str | None = None) -> int:
                 store,
                 config,
                 workspace_selector=select_directory,
+                uninstall_callback=start_uninstaller,
             )
             threading.Thread(
                 target=auto_update,

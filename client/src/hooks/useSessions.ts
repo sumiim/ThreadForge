@@ -4,6 +4,8 @@ import {
   cancelTask,
   createSession as apiCreateSession,
   createTask,
+  deleteSession as apiDeleteSession,
+  deleteWorkspace as apiDeleteWorkspace,
   friendlyMessage,
   getSession,
   getRuntimeConfig,
@@ -169,6 +171,8 @@ export interface UseSessions {
   renameDevice: (deviceId: string, displayName: string) => Promise<void>
   renameWorkspace: (deviceId: string, workspaceId: string, displayName: string) => Promise<void>
   renameSession: (sessionId: string, displayName: string) => Promise<void>
+  deleteSession: (sessionId: string) => Promise<void>
+  deleteWorkspace: (deviceId: string, workspaceId: string) => Promise<void>
   approveTool: (messageId: string, toolCallId: string) => void
   rejectTool: (messageId: string, toolCallId: string) => void
   stopRun: () => void
@@ -1286,6 +1290,69 @@ export function useSessions(): UseSessions {
     }
   }, [broadcastSessionChange, updateSession])
 
+  const removeDeletedSessions = useCallback((deletedSessionIds: string[]) => {
+    const deleted = new Set(deletedSessionIds)
+    if (deleted.size === 0) return
+    const remaining = sessionsRef.current.filter((session) => !deleted.has(session.id))
+    for (const sessionId of deleted) loadedRef.current.delete(sessionId)
+    setHistoryFailures((current) => {
+      const next = new Set(current)
+      for (const sessionId of deleted) next.delete(sessionId)
+      return next
+    })
+    setSessions(remaining)
+    if (activeIdRef.current && deleted.has(activeIdRef.current)) {
+      esRef.current?.close()
+      esRef.current = null
+      const next = remaining[0] ?? null
+      activeIdRef.current = next?.id ?? null
+      setActiveId(next?.id ?? null)
+      setHistoryStatus(next && !loadedRef.current.has(next.id) ? 'loading' : 'loaded')
+      setAgentProgress(null)
+    }
+    broadcastSessionChange()
+  }, [broadcastSessionChange])
+
+  const deleteSession = useCallback(async (sessionId: string) => {
+    if (activeRunRef.current?.sessionId === sessionId) {
+      notify.warning('请先停止当前运行，再删除会话')
+      return
+    }
+    try {
+      const result = await apiDeleteSession(sessionId)
+      removeDeletedSessions(result.deleted_session_ids)
+      notify.success('会话及其本地历史已永久删除')
+    } catch (error) {
+      notify.error(friendlyMessage(error))
+      throw error
+    }
+  }, [removeDeletedSessions])
+
+  const deleteWorkspace = useCallback(async (deviceId: string, workspaceId: string) => {
+    const activeRun = activeRunRef.current
+    const activeSession = activeRun
+      ? sessionsRef.current.find((session) => session.id === activeRun.sessionId)
+      : null
+    if (
+      activeSession?.deviceId === deviceId
+      && activeSession.workspaceId === workspaceId
+    ) {
+      notify.warning('请先停止该工作区正在运行的任务，再删除工作区')
+      return
+    }
+    try {
+      const result = await apiDeleteWorkspace(deviceId, workspaceId)
+      setWorkspaces((current) => current.filter((workspace) => !(
+        workspace.device_id === deviceId && workspace.workspace_id === workspaceId
+      )))
+      removeDeletedSessions(result.deleted_session_ids)
+      notify.success('工作区授权及其本地会话已删除，项目目录未被修改')
+    } catch (error) {
+      notify.error(friendlyMessage(error))
+      throw error
+    }
+  }, [removeDeletedSessions])
+
   return {
     sessions,
     activeId,
@@ -1307,6 +1374,8 @@ export function useSessions(): UseSessions {
     renameDevice,
     renameWorkspace,
     renameSession,
+    deleteSession,
+    deleteWorkspace,
     approveTool,
     rejectTool,
     stopRun,

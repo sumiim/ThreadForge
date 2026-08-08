@@ -43,6 +43,17 @@ class _Response:
         return result
 
 
+class _InterruptedResponse(_Response):
+    def __init__(self, body: bytes, *, fail_after: int, headers: dict[str, str]):
+        super().__init__(body, status=206, headers=headers)
+        self._fail_after = fail_after
+
+    def read(self, size: int = -1) -> bytes:
+        if self._offset >= self._fail_after:
+            raise OSError("simulated connection reset")
+        return super().read(min(size, self._fail_after - self._offset))
+
+
 def _manifest(private_key) -> dict:
     manifest = {
         "schema_version": 1,
@@ -169,8 +180,82 @@ def test_apply_update_resumes_a_partial_download(tmp_path, monkeypatch):
     monkeypatch.setattr("threadforge_worker.updater.subprocess.Popen", Mock())
 
     assert apply_update(store) is True
-    assert requests[0].get_header("Range") == "bytes=4-"
+    assert requests[0].get_header("Range") == "bytes=4-9"
     assert (update_root / "threadforge-worker-windows-x86_64.exe").read_bytes() == artifact
+
+
+def test_apply_update_reconnects_after_a_partial_range_response(tmp_path, monkeypatch):
+    store = ConfigStore(tmp_path)
+    store.save(WorkerConfig(server_url="https://threadforge.example", device_token="token"))
+    artifact = b"0123456789"
+    manifest = {
+        "version": "99.0.0",
+        "platforms": {
+            "windows-x86_64": {
+                "filename": "threadforge-worker-windows-x86_64.exe",
+                "size": len(artifact),
+                "sha256": hashlib.sha256(artifact).hexdigest(),
+            }
+        },
+    }
+    requests = []
+    statuses = []
+
+    def open_range(request, **_kwargs):
+        requests.append(request)
+        start = int(request.get_header("Range").split("=")[1].split("-")[0])
+        if len(requests) == 1:
+            return _InterruptedResponse(
+                artifact,
+                fail_after=4,
+                headers={"Content-Range": "bytes 0-9/10"},
+            )
+        return _Response(
+            artifact[start:],
+            status=206,
+            headers={"Content-Range": f"bytes {start}-9/10"},
+        )
+
+    monkeypatch.setattr("threadforge_worker.updater.update_available", lambda _store: (True, manifest))
+    monkeypatch.setattr("threadforge_worker.updater.sys.platform", "win32")
+    monkeypatch.setattr("threadforge_worker.updater.urllib.request.urlopen", open_range)
+    monkeypatch.setattr("threadforge_worker.updater.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("threadforge_worker.updater.subprocess.Popen", Mock())
+
+    assert apply_update(store, statuses.append) is True
+    assert [request.get_header("Range") for request in requests] == ["bytes=0-9", "bytes=4-9"]
+    assert any(status["status"] == "retrying" for status in statuses)
+    assert (tmp_path / "updates" / "threadforge-worker-windows-x86_64.exe").read_bytes() == artifact
+
+
+def test_apply_update_reports_failed_after_repeated_connection_errors(tmp_path, monkeypatch):
+    store = ConfigStore(tmp_path)
+    store.save(WorkerConfig(server_url="https://threadforge.example", device_token="token"))
+    artifact = b"0123456789"
+    manifest = {
+        "version": "99.0.0",
+        "platforms": {
+            "windows-x86_64": {
+                "filename": "threadforge-worker-windows-x86_64.exe",
+                "size": len(artifact),
+                "sha256": hashlib.sha256(artifact).hexdigest(),
+            }
+        },
+    }
+    statuses = []
+
+    def fail_open(*_args, **_kwargs):
+        raise OSError("simulated connection reset")
+
+    monkeypatch.setattr("threadforge_worker.updater.update_available", lambda _store: (True, manifest))
+    monkeypatch.setattr("threadforge_worker.updater.sys.platform", "win32")
+    monkeypatch.setattr("threadforge_worker.updater.urllib.request.urlopen", fail_open)
+    monkeypatch.setattr("threadforge_worker.updater.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(RuntimeError, match="after 5 retries"):
+        apply_update(store, statuses.append)
+    assert statuses[-1]["status"] == "failed"
+    assert "after 5 retries" in statuses[-1]["error"]
 
 
 def test_update_lock_rejects_a_second_updater(tmp_path):

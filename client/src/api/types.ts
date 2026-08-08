@@ -69,11 +69,13 @@ export interface Device {
 }
 
 export interface WorkerUpdateStatus {
-  status: 'checking' | 'downloading' | 'installing' | 'current' | 'failed' | 'unsupported' | ''
+  status: 'checking' | 'downloading' | 'retrying' | 'installing' | 'current' | 'failed' | 'unsupported' | ''
   current_version: string
   target_version: string
   downloaded_bytes: number
   total_bytes: number
+  bytes_per_second?: number
+  retry_count?: number
   error: string
   updated_at: string
 }

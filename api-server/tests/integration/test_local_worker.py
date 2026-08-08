@@ -134,9 +134,98 @@ def test_companion_reports_bounded_update_progress(client):
             "target_version": "0.3.1",
             "downloaded_bytes": 25,
             "total_bytes": 100,
+            "bytes_per_second": 0,
+            "retry_count": 0,
             "error": "",
             "updated_at": "2026-08-07T12:00:00+00:00",
         }
+
+
+def test_local_session_workspace_delete_and_remote_uninstall(client):
+    paired = _pair(client)
+    headers = {"Authorization": f"Bearer {paired['device_token']}"}
+    with client.websocket_connect("/api/v1/workers/connect", headers=headers) as socket:
+        workspace_id = _hello(
+            socket,
+            capabilities=["delete_entities", "worker_uninstall"],
+        )
+        first_session = client.post(
+            "/api/v1/sessions", json={"workspace_id": workspace_id, "title": "First"}
+        ).json()["session_id"]
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            deleted_future = executor.submit(
+                client.delete, f"/api/v1/sessions/{first_session}"
+            )
+            command = socket.receive_json()
+            assert command["type"] == "entity.delete"
+            assert command["entity_type"] == "session"
+            assert command["session_ids"] == [first_session]
+            socket.send_json(
+                {
+                    "type": "entity.delete.completed",
+                    "request_id": command["request_id"],
+                    "entity_type": "session",
+                    "entity_id": first_session,
+                    "status": "completed",
+                    "deleted_session_ids": [first_session],
+                    "workspaces": [
+                        {"workspace_id": workspace_id, "name": "Local repo", "is_git": True}
+                    ],
+                }
+            )
+            assert socket.receive_json()["type"] == "entity.delete.ack"
+            assert deleted_future.result(timeout=2).status_code == 200
+        assert client.get(f"/api/v1/sessions/{first_session}").status_code == 404
+
+        second_session = client.post(
+            "/api/v1/sessions", json={"workspace_id": workspace_id, "title": "Second"}
+        ).json()["session_id"]
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            workspace_future = executor.submit(
+                client.delete,
+                f"/api/v1/devices/{paired['device_id']}/workspaces/{workspace_id}",
+            )
+            command = socket.receive_json()
+            assert command["type"] == "entity.delete"
+            assert command["entity_type"] == "workspace"
+            assert command["session_ids"] == [second_session]
+            socket.send_json(
+                {
+                    "type": "entity.delete.completed",
+                    "request_id": command["request_id"],
+                    "entity_type": "workspace",
+                    "entity_id": workspace_id,
+                    "status": "completed",
+                    "deleted_session_ids": [second_session],
+                    "workspaces": [],
+                }
+            )
+            assert socket.receive_json()["type"] == "entity.delete.ack"
+            response = workspace_future.result(timeout=2)
+            assert response.status_code == 200
+            assert response.json()["deleted_session_ids"] == [second_session]
+        assert client.get(f"/api/v1/sessions/{second_session}").status_code == 404
+        assert not any(
+            item["workspace_id"] == workspace_id
+            for item in client.get("/api/v1/workspaces").json()["items"]
+        )
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            uninstall_future = executor.submit(
+                client.post, f"/api/v1/devices/{paired['device_id']}/uninstall"
+            )
+            command = socket.receive_json()
+            assert command["type"] == "worker.uninstall"
+            socket.send_json(
+                {
+                    "type": "worker.uninstall.completed",
+                    "request_id": command["request_id"],
+                    "status": "completed",
+                }
+            )
+            assert socket.receive_json()["type"] == "worker.uninstall.ack"
+            assert uninstall_future.result(timeout=2).json()["status"] == "uninstalling"
 
 
 def test_online_worker_pool_supports_multiple_connections_and_capability_filter(client):
