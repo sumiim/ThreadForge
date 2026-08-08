@@ -16,7 +16,7 @@ from pico.providers.clients import FakeModelClient
 from pico.session_store import SessionStore
 from pico.tool_executor import ToolExecutionResult
 from websockets.datastructures import Headers
-from websockets.exceptions import InvalidStatus
+from websockets.exceptions import InvalidMessage, InvalidStatus
 from websockets.http11 import Response
 
 import threadforge_worker.config as config_module
@@ -297,6 +297,28 @@ def test_worker_retries_transient_websocket_handshake_failure(tmp_path, monkeypa
         attempts.append(1)
         if len(attempts) == 1:
             raise InvalidStatus(Response(502, "Bad Gateway", Headers()))
+        client.stop()
+
+    monkeypatch.setattr(client, "_run_once", run_once)
+    monkeypatch.setattr(client._stop_event, "wait", lambda _timeout: False)
+
+    client.run_forever()
+
+    assert len(attempts) == 2
+    assert statuses == ["connecting", "retrying", "connecting", "stopped"]
+
+
+def test_worker_retries_connection_closed_before_http_response(tmp_path, monkeypatch):
+    store = ConfigStore(tmp_path)
+    config = WorkerConfig(device_id="dev_" + "a" * 32, device_token="token")
+    statuses = []
+    client = WorkerClient(store, config, status_callback=statuses.append)
+    attempts = []
+
+    def run_once():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise InvalidMessage("connection closed while reading HTTP status line")
         client.stop()
 
     monkeypatch.setattr(client, "_run_once", run_once)

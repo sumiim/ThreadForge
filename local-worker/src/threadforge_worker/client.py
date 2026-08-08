@@ -18,7 +18,7 @@ from pathlib import Path
 
 from pico.security import redact_artifact
 from pico.session_store import SessionStore
-from websockets.exceptions import ConnectionClosed, InvalidStatus
+from websockets.exceptions import ConnectionClosed, InvalidMessage, InvalidStatus
 from websockets.sync.client import connect
 
 from . import __version__
@@ -155,7 +155,11 @@ class WorkerClient:
                         f"Worker WebSocket handshake was rejected (HTTP {status})"
                     ) from exc
                 reason = f"temporary WebSocket handshake failure (HTTP {status})"
-            except (OSError, TimeoutError) as exc:
+            # A reverse proxy or tunnel can close the socket before it has
+            # written an HTTP status line.  websockets reports that as
+            # InvalidMessage rather than OSError; it is still a transient
+            # transport failure and must not terminate the Worker service.
+            except (InvalidMessage, OSError, TimeoutError) as exc:
                 reason = str(exc) or type(exc).__name__
             if self._stop_event.is_set():
                 break

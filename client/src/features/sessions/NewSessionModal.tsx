@@ -70,6 +70,8 @@ export default function NewSessionModal({
   const [devices, setDevices] = useState<Device[] | null>(null)
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null)
   const [release, setRelease] = useState<WorkerReleaseManifest | null>(null)
+  const [releaseLoading, setReleaseLoading] = useState(true)
+  const [refreshKey, setRefreshKey] = useState(0)
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null)
   const [downloaded, setDownloaded] = useState(false)
   const [error, setError] = useState('')
@@ -86,7 +88,6 @@ export default function NewSessionModal({
   const noWorkspace = workspaces.length === 0
   const needsDeviceDiscovery = intent !== 'session' || noWorkspace
   const selectsNewWorkspace = intent === 'workspace' || (intent === 'session' && noWorkspace)
-  const releaseLoading = devices !== null && release === null && !releaseError
   const compatibleDevices = (devices ?? []).filter((device) => workerIsReady(device, release))
   const outdatedDevices = release
     ? (devices ?? []).filter((device) => workerNeedsUpdate(device, release))
@@ -118,7 +119,7 @@ export default function NewSessionModal({
   ) ?? null
 
   useEffect(() => {
-    if (!open || !needsDeviceDiscovery || devices !== null) return
+    if (!open || !needsDeviceDiscovery) return
     let active = true
     void listDevices()
       .then(({ items }) => {
@@ -133,7 +134,15 @@ export default function NewSessionModal({
           setDeviceError(friendlyMessage(cause))
         }
       })
-    void getLatestWorkerRelease()
+    return () => {
+      active = false
+    }
+  }, [needsDeviceDiscovery, open, refreshKey])
+
+  useEffect(() => {
+    if (!open || !needsDeviceDiscovery) return
+    let active = true
+    void getLatestWorkerRelease({ force: refreshKey > 0 })
       .then((manifest) => {
         if (active) {
           setRelease(manifest)
@@ -143,13 +152,16 @@ export default function NewSessionModal({
       .catch((cause: unknown) => {
         if (active) setReleaseError(friendlyMessage(cause))
       })
+      .finally(() => {
+        if (active) setReleaseLoading(false)
+      })
     return () => {
       active = false
     }
-  }, [devices, needsDeviceDiscovery, open])
+  }, [needsDeviceDiscovery, open, refreshKey])
 
   useEffect(() => {
-    if (!open || !needsDeviceDiscovery || devices === null) return
+    if (!open || !needsDeviceDiscovery) return
     const timer = window.setInterval(() => {
       void listDevices()
         .then(({ items }) => {
@@ -159,13 +171,15 @@ export default function NewSessionModal({
         .catch((cause: unknown) => setDeviceError(friendlyMessage(cause)))
     }, 5_000)
     return () => window.clearInterval(timer)
-  }, [devices, needsDeviceDiscovery, open])
+  }, [needsDeviceDiscovery, open])
 
   const resetState = () => {
     operationVersion.current += 1
     setDevices(null)
     setSelectedDeviceId(null)
     setRelease(null)
+    setReleaseLoading(true)
+    setRefreshKey(0)
     setDownloadProgress(null)
     setDownloaded(false)
     setDeviceError('')
@@ -190,6 +204,8 @@ export default function NewSessionModal({
     setDeviceError('')
     setReleaseError('')
     setDownloadStatus('')
+    setReleaseLoading(true)
+    setRefreshKey((value) => value + 1)
   }
 
   const refreshWorkspaces = async () => {
@@ -317,7 +333,15 @@ export default function NewSessionModal({
         description="请安装或更新本机 Worker。安装程序自带运行环境，不需要单独安装 Python。"
       />
       {error ? <Alert type="error" showIcon message={error} /> : null}
-      {releaseError ? <Alert type="error" showIcon message={releaseError} /> : null}
+      {releaseError ? (
+        <Alert
+          type="error"
+          showIcon
+          message="无法读取 Worker 发布清单"
+          description={releaseError}
+          action={<Button size="small" onClick={refreshDevices}>重试</Button>}
+        />
+      ) : null}
       {deviceError ? (
         <Alert
           type="warning"

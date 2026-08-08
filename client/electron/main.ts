@@ -27,7 +27,9 @@ function openExternalUrl(url: string) {
   if (
     url.startsWith('https://') ||
     url.startsWith('mailto:') ||
-    url === 'threadforge://worker/start'
+    url === 'threadforge://worker/start' ||
+    url === 'threadforge://worker/uninstall' ||
+    url.startsWith('threadforge://worker/pair?')
   ) {
     void shell.openExternal(url)
   }
