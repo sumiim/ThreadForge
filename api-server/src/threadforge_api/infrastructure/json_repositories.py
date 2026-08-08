@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ..domain.entities import Approval, Task
 from ..domain.errors import (
+    ActiveTaskExistsError,
     AppError,
     ApprovalNotFoundError,
     PersistenceUnavailableError,
@@ -154,6 +155,41 @@ class JsonTaskRepository(_JsonRepoBase):
                     tasks.append(task)
             return tasks, total
 
+    def list_for_sessions(self, session_ids: set[str], owner_id: str) -> list[Task]:
+        """Return every task owned by ``owner_id`` in the supplied sessions."""
+        owner_id = canonical_owner_id(owner_id)
+        if not session_ids:
+            return []
+        with self._lock:
+            tasks: list[Task] = []
+            for record_id in self.list_stable():
+                try:
+                    task = _task_from_dict(self._read_record(record_id), record_id)
+                except RecordNotFoundError:
+                    continue
+                if task.session_id in session_ids and task.owner_id == owner_id:
+                    tasks.append(task)
+            return tasks
+
+    def delete_many(self, task_ids: set[str], owner_id: str) -> list[str]:
+        """Delete terminal task records and return the ids removed."""
+        owner_id = canonical_owner_id(owner_id)
+        if not task_ids:
+            return []
+        with self._lock:
+            tasks = []
+            for task_id in task_ids:
+                try:
+                    task = self.get_for_owner(task_id, owner_id)
+                except TaskNotFoundError:
+                    continue
+                if not task.status.terminal:
+                    raise ActiveTaskExistsError(task.task_id)
+                tasks.append(task)
+            for task in tasks:
+                (self.root / f"{task.task_id}.json").unlink(missing_ok=True)
+            return [task.task_id for task in tasks]
+
     def update(
         self,
         task_id: str,
@@ -215,6 +251,24 @@ class JsonApprovalRepository(_JsonRepoBase):
                 if approval.task_id == task_id and approval.status.value == "pending":
                     out.append(approval)
             return out
+
+    def delete_for_tasks(self, task_ids: set[str], owner_id: str) -> list[str]:
+        """Remove approval records belonging to the supplied task ids."""
+        owner_id = canonical_owner_id(owner_id)
+        if not task_ids:
+            return []
+        with self._lock:
+            removed: list[str] = []
+            for record_id in self.list_stable():
+                try:
+                    approval = self.get_for_owner(record_id, owner_id)
+                except ApprovalNotFoundError:
+                    continue
+                if approval.task_id not in task_ids:
+                    continue
+                (self.root / f"{approval.approval_id}.json").unlink(missing_ok=True)
+                removed.append(approval.approval_id)
+            return removed
 
 
 def _task_from_dict(payload: dict, record_id: str) -> Task:

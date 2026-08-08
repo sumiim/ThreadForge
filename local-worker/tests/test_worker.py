@@ -1023,6 +1023,78 @@ def test_history_read_and_model_configuration_protocol(tmp_path):
         ]
 
 
+def test_delete_workspace_removes_local_sessions_and_run_artifacts(tmp_path):
+    store = ConfigStore(tmp_path / "state")
+    workspace_root = tmp_path / "repo"
+    workspace_root.mkdir()
+    workspace_id = "ws_" + "b" * 32
+    session_id = "ses_" + "c" * 32
+    run_id = "run_" + "d" * 32
+    config = WorkerConfig(
+        workspaces=[LocalWorkspace(workspace_id, "Repo", str(workspace_root))]
+    )
+    store.save(config)
+    store.save_workspaces(config)
+    session_store = SessionStore(store.root / "sessions")
+    session_store.save({"id": session_id, "workspace_id": workspace_id, "history": []})
+    run_dir = store.root / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "task_state.json").write_text("{}", encoding="utf-8")
+    messages = []
+
+    class Socket:
+        def send(self, raw):
+            messages.append(json.loads(raw))
+
+    client = WorkerClient(store, config)
+    client._socket = Socket()
+    client._handle(
+        {
+            "type": "entity.delete",
+            "request_id": "delete_test",
+            "entity_type": "workspace",
+            "entity_id": workspace_id,
+            "session_ids": [session_id],
+            "run_ids": [run_id],
+        }
+    )
+
+    assert messages[0]["status"] == "completed"
+    assert messages[0]["deleted_session_ids"] == [session_id]
+    assert session_store.exists(session_id) is False
+    assert run_dir.exists() is False
+    assert store.load().workspaces == []
+
+
+def test_remote_uninstall_acknowledges_before_launching_uninstaller(tmp_path):
+    messages = []
+    launched = threading.Event()
+
+    class Socket:
+        def send(self, raw):
+            messages.append(json.loads(raw))
+
+        def close(self):
+            return None
+
+    client = WorkerClient(
+        ConfigStore(tmp_path / "state"),
+        WorkerConfig(),
+        uninstall_callback=launched.set,
+    )
+    client._socket = Socket()
+    client._handle({"type": "worker.uninstall", "request_id": "uninstall_test"})
+
+    assert messages == [
+        {
+            "type": "worker.uninstall.completed",
+            "request_id": "uninstall_test",
+            "status": "completed",
+        }
+    ]
+    assert launched.wait(1)
+
+
 def test_large_unicode_history_stays_within_worker_message_limit(tmp_path):
     store = ConfigStore(tmp_path / "state")
     session_store = SessionStore(store.root / "sessions")

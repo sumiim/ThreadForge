@@ -4,6 +4,8 @@ import {
   ApiError,
   configureWorkerModel,
   createPairingCode,
+  deleteSession,
+  deleteWorkspace,
   downloadWorkerRelease,
   getLatestWorkerRelease,
   getAuthStatus,
@@ -13,6 +15,7 @@ import {
   listSkills,
   logout,
   revokeDevice,
+  uninstallWorker,
 } from './client.ts'
 
 const originalFetch = globalThis.fetch
@@ -98,6 +101,9 @@ describe('client authentication API', () => {
     await logout()
     await createPairingCode()
     await revokeDevice('dev_a/b')
+    await uninstallWorker('dev_remote')
+    await deleteWorkspace('dev_remote', 'ws_a/b')
+    await deleteSession('ses_a/b')
     await configureWorkerModel('dev_model', {
       base_url: 'https://provider.example/v1',
       api_key: 'secret',
@@ -115,9 +121,15 @@ describe('client authentication API', () => {
     assert.equal(calls[3].url, '/api/v1/devices/dev_a%2Fb')
     assert.equal(calls[3].init?.method, 'DELETE')
     assert.equal(new Headers(calls[3].init?.headers).get('X-ThreadForge-CSRF'), '1')
-    assert.equal(calls[4].url, '/api/v1/devices/dev_model/model-config')
-    assert.equal(calls[4].init?.method, 'PUT')
-    assert.deepEqual(JSON.parse(String(calls[4].init?.body)), {
+    assert.equal(calls[4].url, '/api/v1/devices/dev_remote/uninstall')
+    assert.equal(calls[4].init?.method, 'POST')
+    assert.equal(calls[5].url, '/api/v1/devices/dev_remote/workspaces/ws_a%2Fb')
+    assert.equal(calls[5].init?.method, 'DELETE')
+    assert.equal(calls[6].url, '/api/v1/sessions/ses_a%2Fb')
+    assert.equal(calls[6].init?.method, 'DELETE')
+    assert.equal(calls[7].url, '/api/v1/devices/dev_model/model-config')
+    assert.equal(calls[7].init?.method, 'PUT')
+    assert.deepEqual(JSON.parse(String(calls[7].init?.body)), {
       base_url: 'https://provider.example/v1',
       api_key: 'secret',
       model: 'model-a',

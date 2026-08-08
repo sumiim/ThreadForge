@@ -15,6 +15,7 @@ from ..dependencies import (
     get_actor,
     get_device_store,
     get_pairing_store,
+    get_session_service,
     get_worker_hub,
     require_csrf,
 )
@@ -169,6 +170,38 @@ async def rename_workspace(
     )
 
 
+@router.delete(
+    "/api/v1/devices/{device_id}/workspaces/{workspace_id}",
+    dependencies=[Depends(require_csrf)],
+)
+async def delete_workspace(
+    device_id: str,
+    workspace_id: str,
+    actor: Actor = Depends(get_actor),
+    worker_hub: WorkerHub = Depends(get_worker_hub),
+    session_service=Depends(get_session_service),
+) -> dict:
+    session_ids = session_service.session_ids_for_workspace(
+        workspace_id,
+        device_id,
+        actor.owner_id,
+    )
+    session_service.ensure_sessions_deletable(session_ids, actor.owner_id)
+    result = await worker_hub.delete_entity(
+        device_id=device_id,
+        owner_id=actor.owner_id,
+        entity_type="workspace",
+        entity_id=workspace_id,
+        session_ids=session_ids,
+        run_ids=session_service.run_ids_for_sessions(session_ids, actor.owner_id),
+    )
+    deleted = session_service.delete_sessions(session_ids, actor.owner_id)
+    return {
+        **result,
+        "deleted_session_ids": deleted["deleted_session_ids"],
+    }
+
+
 @router.post(
     "/api/v1/devices/{device_id}/workspace-selection-requests",
     dependencies=[Depends(require_csrf)],
@@ -213,6 +246,18 @@ async def configure_worker_model(
         api_key=body.api_key,
         model=body.model,
     )
+
+
+@router.post(
+    "/api/v1/devices/{device_id}/uninstall",
+    dependencies=[Depends(require_csrf)],
+)
+async def uninstall_worker(
+    device_id: str,
+    actor: Actor = Depends(get_actor),
+    worker_hub: WorkerHub = Depends(get_worker_hub),
+) -> dict:
+    return await worker_hub.uninstall_worker(device_id=device_id, owner_id=actor.owner_id)
 
 
 @router.delete("/api/v1/devices/{device_id}", dependencies=[Depends(require_csrf)])

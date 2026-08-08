@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import tempfile
 import threading
 from pathlib import Path
 
@@ -31,6 +30,7 @@ class WorkerReleaseService:
         self.max_bytes = max_bytes
         self.cache_seconds = cache_seconds
         self._cache: tuple[int, dict] | None = None
+        self._verified_artifacts: set[tuple[str, int, int, str]] = set()
         self._lock = threading.Lock()
         self._public_key = Ed25519PublicKey.from_public_bytes(
             base64.b64decode(public_key_b64, validate=True)
@@ -56,6 +56,8 @@ class WorkerReleaseService:
         except Exception as exc:
             raise WorkerReleaseUnavailableError("Worker release manifest is unavailable") from exc
         with self._lock:
+            if self._cache is None or self._cache[0] != modified_ns:
+                self._verified_artifacts.clear()
             self._cache = (modified_ns, manifest)
         return manifest
 
@@ -68,29 +70,42 @@ class WorkerReleaseService:
         expected_digest = str(artifact["sha256"])
         if expected_size > self.max_bytes:
             raise WorkerReleaseUnavailableError("Worker release exceeds the configured size limit")
-        # Ownership is transferred to the StreamingResponse background task.
-        temporary = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024)  # noqa: SIM115
-        digest = hashlib.sha256()
-        total = 0
+        handle = None
         try:
             artifact_path = (
                 self.release_dir / str(manifest["version"]) / str(artifact["filename"])
             ).resolve(strict=True)
             if artifact_path.parent != self.release_dir / str(manifest["version"]):
                 raise ValueError("release artifact path is invalid")
-            with artifact_path.open("rb") as response:
-                while chunk := response.read(64 * 1024):
+            handle = artifact_path.open("rb")
+            stat = artifact_path.stat()
+            cache_key = (
+                str(artifact_path),
+                stat.st_mtime_ns,
+                stat.st_size,
+                expected_digest,
+            )
+            with self._lock:
+                verified = cache_key in self._verified_artifacts
+            if not verified:
+                digest = hashlib.sha256()
+                total = 0
+                while chunk := handle.read(1024 * 1024):
                     total += len(chunk)
                     if total > self.max_bytes or total > expected_size:
                         raise ValueError("release artifact exceeded its signed size")
                     digest.update(chunk)
-                    temporary.write(chunk)
-            if total != expected_size or digest.hexdigest() != expected_digest:
-                raise ValueError("release artifact does not match its signed manifest")
-            temporary.seek(0)
-            return temporary, artifact
+                if total != expected_size or digest.hexdigest() != expected_digest:
+                    raise ValueError("release artifact does not match its signed manifest")
+                with self._lock:
+                    self._verified_artifacts.add(cache_key)
+                    while len(self._verified_artifacts) > 16:
+                        self._verified_artifacts.pop()
+            handle.seek(0)
+            return handle, artifact
         except Exception as exc:
-            temporary.close()
+            if handle is not None:
+                handle.close()
             raise WorkerReleaseUnavailableError("Worker release download failed verification") from exc
 
     def _validate_manifest(self, manifest) -> None:

@@ -70,7 +70,7 @@ def download_worker_release(
 
     def chunks() -> Iterator[bytes]:
         nonlocal remaining
-        while remaining > 0 and (chunk := handle.read(min(64 * 1024, remaining))):
+        while remaining > 0 and (chunk := handle.read(min(1024 * 1024, remaining))):
             remaining -= len(chunk)
             yield chunk
 

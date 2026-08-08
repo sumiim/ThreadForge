@@ -84,3 +84,25 @@ async def rename_session(
         "display_name_source": summary.get("display_name_source", "user"),
         "display_name_updated_at": summary.get("display_name_updated_at", ""),
     }
+
+
+@router.delete("/api/v1/sessions/{session_id}", dependencies=[Depends(require_csrf)])
+async def delete_session(
+    session_id: str,
+    actor: Actor = Depends(get_actor),
+    session_service: SessionService = Depends(get_session_service),
+    worker_hub=Depends(get_worker_hub),
+) -> dict:
+    validate_session_id(session_id)
+    session = session_service.load_raw(session_id, actor.owner_id)
+    session_service.ensure_sessions_deletable([session_id], actor.owner_id)
+    if session.get("execution_environment") == "local_worker":
+        await worker_hub.delete_entity(
+            device_id=str(session.get("device_id", "")),
+            owner_id=actor.owner_id,
+            entity_type="session",
+            entity_id=session_id,
+            session_ids=[session_id],
+            run_ids=session_service.run_ids_for_sessions([session_id], actor.owner_id),
+        )
+    return session_service.delete_session(session_id, actor.owner_id)

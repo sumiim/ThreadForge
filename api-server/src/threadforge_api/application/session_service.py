@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import shutil
 import uuid
+from pathlib import Path
 
 from pico.features.memory import default_memory_state
 from pico.security import redact_artifact
@@ -18,6 +20,7 @@ from pico.session_store import (
 
 from ..domain.entities import utc_now
 from ..domain.errors import (
+    ActiveTaskExistsError,
     PersistenceUnavailableError,
     RenameConflictError,
     SessionCorruptedError,
@@ -45,6 +48,8 @@ class SessionService:
         session_store,
         workspace_catalog: WorkspaceCatalog,
         task_repo: JsonTaskRepository | None = None,
+        approval_repo=None,
+        runs_root: Path | None = None,
         device_store=None,
         worker_hub=None,
         allow_backend_workspaces: bool = True,
@@ -52,6 +57,8 @@ class SessionService:
         self._session_store = session_store
         self._workspace_catalog = workspace_catalog
         self._task_repo = task_repo
+        self._approval_repo = approval_repo
+        self._runs_root = Path(runs_root).resolve() if runs_root is not None else None
         self._device_store = device_store
         self._worker_hub = worker_hub
         self._allow_backend_workspaces = allow_backend_workspaces
@@ -289,6 +296,89 @@ class SessionService:
         session["updated_at"] = session["display_name_updated_at"]
         self._session_store.save(session)
         return self._summary(session)
+
+    def session_ids_for_workspace(
+        self,
+        workspace_id: str,
+        device_id: str,
+        owner_id: str,
+    ) -> list[str]:
+        owner_id = canonical_owner_id(owner_id)
+        session_ids: list[str] = []
+        for session_id in self._session_store.list_ids():
+            try:
+                session = self._load(session_id)
+            except SessionNotFoundError:
+                continue
+            if (
+                session.get("owner_id") == owner_id
+                and session.get("device_id") == device_id
+                and session.get("workspace_id") == workspace_id
+                and session.get("execution_environment") == "local_worker"
+            ):
+                session_ids.append(session_id)
+        return session_ids
+
+    def ensure_sessions_deletable(self, session_ids: list[str], owner_id: str) -> None:
+        if self._task_repo is None or not session_ids:
+            return
+        tasks = self._task_repo.list_for_sessions(set(session_ids), owner_id)
+        active = next((task for task in tasks if not task.status.terminal), None)
+        if active is not None:
+            raise ActiveTaskExistsError(active.task_id)
+
+    def run_ids_for_sessions(self, session_ids: list[str], owner_id: str) -> list[str]:
+        if self._task_repo is None or not session_ids:
+            return []
+        self.ensure_sessions_deletable(session_ids, owner_id)
+        return [
+            task.run_id
+            for task in self._task_repo.list_for_sessions(set(session_ids), owner_id)
+            if task.run_id
+        ]
+
+    def delete_session(self, session_id: str, owner_id: str) -> dict:
+        return self.delete_sessions([session_id], owner_id)
+
+    def delete_sessions(self, session_ids: list[str], owner_id: str) -> dict:
+        owner_id = canonical_owner_id(owner_id)
+        unique_ids = list(dict.fromkeys(str(item) for item in session_ids))
+        sessions = [self._load(session_id, owner_id) for session_id in unique_ids]
+        self.ensure_sessions_deletable(unique_ids, owner_id)
+
+        tasks = (
+            self._task_repo.list_for_sessions(set(unique_ids), owner_id)
+            if self._task_repo is not None
+            else []
+        )
+        task_ids = {task.task_id for task in tasks}
+        if self._approval_repo is not None:
+            self._approval_repo.delete_for_tasks(task_ids, owner_id)
+        self._delete_run_artifacts({task.run_id for task in tasks if task.run_id})
+        if self._task_repo is not None:
+            self._task_repo.delete_many(task_ids, owner_id)
+        for session in sessions:
+            try:
+                self._session_store.delete(session["id"])
+            except LegacySessionStoreUnavailableError:
+                raise PersistenceUnavailableError("session storage unavailable") from None
+        return {"status": "deleted", "deleted_session_ids": unique_ids}
+
+    def _delete_run_artifacts(self, run_ids: set[str]) -> None:
+        if self._runs_root is None:
+            return
+        for run_id in run_ids:
+            run_dir = (self._runs_root / run_id).resolve()
+            try:
+                run_dir.relative_to(self._runs_root)
+            except ValueError:
+                raise PersistenceUnavailableError("run artifact path is invalid") from None
+            try:
+                shutil.rmtree(run_dir, ignore_errors=False)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise PersistenceUnavailableError("run artifact storage unavailable") from exc
 
     @staticmethod
     def _summary(session: dict) -> dict:

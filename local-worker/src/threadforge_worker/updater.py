@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -29,7 +30,14 @@ _MAX_BUNDLE_BYTES = 128 * 1024 * 1024
 _WINDOWS_CREATION_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
     subprocess, "DETACHED_PROCESS", 0
 )
-_PROGRESS_STEP_BYTES = 1024 * 1024
+_DOWNLOAD_RANGE_BYTES = 2 * 1024 * 1024
+_DOWNLOAD_READ_BYTES = 64 * 1024
+_DOWNLOAD_TIMEOUT_SECONDS = 30
+_DOWNLOAD_RETRY_LIMIT = 5
+_DOWNLOAD_RETRY_DELAY_SECONDS = 1.0
+_STALL_CHECK_SECONDS = 30.0
+_MIN_DOWNLOAD_BYTES_PER_SECOND = 8 * 1024
+_PROGRESS_STEP_BYTES = 256 * 1024
 _UPDATE_STATUS_NAME = "update-status.json"
 LOGGER = logging.getLogger(__name__)
 
@@ -184,6 +192,8 @@ def load_update_status(store: ConfigStore) -> dict:
             "target_version": str(payload.get("target_version", ""))[:32],
             "downloaded_bytes": max(0, int(payload.get("downloaded_bytes", 0))),
             "total_bytes": max(0, int(payload.get("total_bytes", 0))),
+            "bytes_per_second": max(0, int(payload.get("bytes_per_second", 0))),
+            "retry_count": max(0, int(payload.get("retry_count", 0))),
             "error": str(payload.get("error", ""))[:500],
             "updated_at": str(payload.get("updated_at", ""))[:40],
         }
@@ -222,22 +232,22 @@ def _download_installer(
         existing_size = 0
 
     config = store.load()
-    headers = {
+    base_headers = {
         "Authorization": f"Bearer {config.device_token}",
         "User-Agent": f"ThreadForge-Worker/{__version__}",
     }
-    if existing_size:
-        headers["Range"] = f"bytes={existing_size}-"
-    request = urllib.request.Request(
+    download_url = (
         config.server_url.rstrip("/")
-        + "/api/v1/worker/releases/download/windows-x86_64",
-        headers=headers,
+        + "/api/v1/worker/releases/download/windows-x86_64"
     )
     digest = hashlib.sha256()
     if existing_size:
         _hash_file(download_path, digest)
     total = existing_size
+    transfer_started = time.monotonic()
+    transfer_start_bytes = total
     last_reported = total // _PROGRESS_STEP_BYTES
+    consecutive_failures = 0
     _publish_status(
         store,
         status_callback,
@@ -247,37 +257,101 @@ def _download_installer(
         total_bytes=expected_size,
     )
 
-    with urllib.request.urlopen(request, timeout=60) as response:
-        status = int(getattr(response, "status", 200) or 200)
-        if existing_size and status != 206:
-            # Older servers ignore Range. Restart safely instead of appending a
-            # complete response to a partial file.
-            total = 0
-            digest = hashlib.sha256()
-        elif existing_size:
-            content_range = str(response.headers.get("Content-Range", ""))
-            if not content_range.startswith(f"bytes {existing_size}-"):
-                raise RuntimeError("Worker update server returned an invalid byte range")
-        mode = "ab" if total else "wb"
-        with download_path.open(mode) as output:
-            while chunk := response.read(64 * 1024):
-                total += len(chunk)
-                if total > _MAX_BUNDLE_BYTES or total > expected_size:
-                    download_path.unlink(missing_ok=True)
-                    raise RuntimeError("Worker update exceeded its signed size")
-                digest.update(chunk)
-                output.write(chunk)
-                progress_step = total // _PROGRESS_STEP_BYTES
-                if progress_step > last_reported or total == expected_size:
-                    last_reported = progress_step
-                    _publish_status(
-                        store,
-                        status_callback,
-                        status="downloading",
-                        target_version=target_version,
-                        downloaded_bytes=total,
-                        total_bytes=expected_size,
-                    )
+    while total < expected_size:
+        range_start = total
+        range_end = min(expected_size - 1, range_start + _DOWNLOAD_RANGE_BYTES - 1)
+        request = urllib.request.Request(
+            download_url,
+            headers={
+                **base_headers,
+                "Range": f"bytes={range_start}-{range_end}",
+            },
+        )
+        attempt_started = time.monotonic()
+        try:
+            with urllib.request.urlopen(
+                request,
+                timeout=_DOWNLOAD_TIMEOUT_SECONDS,
+            ) as response:
+                _validate_range_response(response, range_start, range_end, expected_size)
+                with download_path.open("ab") as output:
+                    while total <= range_end:
+                        chunk = response.read(
+                            min(_DOWNLOAD_READ_BYTES, range_end - total + 1)
+                        )
+                        if not chunk:
+                            raise OSError("Worker update connection ended early")
+                        total += len(chunk)
+                        if total > _MAX_BUNDLE_BYTES or total > expected_size:
+                            download_path.unlink(missing_ok=True)
+                            raise RuntimeError("Worker update exceeded its signed size")
+                        digest.update(chunk)
+                        output.write(chunk)
+                        now = time.monotonic()
+                        attempt_elapsed = now - attempt_started
+                        attempt_bytes = total - range_start
+                        if (
+                            attempt_elapsed >= _STALL_CHECK_SECONDS
+                            and attempt_bytes / attempt_elapsed
+                            < _MIN_DOWNLOAD_BYTES_PER_SECOND
+                        ):
+                            raise TimeoutError("Worker update connection stalled")
+                        progress_step = total // _PROGRESS_STEP_BYTES
+                        if progress_step > last_reported or total == expected_size:
+                            last_reported = progress_step
+                            _publish_status(
+                                store,
+                                status_callback,
+                                status="downloading",
+                                target_version=target_version,
+                                downloaded_bytes=total,
+                                total_bytes=expected_size,
+                                bytes_per_second=_transfer_speed(
+                                    total,
+                                    transfer_start_bytes,
+                                    transfer_started,
+                                ),
+                            )
+            consecutive_failures = 0
+        except Exception as exc:
+            if total > range_start:
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+            if consecutive_failures >= _DOWNLOAD_RETRY_LIMIT:
+                raise RuntimeError(
+                    f"Worker update download failed after {_DOWNLOAD_RETRY_LIMIT} retries: {exc}"
+                ) from exc
+            retry_number = max(1, consecutive_failures)
+            _publish_status(
+                store,
+                status_callback,
+                status="retrying",
+                target_version=target_version,
+                downloaded_bytes=total,
+                total_bytes=expected_size,
+                bytes_per_second=_transfer_speed(
+                    total,
+                    transfer_start_bytes,
+                    transfer_started,
+                ),
+                retry_count=retry_number,
+                error=str(exc)[:500],
+            )
+            time.sleep(_DOWNLOAD_RETRY_DELAY_SECONDS * retry_number)
+            _publish_status(
+                store,
+                status_callback,
+                status="downloading",
+                target_version=target_version,
+                downloaded_bytes=total,
+                total_bytes=expected_size,
+                bytes_per_second=_transfer_speed(
+                    total,
+                    transfer_start_bytes,
+                    transfer_started,
+                ),
+            )
     if total != expected_size:
         raise RuntimeError("Worker update ended before its signed size")
     if digest.hexdigest() != expected_digest:
@@ -285,6 +359,21 @@ def _download_installer(
         raise RuntimeError("Worker update installer failed checksum verification")
     download_path.replace(installer_path)
     return installer_path
+
+
+def _validate_range_response(response, start: int, end: int, total_size: int) -> None:
+    status = int(getattr(response, "status", 200) or 200)
+    if status == 200 and start == 0 and end == total_size - 1:
+        return
+    if status != 206:
+        raise RuntimeError("Worker update server does not support resumable downloads")
+    expected = f"bytes {start}-{end}/{total_size}"
+    if str(response.headers.get("Content-Range", "")) != expected:
+        raise RuntimeError("Worker update server returned an invalid byte range")
+
+
+def _transfer_speed(total: int, start_bytes: int, started: float) -> int:
+    return int(max(0, total - start_bytes) / max(0.001, time.monotonic() - started))
 
 
 def _hash_file(path: Path, digest) -> None:
@@ -323,6 +412,8 @@ def _publish_status(
     target_version: str = "",
     downloaded_bytes: int = 0,
     total_bytes: int = 0,
+    bytes_per_second: int = 0,
+    retry_count: int = 0,
     error: str = "",
 ) -> None:
     payload = {
@@ -331,6 +422,8 @@ def _publish_status(
         "target_version": target_version,
         "downloaded_bytes": max(0, int(downloaded_bytes)),
         "total_bytes": max(0, int(total_bytes)),
+        "bytes_per_second": max(0, int(bytes_per_second)),
+        "retry_count": max(0, int(retry_count)),
         "error": error,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
