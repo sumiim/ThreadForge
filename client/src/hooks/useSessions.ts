@@ -46,6 +46,7 @@ import {
   resolveHistoryStatus,
 } from './session-state.ts'
 import type { HistoryStatus } from './session-state.ts'
+import { selectInitialNavigableSession } from '../features/sessions/session-groups'
 import { workspaceKey } from '../features/sessions/workspaceIdentity'
 
 let idCounter = 0
@@ -808,10 +809,14 @@ export function useSessions(): UseSessions {
             messages: [],
           }))
         setSessions(items)
-        if (items.length > 0) {
+        const initialSession = selectInitialNavigableSession(items, wsRes.items)
+        if (initialSession) {
           setHistoryStatus('loading')
-          activeIdRef.current = items[0].id
-          setActiveId(items[0].id)
+          activeIdRef.current = initialSession.id
+          setActiveId(initialSession.id)
+        } else {
+          activeIdRef.current = null
+          setActiveId(null)
         }
       } catch (err) {
         if (!cancelled) notify.error(friendlyMessage(err))
