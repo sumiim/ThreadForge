@@ -76,4 +76,14 @@ describe('session task recovery', () => {
     assert.equal(tools?.[0].status, 'error')
     assert.equal(tools?.[0].result, '任务已停止，工具未完成')
   })
+
+  it('marks unfinished tools as cancelled when the user stops the task', () => {
+    const tools = reconcileToolCalls(
+      [{ id: 'call-1', toolName: 'read_file', status: 'running' }],
+      'cancelled',
+    )
+
+    assert.equal(tools?.[0].status, 'rejected')
+    assert.equal(tools?.[0].result, '任务已取消，工具未完成')
+  })
 })

@@ -39,8 +39,10 @@ const selectionErrors: Record<string, string> = {
 
 interface NewSessionModalProps {
   open: boolean
+  intent?: 'session' | 'workspace' | 'host'
   workspaces: Workspace[]
   selected: Workspace | null
+  preferredDeviceId?: string | null
   onSelect: (workspace: Workspace) => void
   onCreate: () => void
   onCancel: () => void
@@ -51,8 +53,10 @@ interface NewSessionModalProps {
 // 新建会话同时负责：选择工作区、绑定多台 Worker、目录授权和首次安装。
 export default function NewSessionModal({
   open,
+  intent = 'session',
   workspaces,
   selected,
+  preferredDeviceId = null,
   onSelect,
   onCreate,
   onCancel,
@@ -80,6 +84,8 @@ export default function NewSessionModal({
   // those entries visible so the user can see which device needs reconnecting;
   // only an empty catalog should enter the install/pairing flow.
   const noWorkspace = workspaces.length === 0
+  const needsDeviceDiscovery = intent !== 'session' || noWorkspace
+  const selectsNewWorkspace = intent === 'workspace' || (intent === 'session' && noWorkspace)
   const releaseLoading = devices !== null && release === null && !releaseError
   const compatibleDevices = (devices ?? []).filter((device) => workerIsReady(device, release))
   const outdatedDevices = release
@@ -98,8 +104,10 @@ export default function NewSessionModal({
         ),
       )
     : null
-  const selectedDevice =
-    compatibleDevices.find((device) => device.device_id === selectedDeviceId) ?? compatibleDevices[0] ?? null
+  const selectedDevice = compatibleDevices.find((device) => device.device_id === selectedDeviceId)
+    ?? compatibleDevices.find((device) => device.device_id === preferredDeviceId)
+    ?? compatibleDevices[0]
+    ?? null
   const addWorkspaceTarget = selectable.find(
     (workspace) =>
       workspace.execution_environment === 'local_worker' &&
@@ -110,7 +118,7 @@ export default function NewSessionModal({
   ) ?? null
 
   useEffect(() => {
-    if (!open || !noWorkspace || devices !== null) return
+    if (!open || !needsDeviceDiscovery || devices !== null) return
     let active = true
     void listDevices()
       .then(({ items }) => {
@@ -138,10 +146,10 @@ export default function NewSessionModal({
     return () => {
       active = false
     }
-  }, [devices, noWorkspace, open])
+  }, [devices, needsDeviceDiscovery, open])
 
   useEffect(() => {
-    if (!open || !noWorkspace || devices === null) return
+    if (!open || !needsDeviceDiscovery || devices === null) return
     const timer = window.setInterval(() => {
       void listDevices()
         .then(({ items }) => {
@@ -151,7 +159,7 @@ export default function NewSessionModal({
         .catch((cause: unknown) => setDeviceError(friendlyMessage(cause)))
     }, 5_000)
     return () => window.clearInterval(timer)
-  }, [devices, noWorkspace, open])
+  }, [devices, needsDeviceDiscovery, open])
 
   const resetState = () => {
     operationVersion.current += 1
@@ -229,7 +237,7 @@ export default function NewSessionModal({
     try {
       setConnecting(true)
       setError('')
-      const hasExistingDevice = (devices ?? []).length > 0
+      const hasExistingDevice = intent !== 'host' && (devices ?? []).length > 0
       if (hasExistingDevice) {
         // An older paired Worker should keep its identity and workspaces. Ask
         // the installed service to restart after the installer replaces it;
@@ -285,6 +293,7 @@ export default function NewSessionModal({
             workspace.workspace_id === request.workspace_id && workspace.device_id === deviceId,
         )
         if (addedWorkspace) onSelect(addedWorkspace)
+        if (addedWorkspace && intent === 'workspace') handleCancel()
         return
       }
       if (request.status === 'cancelled') {
@@ -407,17 +416,16 @@ export default function NewSessionModal({
 
   return (
     <Modal
-      title="新建会话"
+      title={intent === 'host' ? '添加主机' : intent === 'workspace' ? '添加工作区' : '新建会话'}
       open={open}
-      onOk={onCreate}
+      onOk={intent === 'session' ? onCreate : handleCancel}
       onCancel={handleCancel}
-      okText="创建"
+      okText={intent === 'session' ? '创建' : '关闭'}
       cancelText="取消"
-      okButtonProps={{ disabled: !value }}
+      okButtonProps={intent === 'session' ? { disabled: !value } : undefined}
       width={560}
     >
-      <div className="mb-2 text-sm font-medium text-stone-800">工作区</div>
-      {selectable.length === 0 ? (
+      {intent === 'host' ? renderDownloadPanel() : selectsNewWorkspace ? (
         devices === null ? (
           <div className="flex min-h-40 flex-col items-center justify-center gap-3 text-center text-xs text-stone-500">
             <Spin indicator={<LoadingOutlined spin />} />
@@ -428,8 +436,8 @@ export default function NewSessionModal({
             <Alert
               type="info"
               showIcon
-              message="请选择要使用的 Worker，并授权一个本地目录"
-              description="每台 Worker 可以绑定多个工作区；后续可以在这里切换不同设备。"
+              message="选择要使用的 Worker，并授权一个本地目录"
+              description="每台 Worker 可以绑定多个工作区；工作区只保存目录授权，不会移动或修改真实项目文件。"
             />
             {error ? <Alert type="error" showIcon message={error} /> : null}
             {compatibleDevices.length > 1 ? (
@@ -471,6 +479,7 @@ export default function NewSessionModal({
         )
       ) : (
         <>
+          <div className="mb-2 text-sm font-medium text-stone-800">工作区</div>
           {selectable.length === 0 ? (
             <Alert
               className="mb-3"

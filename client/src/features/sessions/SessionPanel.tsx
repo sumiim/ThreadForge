@@ -1,9 +1,13 @@
 import { useState } from 'react'
 import type { ReactNode } from 'react'
-import { Button, Collapse, Input, Popconfirm, Spin, Tooltip } from 'antd'
+import { Collapse, Dropdown, Input, Popconfirm, Spin, Tooltip } from 'antd'
 import {
   ApiOutlined,
   DeleteOutlined,
+  DesktopOutlined,
+  FolderAddOutlined,
+  FormOutlined,
+  MoreOutlined,
   MoonOutlined,
   PlusOutlined,
   RightOutlined,
@@ -62,10 +66,14 @@ export default function SessionPanel({
 }: SessionPanelProps) {
   const [query, setQuery] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
+  const [modalIntent, setModalIntent] = useState<'session' | 'workspace' | 'host'>('session')
+  const [preferredDeviceId, setPreferredDeviceId] = useState<string | null>(null)
   const available = workspaces.find((w) => w.available)
+  const activeSession = sessions.find((session) => session.id === activeId)
   const [selectedWorkspaceKey, setSelectedWorkspaceKey] = useState<string | null>(
-    () => (available ? workspaceKey(available) : null),
+    () => (activeSession ? sessionWorkspaceKey(activeSession) : available ? workspaceKey(available) : null),
   )
+
   const effectiveWorkspace = workspaces.find(
     (workspace) => workspace.available && workspaceKey(workspace) === selectedWorkspaceKey,
   ) ?? available ?? null
@@ -79,6 +87,33 @@ export default function SessionPanel({
   const handleCreate = () => {
     if (effectiveWorkspace) onCreate(effectiveWorkspace.workspace_id, effectiveWorkspace.device_id)
     setModalOpen(false)
+    onNavigate('chat')
+  }
+
+  const openModal = (intent: 'session' | 'workspace' | 'host', deviceId?: string) => {
+    setModalIntent(intent)
+    setPreferredDeviceId(deviceId ?? effectiveWorkspace?.device_id ?? null)
+    setModalOpen(true)
+  }
+
+  const createFocusedSession = () => {
+    if (effectiveWorkspace) {
+      onCreate(effectiveWorkspace.workspace_id, effectiveWorkspace.device_id)
+      onNavigate('chat')
+      return
+    }
+    openModal('session')
+  }
+
+  const focusWorkspace = (workspace: WorkspaceGroup) => {
+    setSelectedWorkspaceKey(workspace.key)
+    setPreferredDeviceId(workspace.deviceId ?? null)
+  }
+
+  const selectSession = (session: Session) => {
+    setSelectedWorkspaceKey(sessionWorkspaceKey(session))
+    onSelect(session.id)
+    onNavigate('chat')
   }
 
   return (
@@ -86,7 +121,32 @@ export default function SessionPanel({
       {/* 品牌区 */}
       <div className="flex items-center gap-2.5 px-5 pb-4 pt-5">
         <Logo size={22} />
-        <span className="text-[15px] font-semibold tracking-tight text-stone-900">ThreadForge</span>
+        <span className="flex-1 text-[15px] font-semibold text-stone-900">ThreadForge</span>
+        <Dropdown
+          trigger={['click']}
+          menu={{
+            items: [
+              { key: 'host', icon: <DesktopOutlined />, label: '添加主机' },
+              { key: 'workspace', icon: <FolderAddOutlined />, label: '添加工作区' },
+              { key: 'session', icon: <FormOutlined />, label: '添加会话' },
+            ],
+            onClick: ({ key }) => {
+              if (key === 'host') openModal('host')
+              else if (key === 'workspace') openModal('workspace')
+              else createFocusedSession()
+            },
+          }}
+        >
+          <Tooltip title="添加">
+            <button
+              type="button"
+              aria-label="添加"
+              className="flex h-8 w-8 items-center justify-center rounded-md text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-900"
+            >
+              <PlusOutlined />
+            </button>
+          </Tooltip>
+        </Dropdown>
       </div>
 
       {/* 搜索会话 */}
@@ -98,19 +158,6 @@ export default function SessionPanel({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-      </div>
-
-      {/* 新建会话（与导航/会话项统一 40px 高） */}
-      <div className="px-4 pb-2.5">
-        <Button
-          block
-          icon={<PlusOutlined />}
-          onClick={() => setModalOpen(true)}
-          style={{ height: 40 }}
-          className="border-stone-300 text-stone-600 hover:!border-blue-600 hover:!text-blue-700"
-        >
-          新建会话
-        </Button>
       </div>
 
       {/* Skills / MCP 导航：点击切换主区域子页面 */}
@@ -147,7 +194,7 @@ export default function SessionPanel({
           </div>
         ) : deviceGroups.length === 0 ? (
           <div className="px-3 py-4 text-center text-xs text-stone-400">
-            {visibleSessions.length === 0 ? '暂无会话，点击上方「新建会话」开始' : '未找到匹配的会话'}
+            {visibleSessions.length === 0 ? '暂无会话，点击右上角「添加」开始' : '未找到匹配的会话'}
           </div>
         ) : (
           <Collapse
@@ -157,12 +204,49 @@ export default function SessionPanel({
             items={deviceGroups.map((device) => ({
               key: device.key,
               label: (
-                <InlineName
-                  value={device.label}
-                  disabled={!device.deviceId}
-                  className="text-xs font-semibold text-stone-700"
-                  onSave={(value) => onRenameDevice(device.deviceId!, value)}
-                />
+                <div className="flex min-w-0 items-center gap-1.5 pr-1">
+                  <DesktopOutlined className="shrink-0 text-stone-400" />
+                  <InlineName
+                    value={device.label}
+                    disabled={!device.deviceId}
+                    className="min-w-0 flex-1 truncate text-xs font-semibold text-stone-700"
+                    onSave={(value) => onRenameDevice(device.deviceId!, value)}
+                  />
+                  <Tooltip title={device.deviceId ? '向此设备添加工作区' : '服务器工作区由部署配置管理'}>
+                    <button
+                      type="button"
+                      aria-label={`向 ${device.label} 添加工作区`}
+                      disabled={!device.deviceId}
+                      onClick={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        if (device.deviceId) openModal('workspace', device.deviceId)
+                      }}
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-800 disabled:cursor-not-allowed disabled:opacity-35"
+                    >
+                      <PlusOutlined className="text-[10px]" />
+                    </button>
+                  </Tooltip>
+                  <Dropdown
+                    trigger={['click']}
+                    menu={{
+                      items: [{ key: 'manage', label: '管理此设备' }],
+                      onClick: () => onOpenSettings(),
+                    }}
+                  >
+                    <button
+                      type="button"
+                      aria-label={`管理设备 ${device.label}`}
+                      onClick={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                      }}
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-800"
+                    >
+                      <MoreOutlined />
+                    </button>
+                  </Dropdown>
+                </div>
               ),
               children: (
                 <Collapse
@@ -172,7 +256,10 @@ export default function SessionPanel({
                   items={device.workspaces.map((workspace) => ({
                     key: workspace.key,
                     label: (
-                      <span className="flex min-w-0 items-center gap-1 text-xs text-stone-600">
+                      <span
+                        className="flex min-w-0 items-center gap-1 text-xs text-stone-600"
+                        onClick={() => focusWorkspace(workspace)}
+                      >
                         <InlineName
                           value={workspace.label}
                           disabled={!workspace.deviceId}
@@ -187,6 +274,7 @@ export default function SessionPanel({
                           onClick={(event) => {
                             event.preventDefault()
                             event.stopPropagation()
+                            focusWorkspace(workspace)
                             onCreate(workspace.workspaceId, workspace.deviceId)
                             onNavigate('chat')
                           }}
@@ -230,13 +318,11 @@ export default function SessionPanel({
                               role="button"
                               tabIndex={0}
                               onClick={() => {
-                                onSelect(session.id)
-                                onNavigate('chat')
+                                selectSession(session)
                               }}
                               onKeyDown={(event) => {
                                 if (event.key === 'Enter' || event.key === ' ') {
-                                  onSelect(session.id)
-                                  onNavigate('chat')
+                                  selectSession(session)
                                 }
                               }}
                               className={`group relative flex h-10 w-full items-center rounded-xl px-3 text-left transition-all ${
@@ -322,11 +408,16 @@ export default function SessionPanel({
       {/* 新建会话：选择工作区（GET /api/v1/workspaces 返回的可用工作区） */}
       <NewSessionModal
         open={modalOpen}
+        intent={modalIntent}
         workspaces={workspaces}
         selected={effectiveWorkspace}
+        preferredDeviceId={preferredDeviceId}
         onSelect={(workspace) => setSelectedWorkspaceKey(workspaceKey(workspace))}
         onCreate={handleCreate}
-        onCancel={() => setModalOpen(false)}
+        onCancel={() => {
+          setModalOpen(false)
+          setPreferredDeviceId(null)
+        }}
         onOpenSettings={onOpenSettings}
         onWorkspacesChanged={onWorkspacesChanged}
       />
