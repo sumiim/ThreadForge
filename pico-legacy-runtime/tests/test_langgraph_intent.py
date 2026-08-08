@@ -7,6 +7,7 @@ from langgraph_pico.intent import (
     normalize_task_mode,
     parse_conversation_output,
     parse_intent_output,
+    parse_routed_task_output,
 )
 
 
@@ -59,3 +60,34 @@ def test_parse_conversation_output_is_strict_but_allows_tool_shaped_text():
     for payload in ('{"answer":""}', '{"answer":"ok","extra":1}', "plain text"):
         with pytest.raises(ValueError):
             parse_conversation_output(payload)
+
+
+def test_parse_routed_task_output_distinguishes_direct_and_planned_modes():
+    direct = parse_routed_task_output(
+        '{"mode":"direct","intent":"conversation","requires_research":false,'
+        '"answer":"ready","plan":null}'
+    )
+    assert direct.mode == "direct"
+    assert direct.answer == "ready"
+    assert direct.plan is None
+
+    planned = parse_routed_task_output(
+        '{"mode":"plan","intent":"read_only","requires_research":true,'
+        '"answer":"","plan":{"schema_version":"1"}}'
+    )
+    assert planned.mode == "plan"
+    assert planned.intent == INTENT_READ_ONLY
+    assert planned.plan == {"schema_version": "1"}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"mode":"direct","intent":"read_only","requires_research":false,"answer":"no","plan":null}',
+        '{"mode":"direct","intent":"conversation","requires_research":false,"answer":"","plan":null}',
+        '{"mode":"plan","intent":"conversation","requires_research":false,"answer":"","plan":{}}',
+    ],
+)
+def test_parse_routed_task_output_rejects_unsafe_shortcuts(payload):
+    with pytest.raises(ValueError):
+        parse_routed_task_output(payload)

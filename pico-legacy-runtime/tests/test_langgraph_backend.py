@@ -339,6 +339,117 @@ def test_planned_plain_conversation_skips_planner_and_workspace_tools(tmp_path):
     assert not any(event["event"] == "review_requested" for event in result.events)
 
 
+def test_route_first_direct_answer_finishes_in_router(tmp_path):
+    from langgraph_pico import run_agent
+
+    agent, model_client, _ = _build_runtime(
+        tmp_path,
+        [
+            json.dumps(
+                {
+                    "mode": "direct",
+                    "intent": "conversation",
+                    "requires_research": False,
+                    "answer": "A compiler translates source code.",
+                    "plan": None,
+                }
+            )
+        ],
+    )
+
+    result = run_agent(agent, "What does a compiler do?", task_mode="auto", enable_planning=True)
+
+    assert result.task_state.stop_reason == "final_answer_returned"
+    assert result.final_answer == "A compiler translates source code."
+    assert result.run_metadata["intent_source"] == "router_plan"
+    assert result.task_state.tool_steps == 0
+    assert not any(event["event"] == "plan_created" for event in result.events)
+    assert model_client.outputs == []
+
+
+def test_continuation_reuses_workspace_context_and_stays_read_only(tmp_path):
+    from langgraph_pico import run_agent
+
+    plan = _v11_plan("read_only", ["read_file"])
+    outputs = [
+        plan,
+        '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
+        "<final>The README was inspected.</final>",
+        "status: pass\nThe answer is grounded in current evidence.",
+        plan,
+        '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
+        "<final>The README was inspected again.</final>",
+        "status: pass\nThe resumed answer is grounded in current evidence.",
+    ]
+    agent, model_client, _ = _build_runtime(tmp_path, outputs)
+
+    first = run_agent(
+        agent,
+        "Inspect README",
+        task_mode="auto",
+        requires_research=False,
+        enable_planning=True,
+    )
+    resumed = run_agent(
+        agent,
+        "continue",
+        task_mode="auto",
+        requires_research=False,
+        enable_planning=True,
+    )
+
+    assert first.task_state.stop_reason == "final_answer_returned"
+    assert resumed.task_state.stop_reason == "final_answer_returned"
+    assert resumed.task_state.intent == "read_only"
+    assert resumed.task_state.read_files > 0 or any(
+        child.read_files > 0 for child in resumed.child_task_states
+    )
+    assert any("Inspect README" in prompt for prompt in model_client.prompts)
+
+
+def test_continuation_after_initial_model_failure_restores_workspace_route(tmp_path):
+    from langgraph_pico import run_agent
+
+    class FailOnceClient(FakeModelClient):
+        def __init__(self):
+            super().__init__([])
+            self.failed = False
+
+        def complete(self, prompt, max_new_tokens, **kwargs):
+            if not self.failed:
+                self.failed = True
+                raise TimeoutError("simulated provider timeout")
+            return super().complete(prompt, max_new_tokens, **kwargs)
+
+    agent, model_client, _ = _build_runtime(tmp_path, [], model_client=FailOnceClient())
+    first = run_agent(
+        agent,
+        "Read the project files and explain the architecture.",
+        task_mode="auto",
+        enable_planning=True,
+    )
+    model_client.outputs.extend(
+        [
+            _v11_plan("read_only", ["read_file"]),
+            '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
+            "<final>The architecture is documented in README.</final>",
+            "status: pass\nThe current evidence supports the answer.",
+        ]
+    )
+    resumed = run_agent(
+        agent,
+        "continue",
+        task_mode="auto",
+        requires_research=False,
+        enable_planning=True,
+    )
+
+    assert first.task_state.stop_reason == "model_error"
+    assert resumed.task_state.stop_reason == "final_answer_returned"
+    assert resumed.task_state.intent == "read_only"
+    assert any(child.read_files > 0 for child in resumed.child_task_states)
+
+
 def test_planned_conversation_without_tools_skips_review(tmp_path):
     from langgraph_pico import run_agent
 
@@ -367,11 +478,16 @@ def test_planned_conversation_without_tools_skips_review(tmp_path):
 
 
 @pytest.mark.parametrize("requires_research", [False, True])
-def test_read_only_routes_through_optional_research_and_never_reviews(tmp_path, requires_research):
+def test_read_only_routes_through_optional_research_and_reviews_completion(tmp_path, requires_research):
     from langgraph_pico import run_agent
 
     outputs = ["<final>Research evidence.</final>"] if requires_research else []
-    outputs.append("<final>README contains a project description.</final>")
+    outputs.extend(
+        [
+            "<final>README contains a project description.</final>",
+            "status: pass\nThe answer is grounded in the current workspace evidence.",
+        ]
+    )
     agent, _, _ = _build_runtime(tmp_path, outputs)
 
     result = run_agent(
@@ -385,7 +501,8 @@ def test_read_only_routes_through_optional_research_and_never_reviews(tmp_path, 
     assert result.run_metadata["resolved_intent"] == "read_only"
     assert result.run_metadata["answer_attempts"] == 1
     assert sum(event["event"] == "delegate_started" for event in result.events) == int(requires_research)
-    assert not any(event["event"] == "review_requested" for event in result.events)
+    assert any(event["event"] == "review_started" for event in result.events)
+    assert any(event["event"] == "review_completed" for event in result.events)
     assert all(state.affected_paths == [] for state in result.child_task_states)
 
 
@@ -397,6 +514,7 @@ def test_read_only_answer_rejects_write_tool_and_records_sandbox_violation(tmp_p
         [
             '<tool>{"name":"patch_file","args":{"path":"README.md","old_text":"fixture","new_text":"changed"}}</tool>',
             "<final>README was not modified.</final>",
+            "status: pass\nThe read-only boundary was respected.",
         ],
     )
     original = (fixture_root / "README.md").read_text(encoding="utf-8")
