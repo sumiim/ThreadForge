@@ -41,6 +41,7 @@ from .planning import (
     PLANNER_MAX_NEW_TOKENS,
     PlanValidationError,
     build_plan_prompt,
+    is_plain_conversation_request,
     parse_and_validate_plan,
 )
 
@@ -407,6 +408,61 @@ def prepare_plan_node(state: AgentState, config: RunnableConfig) -> AgentState:
     error_code = ""
     error_message = ""
 
+    if not is_replan and is_plain_conversation_request(state["task"]):
+        minimum_budgets = _plan_minimum_budgets(state, config, maximum_budgets)
+        plan = {
+            "schema_version": "1",
+            "plan_id": "conversation_direct",
+            "revision": 1,
+            "intent": INTENT_CONVERSATION,
+            "summary": "Respond directly without workspace tools.",
+            "steps": [
+                {
+                    "id": "respond",
+                    "goal": "Answer the current conversational request directly",
+                    "dependencies": [],
+                    "required_tools": [],
+                    "required_evidence": [],
+                    "done_when": ["a concise direct response is returned"],
+                }
+            ],
+            "acceptance": ["a direct response is returned without workspace access"],
+            "risk_level": "low",
+            "budgets": dict(minimum_budgets),
+        }
+        task_state = agent.current_task_state
+        task_state.plan_id = plan["plan_id"]
+        task_state.plan_revision = plan["revision"]
+        task_state.intent = plan["intent"]
+        task_state.checklist = [step["goal"] for step in plan["steps"]]
+        task_state.done_when = [item for step in plan["steps"] for item in step["done_when"]]
+        task_state.completed_items = []
+        _write_graph_task_state(agent)
+        metadata_collector.update(
+            {
+                "resolved_intent": plan["intent"],
+                "intent_source": "direct_conversation",
+                "intent_attempts": 0,
+            }
+        )
+        agent.emit_trace(
+            task_state,
+            "plan_skipped",
+            {
+                "reason": "plain_conversation",
+                "intent": plan["intent"],
+                "summary": plan["summary"],
+            },
+        )
+        return {
+            **state,
+            "acceptance": "\n".join(plan["acceptance"]),
+            "resolved_intent": plan["intent"],
+            "intent_source": "direct_conversation",
+            "plan": plan,
+            "plan_attempts": 0,
+        }
+
     for attempt in range(1, MAX_PLAN_ATTEMPTS + 1):
         _record_graph_model_attempt(
             agent,
@@ -671,7 +727,7 @@ def intent_router_node(state: AgentState, config: RunnableConfig) -> AgentState:
         decision = IntentDecision(
             intent=planned_intent,
             requires_research=planned_intent != INTENT_CONVERSATION,
-            source="plan",
+            source=state["intent_source"] or "plan",
         )
     elif mode != TASK_MODE_AUTO:
         decision = IntentDecision(
@@ -1058,6 +1114,8 @@ def answer_node(state: AgentState, config: RunnableConfig) -> AgentState:
 
 def route_after_answer(state: AgentState):
     if state["terminal_reason"]:
+        return "finalize"
+    if state["resolved_intent"] == INTENT_CONVERSATION:
         return "finalize"
     return "review" if state["planning_enabled"] else "finalize"
 

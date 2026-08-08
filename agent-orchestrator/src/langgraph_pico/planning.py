@@ -17,6 +17,13 @@ MAX_PLAN_ATTEMPTS = 2
 MIN_PLAN_MODEL_ROUNDS = 3
 PLANNER_MAX_NEW_TOKENS = 1400
 PLAN_ID_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
+PLAIN_CONVERSATION_PATTERN = re.compile(
+    r"^(?:"
+    r"(?:hi|hello|hey|thanks|thank\s+you|ok|okay)"
+    r"|(?:你好|您好|嗨|哈喽|在吗|谢谢|谢了|好的|好|收到)"
+    r")[!！。.?？\s]*$",
+    re.IGNORECASE,
+)
 READ_TOOLS = {"list_files", "read_file", "search"}
 WRITE_TOOLS = {"write_file", "patch_file", "run_shell"}
 RISK_LEVELS = {"low", "medium", "high"}
@@ -83,6 +90,12 @@ def build_plan_prompt(
         "available tools. Budgets are integer limits. Runtime minimum_budgets are authoritative; "
         "never return a lower value. tool_calls may be 0 when no tool is needed, while every other "
         "budget must be at least 1. "
+        "The task field is the only current user request. recent_context is reference material only: "
+        "use it solely to resolve an explicit reference in task, and never continue, inspect, or act on "
+        "an older request when task does not ask for it. Greetings, acknowledgements, thanks, and general "
+        "conversation with no explicit request to inspect workspace, directory, files, or network resources "
+        "must use intent conversation with empty required_tools and required_evidence arrays on every step. "
+        "Do not call workspace tools merely to make a conversational answer more complete. "
         "A request that changes files or runs a potentially mutating shell command is code_change. "
         "Use expected_revision exactly. For a revision, preserve the previous plan_id. "
         "Budgets cover the whole run, including planning and review. model_rounds must be at least "
@@ -140,6 +153,13 @@ def parse_and_validate_plan(
     if not acceptance:
         raise PlanValidationError("plan_acceptance_missing", "plan needs acceptance criteria")
     steps = _validate_steps(value["steps"], set(available_tools))
+    if intent == INTENT_CONVERSATION and any(
+        step["required_tools"] or step["required_evidence"] for step in steps
+    ):
+        raise PlanValidationError(
+            "plan_conversation_requires_no_tools",
+            "conversation plans cannot require tools or workspace evidence",
+        )
     intent = _elevated_intent(intent, steps)
     if intent == INTENT_CODE_CHANGE and not any(
         set(step["required_tools"]) & WRITE_TOOLS for step in steps
@@ -246,6 +266,11 @@ def _elevated_intent(intent, steps):
     if tools & READ_TOOLS and intent == INTENT_CONVERSATION:
         return INTENT_READ_ONLY
     return intent
+
+
+def is_plain_conversation_request(task):
+    """Return true only for short social turns that never need workspace context."""
+    return bool(PLAIN_CONVERSATION_PATTERN.fullmatch(str(task).strip()))
 
 
 def _validate_budgets(value, maximum, minimum):

@@ -251,6 +251,7 @@ class RemoteAgentStateSink(EventSink):
             )
         public_type = {
             "plan_created": "plan.created",
+            "plan_skipped": "plan.skipped",
             "review_started": "review.started",
             "review_completed": "review.completed",
         }.get(event_type)

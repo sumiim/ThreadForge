@@ -4,6 +4,7 @@ import pytest
 from langgraph_pico.planning import (
     PlanValidationError,
     build_plan_prompt,
+    is_plain_conversation_request,
     parse_and_validate_plan,
 )
 
@@ -127,7 +128,7 @@ def test_v11_plan_normalizes_scalar_step_contract_and_allows_zero_tool_budget():
     conversation["steps"][0].update(
         {
             "required_tools": [],
-            "required_evidence": "the user request is available",
+            "required_evidence": [],
             "done_when": "a concise response is returned",
         }
     )
@@ -139,9 +140,30 @@ def test_v11_plan_normalizes_scalar_step_contract_and_allows_zero_tool_budget():
         maximum_budgets=MAXIMUM_BUDGETS,
     )
 
-    assert parsed["steps"][0]["required_evidence"] == ["the user request is available"]
+    assert parsed["steps"][0]["required_evidence"] == []
     assert parsed["steps"][0]["done_when"] == ["a concise response is returned"]
     assert parsed["budgets"]["tool_calls"] == 0
+
+
+def test_v11_conversation_plan_rejects_workspace_tools_or_evidence():
+    conversation = _plan(intent="conversation")
+    conversation["steps"][0]["required_tools"] = ["read_file"]
+    conversation["steps"][0]["required_evidence"] = ["file content"]
+
+    with pytest.raises(PlanValidationError, match="cannot require tools"):
+        parse_and_validate_plan(
+            json.dumps(conversation),
+            available_tools={"read_file"},
+            maximum_budgets=MAXIMUM_BUDGETS,
+        )
+
+
+def test_v11_recognizes_only_short_social_requests_as_direct_conversation():
+    assert is_plain_conversation_request("你好")
+    assert is_plain_conversation_request("hello!")
+    assert is_plain_conversation_request("谢谢")
+    assert not is_plain_conversation_request("看看当前工作区")
+    assert not is_plain_conversation_request("继续修复停止按钮")
 
 
 def test_v11_retry_prompt_explains_the_validation_failure_and_array_contract():

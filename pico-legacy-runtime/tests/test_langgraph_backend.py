@@ -317,6 +317,55 @@ def test_explicit_conversation_succeeds_without_executor_or_review(tmp_path):
     assert not any(event["event"] in {"delegate_started", "review_requested"} for event in result.events)
 
 
+def test_planned_plain_conversation_skips_planner_and_workspace_tools(tmp_path):
+    from langgraph_pico import run_agent
+
+    agent, model_client, _ = _build_runtime(tmp_path, ['{"answer":"你好！"}'])
+
+    result = run_agent(agent, "你好", task_mode="auto", enable_planning=True)
+
+    assert result.task_state.stop_reason == "final_answer_returned"
+    assert result.final_answer == "你好！"
+    assert result.run_metadata["resolved_intent"] == "conversation"
+    assert result.run_metadata["intent_source"] == "direct_conversation"
+    assert result.run_metadata["plan_attempts"] == 0
+    assert result.task_state.tool_steps == 0
+    assert result.child_task_states == []
+    assert model_client.outputs == []
+    assert any(
+        event["event"] == "plan_skipped" and event["reason"] == "plain_conversation"
+        for event in result.events
+    )
+    assert not any(event["event"] == "review_requested" for event in result.events)
+
+
+def test_planned_conversation_without_tools_skips_review(tmp_path):
+    from langgraph_pico import run_agent
+
+    plan = json.loads(_v11_plan("conversation", []))
+    plan["steps"][0]["required_evidence"] = []
+    plan["budgets"]["tool_calls"] = 0
+    agent, model_client, _ = _build_runtime(
+        tmp_path,
+        [json.dumps(plan), '{"answer":"A compiler translates source code."}'],
+    )
+
+    result = run_agent(
+        agent,
+        "What does a compiler do?",
+        task_mode="auto",
+        requires_research=False,
+        enable_planning=True,
+    )
+
+    assert result.task_state.stop_reason == "final_answer_returned"
+    assert result.final_answer == "A compiler translates source code."
+    assert result.run_metadata["intent_source"] == "plan"
+    assert result.task_state.tool_steps == 0
+    assert model_client.outputs == []
+    assert not any(event["event"] == "review_requested" for event in result.events)
+
+
 @pytest.mark.parametrize("requires_research", [False, True])
 def test_read_only_routes_through_optional_research_and_never_reviews(tmp_path, requires_research):
     from langgraph_pico import run_agent
@@ -761,7 +810,7 @@ def test_v11_system_token_budget_remains_a_hard_limit(tmp_path):
 
     result = run_agent(
         agent,
-        "hello",
+        "Explain a general concept without inspecting the workspace.",
         task_mode="auto",
         requires_research=False,
         enable_planning=True,

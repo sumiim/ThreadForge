@@ -420,6 +420,7 @@ export function useSessions(): UseSessions {
       const appendRunIndex = (envelope: RunEventEnvelope) => {
         const labels: Record<string, string> = {
           'plan.created': '计划已创建',
+          'plan.skipped': '直接回答',
           'assistant.commentary': '过程更新',
           'review.started': '开始审查',
           'review.completed': '审查完成',
@@ -561,6 +562,22 @@ export function useSessions(): UseSessions {
               maxTotalSteps: 0,
             })
             appendActivity(envelope, '计划已创建', String(data.summary ?? ''))
+            return
+          }
+          case 'plan.skipped': {
+            setAgentProgress({
+              phase: 'EXECUTE',
+              nextStep: '正在直接回答',
+              checklist: [],
+              doneWhen: [],
+              completedItems: [],
+              toolSteps: 0,
+              readFiles: 0,
+              maxToolSteps: 0,
+              maxReadFiles: 0,
+              maxTotalSteps: 0,
+            })
+            appendActivity(envelope, '直接回答', '无需读取工作区')
             return
           }
           case 'assistant.commentary': {

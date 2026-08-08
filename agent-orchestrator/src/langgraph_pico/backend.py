@@ -25,6 +25,7 @@ from pico.task_state import (
     STOP_REASON_REVIEW_RETRY_LIMIT_REACHED,
     STOP_REASON_RUNTIME_ERROR,
     STOP_REASON_STEP_LIMIT_REACHED,
+    STOP_REASON_USER_CANCELLED,
     TaskState,
 )
 from pico.workspace import now
@@ -449,8 +450,12 @@ def run_agent(
                 else:
                     task_state.finish_success(final_answer)
             else:
-                stop_reason = STOP_REASON_MAP[result["terminal_reason"]]
-                task_state.stop(stop_reason, status=STATUS_FAILED, final_answer=final_answer)
+                terminal_reason = result["terminal_reason"]
+                if terminal_reason == STOP_REASON_USER_CANCELLED:
+                    task_state.stop_user_cancelled(final_answer=final_answer)
+                else:
+                    stop_reason = STOP_REASON_MAP[terminal_reason]
+                    task_state.stop(stop_reason, status=STATUS_FAILED, final_answer=final_answer)
         except RunCancelled:
             task_state.stop_user_cancelled()
             final_answer = ""
