@@ -408,6 +408,73 @@ def test_local_session_index_can_be_recovered_without_uploading_history(client, 
         ]
 
 
+def test_local_session_rebind_requires_the_previous_device_to_be_removed(client, app):
+    previous = _pair(client, "Previous install")
+    replacement = _pair(client, "Replacement install")
+    owner_id = app.state.container.device_store.get(previous["device_id"]).owner_id
+    workspace_id = "ws_" + "b" * 32
+    session_id = "ses_" + "e" * 32
+    app.state.container.session_store.save(
+        {
+            "id": session_id,
+            "workspace_root": f"worker://{previous['device_id']}/{workspace_id}",
+            "workspace_id": workspace_id,
+            "execution_environment": "local_worker",
+            "device_id": previous["device_id"],
+            "owner_id": owner_id,
+            "title": "Local history survives reinstall",
+            "created_at": "2026-08-08T00:00:00Z",
+            "history": [],
+            "memory": {},
+        }
+    )
+    summary = {
+        "session_id": session_id,
+        "workspace_id": workspace_id,
+        "title": "Local history survives reinstall",
+        "created_at": "2026-08-08T00:00:00Z",
+        "updated_at": "2026-08-08T00:01:00Z",
+        "message_total": 2,
+    }
+    headers = {"Authorization": f"Bearer {replacement['device_token']}"}
+
+    with client.websocket_connect("/api/v1/workers/connect", headers=headers) as socket:
+        _hello(socket, workspace_id, capabilities=["local_history"])
+        socket.send_json(
+            {"type": "sessions.updated", "complete": True, "sessions": [summary]}
+        )
+        assert socket.receive_json() == {
+            "type": "sessions.updated.ack",
+            "complete": True,
+            "rejected": [
+                {
+                    "session_id": session_id,
+                    "code": "worker_protocol_error",
+                    "message": "local session is still bound to another registered device",
+                }
+            ],
+        }
+        socket.send_json({"type": "heartbeat"})
+        assert socket.receive_json() == {"type": "heartbeat.ack"}
+
+    app.state.container.device_store.revoke(previous["device_id"], owner_id)
+    with client.websocket_connect("/api/v1/workers/connect", headers=headers) as socket:
+        _hello(socket, workspace_id, capabilities=["local_history"])
+        socket.send_json(
+            {"type": "sessions.updated", "complete": True, "sessions": [summary]}
+        )
+        assert socket.receive_json() == {
+            "type": "sessions.updated.ack",
+            "complete": True,
+        }
+
+    migrated = app.state.container.session_store.load(session_id)
+    assert migrated["device_id"] == replacement["device_id"]
+    assert migrated["workspace_root"] == (
+        f"worker://{replacement['device_id']}/{workspace_id}"
+    )
+
+
 def _wait_status(client, task_id, status, timeout=3.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

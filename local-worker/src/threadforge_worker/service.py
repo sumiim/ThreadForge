@@ -18,6 +18,8 @@ from .auto_update import run_auto_update_loop
 from .client import WorkerClient
 from .config import ConfigStore
 
+LOGGER = logging.getLogger(__name__)
+
 
 class ServiceAlreadyRunningError(RuntimeError):
     pass
@@ -289,14 +291,14 @@ def _ole_apartment(ole32):
 
 def run_service(data_dir: str | None = None) -> int:
     store = ConfigStore(data_dir)
-    configure_worker_logging(store.root)
-    store.load_model_env()
-    config = store.load()
-    if not config.device_id or not config.device_token:
-        # The installer starts the service before the browser completes the
-        # first pairing link. An unpaired service is therefore an idle state.
-        return 0
     try:
+        configure_worker_logging(store.root)
+        store.load_model_env()
+        config = store.load()
+        if not config.device_id or not config.device_token:
+            # The installer starts the service before the browser completes the
+            # first pairing link. An unpaired service is therefore an idle state.
+            return 0
         with ServiceLock(store.root):
             client: WorkerClient | None = None
 
@@ -323,6 +325,12 @@ def run_service(data_dir: str | None = None) -> int:
             client.run_forever()
     except ServiceAlreadyRunningError:
         return 0
+    except Exception:
+        # A background Windows service must never surface PyInstaller's
+        # "Unhandled exception in script" dialog. Preserve the traceback in
+        # the bounded local log and let the launcher or pairing flow restart it.
+        LOGGER.exception("Worker service stopped after an unexpected error")
+        return 1
     return 0
 
 

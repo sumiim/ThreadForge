@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import threading
@@ -29,6 +30,7 @@ from ..domain.errors import (
     ApprovalAlreadyResolvedError,
     ApprovalExpiredError,
     ApprovalStaleError,
+    DeviceNotFoundError,
     NotFoundError,
     PersistenceUnavailableError,
     RenameConflictError,
@@ -59,6 +61,7 @@ _CAPABILITY = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 _WORKSPACE_SELECTION_TTL_SECONDS = 120
 _EPHEMERAL_ANSWER_TTL_SECONDS = 600
 _EPHEMERAL_PROGRESS_TTL_SECONDS = 600
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -860,16 +863,33 @@ class WorkerHub:
         if not isinstance(raw_sessions, list) or len(raw_sessions) > 100:
             raise WorkerProtocolError("invalid local session index chunk")
         workspace_ids = {item.workspace_id for item in connection.device.workspaces}
+        rejected = []
         for raw in raw_sessions:
-            summary = _parse_session_summary(raw, workspace_ids)
-            self._merge_local_session_summary(connection, summary)
-        self._send(
-            connection.device.device_id,
-            {
-                "type": "sessions.updated.ack",
-                "complete": bool(message.get("complete", False)),
-            },
-        )
+            try:
+                summary = _parse_session_summary(raw, workspace_ids)
+                self._merge_local_session_summary(connection, summary)
+            except WorkerProtocolError as exc:
+                session_id = str(raw.get("session_id", "")) if isinstance(raw, dict) else ""
+                LOGGER.warning(
+                    "Rejected local session summary device_id=%s session_id=%s reason=%s",
+                    connection.device.device_id,
+                    session_id or "unknown",
+                    exc.message,
+                )
+                rejected.append(
+                    {
+                        "session_id": session_id[:64],
+                        "code": exc.code,
+                        "message": exc.message,
+                    }
+                )
+        response = {
+            "type": "sessions.updated.ack",
+            "complete": bool(message.get("complete", False)),
+        }
+        if rejected:
+            response["rejected"] = rejected
+        self._send(connection.device.device_id, response)
 
     def _merge_local_session_summary(self, connection: WorkerConnection, summary: dict) -> None:
         session_id = summary["session_id"]
@@ -884,7 +904,6 @@ class WorkerHub:
         if current is not None:
             if (
                 current.get("owner_id") != connection.device.owner_id
-                or current.get("device_id") != connection.device.device_id
                 or current.get("execution_environment") != "local_worker"
                 or current.get("workspace_id") != summary["workspace_id"]
             ):
@@ -893,6 +912,27 @@ class WorkerHub:
                 "local_message_total": summary["message_total"],
                 "local_updated_at": summary["updated_at"],
             }
+            if current.get("device_id") != connection.device.device_id:
+                try:
+                    self._devices.get(str(current.get("device_id", "")))
+                except DeviceNotFoundError:
+                    # Reinstalling and pairing the same local data directory creates
+                    # a new device identity. Once the old device has been explicitly
+                    # unbound, its local-only session metadata can safely follow the
+                    # same owner to the replacement device.
+                    changes.update(
+                        {
+                            "device_id": connection.device.device_id,
+                            "workspace_root": (
+                                f"worker://{connection.device.device_id}/"
+                                f"{summary['workspace_id']}"
+                            ),
+                        }
+                    )
+                else:
+                    raise WorkerProtocolError(
+                        "local session is still bound to another registered device"
+                    )
             if summary["first_request_at"]:
                 changes["first_request_at"] = summary["first_request_at"]
             if current.get("display_name_source", "auto") != "user":
