@@ -67,7 +67,9 @@ install_files:
   ; _MEI runtime. Force the replacement service to start as a new top-level
   ; frozen process even when the old updater did not sanitize its environment.
   System::Call 'Kernel32::SetEnvironmentVariable(t "PYINSTALLER_RESET_ENVIRONMENT", t "1") i .r0'
-  ExecShell "open" "$INSTDIR\threadforge-worker-service.exe" "service"
+  ; Start directly and asynchronously. ShellExecute can keep the installer UI
+  ; waiting while Windows resolves the executable association and trust state.
+  Exec '"$INSTDIR\threadforge-worker-service.exe" service'
 SectionEnd
 
 Section "Uninstall"
