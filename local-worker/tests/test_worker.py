@@ -26,6 +26,7 @@ from threadforge_worker.cli import _parse_protocol_uri
 from threadforge_worker.cli import main as worker_main
 from threadforge_worker.client import (
     WorkerClient,
+    WorkerProtocolRejectedError,
     _stable_failure_reason,
     _timestamp_expired,
     _validated_server_url,
@@ -286,6 +287,17 @@ def test_service_exits_cleanly_before_first_pairing(tmp_path):
     assert run_service(str(tmp_path)) == 0
 
 
+def test_service_logs_unexpected_failures_instead_of_raising(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        service_module.ConfigStore,
+        "load",
+        lambda _store: (_ for _ in ()).throw(RuntimeError("broken local config")),
+    )
+
+    assert run_service(str(tmp_path)) == 1
+    assert "broken local config" in (tmp_path / "worker.log").read_text(encoding="utf-8")
+
+
 def test_worker_retries_transient_websocket_handshake_failure(tmp_path, monkeypatch):
     store = ConfigStore(tmp_path)
     config = WorkerConfig(device_id="dev_" + "a" * 32, device_token="token")
@@ -333,7 +345,8 @@ def test_worker_retries_connection_closed_before_http_response(tmp_path, monkeyp
 def test_worker_rejects_permanent_websocket_handshake_failure(tmp_path, monkeypatch):
     store = ConfigStore(tmp_path)
     config = WorkerConfig(device_id="dev_" + "a" * 32, device_token="token")
-    client = WorkerClient(store, config)
+    statuses = []
+    client = WorkerClient(store, config, status_callback=statuses.append)
     monkeypatch.setattr(
         client,
         "_run_once",
@@ -342,8 +355,42 @@ def test_worker_rejects_permanent_websocket_handshake_failure(tmp_path, monkeypa
         ),
     )
 
-    with pytest.raises(RuntimeError, match="HTTP 401"):
-        client.run_forever()
+    client.run_forever()
+
+    assert statuses == ["connecting", "rejected"]
+
+
+def test_worker_reports_protocol_detail_and_stops_without_raising(tmp_path, monkeypatch):
+    store = ConfigStore(tmp_path)
+    config = WorkerConfig(device_id="dev_" + "a" * 32, device_token="token")
+    statuses = []
+    client = WorkerClient(store, config, status_callback=statuses.append)
+
+    with pytest.raises(
+        WorkerProtocolRejectedError,
+        match="local session identity conflicts",
+    ):
+        client._handle(
+            {
+                "type": "protocol.error",
+                "code": "worker_protocol_error",
+                "message": "local session identity conflicts with control-plane data",
+            }
+        )
+
+    monkeypatch.setattr(
+        client,
+        "_run_once",
+        lambda: (_ for _ in ()).throw(
+            WorkerProtocolRejectedError(
+                "worker_protocol_error",
+                "local session identity conflicts with control-plane data",
+            )
+        ),
+    )
+    client.run_forever()
+
+    assert statuses == ["connecting", "rejected"]
 
 
 def test_frozen_windows_service_uses_a_fresh_pyinstaller_environment(monkeypatch):

@@ -40,6 +40,14 @@ WORKER_PROTOCOL_VERSION = 1
 LOGGER = logging.getLogger(__name__)
 
 
+class WorkerProtocolRejectedError(RuntimeError):
+    def __init__(self, code: str, message: str = ""):
+        self.code = code or "unknown"
+        self.message = message.strip()
+        detail = f": {self.message}" if self.message else ""
+        super().__init__(f"Worker protocol rejected: {self.code}{detail}")
+
+
 def pair(server_url: str, code: str, name: str) -> dict:
     server_url = _validated_server_url(server_url)
     payload = json.dumps({"code": code, "name": name}).encode("utf-8")
@@ -146,15 +154,21 @@ class WorkerClient:
             except ConnectionClosed as exc:
                 code = getattr(getattr(exc, "rcvd", None), "code", None)
                 if code in {4001, 4003, 4400, 4401, 4403}:
-                    raise RuntimeError(f"Worker connection was rejected or revoked (code {code})") from exc
+                    LOGGER.error("Worker connection was rejected or revoked (code %s)", code)
+                    self._set_status("rejected")
+                    return
                 reason = f"connection closed (code {code or 'unknown'})"
             except InvalidStatus as exc:
                 status = exc.response.status_code
                 if status not in {408, 425, 429} and not 500 <= status < 600:
-                    raise RuntimeError(
-                        f"Worker WebSocket handshake was rejected (HTTP {status})"
-                    ) from exc
+                    LOGGER.error("Worker WebSocket handshake was rejected (HTTP %s)", status)
+                    self._set_status("rejected")
+                    return
                 reason = f"temporary WebSocket handshake failure (HTTP {status})"
+            except WorkerProtocolRejectedError as exc:
+                LOGGER.error("%s", exc)
+                self._set_status("rejected")
+                return
             # A reverse proxy or tunnel can close the socket before it has
             # written an HTTP status line.  websockets reports that as
             # InvalidMessage rather than OSError; it is still a transient
@@ -265,10 +279,17 @@ class WorkerClient:
         elif message_type == "hello.ack":
             self._ready_event.set()
             self._start_session_sync()
+        elif message_type == "sessions.updated.ack":
+            rejected = message.get("rejected", [])
+            if isinstance(rejected, list) and rejected:
+                LOGGER.warning(
+                    "Server isolated %d invalid local session summaries; see server logs for details",
+                    len(rejected),
+                )
+            return
         elif message_type in {
             "heartbeat.ack",
             "workspaces.updated.ack",
-            "sessions.updated.ack",
             "workspace.selection.ack",
             "model.configuration.ack",
             "entity.delete.ack",
@@ -278,7 +299,10 @@ class WorkerClient:
         }:
             return
         elif message_type == "protocol.error":
-            raise RuntimeError(f"Worker protocol rejected: {message.get('code', 'unknown')}")
+            raise WorkerProtocolRejectedError(
+                str(message.get("code", "unknown")),
+                str(message.get("message", "")),
+            )
 
     def _start_workspace_selection(self, request_id: str, expires_at: str) -> None:
         if not request_id or self._workspace_selector is None:
