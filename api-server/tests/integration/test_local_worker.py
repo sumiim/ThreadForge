@@ -698,6 +698,87 @@ def test_pair_connect_task_approval_and_terminal_flow(client, app):
         assert cancelled_terminal["final_answer"] is None
 
 
+def test_worker_progress_events_are_forward_compatible(client, app, monkeypatch, caplog):
+    paired = _pair(client)
+    headers = {"Authorization": f"Bearer {paired['device_token']}"}
+    published = []
+    publisher = app.state.container.publisher
+    original_publish = publisher.publish
+
+    def record_publish(task_id, run_id, event_type, data):
+        published.append({"type": event_type, "data": data})
+        return original_publish(task_id, run_id, event_type, data)
+
+    monkeypatch.setattr(publisher, "publish", record_publish)
+    caplog.set_level("WARNING", logger="threadforge_api.infrastructure.worker_hub")
+
+    with client.websocket_connect("/api/v1/workers/connect", headers=headers) as socket:
+        workspace_id = _hello(socket)
+        session = client.post(
+            "/api/v1/sessions",
+            json={"workspace_id": workspace_id, "title": "Compatibility"},
+        ).json()
+        task = client.post(
+            "/api/v1/tasks",
+            json={"session_id": session["session_id"], "input": "hello"},
+        ).json()
+        assert socket.receive_json()["type"] == "task.start"
+
+        socket.send_json(
+            {
+                "type": "event",
+                "task_id": task["task_id"],
+                "event_type": "plan.skipped",
+                "data": {
+                    "reason": "plain_conversation",
+                    "intent": "conversation",
+                    "summary": "Answer directly",
+                    "private": "must not be forwarded",
+                },
+            }
+        )
+        socket.send_json(
+            {
+                "type": "event",
+                "task_id": task["task_id"],
+                "event_type": "future.progress",
+                "data": {"private": "must not be forwarded"},
+            }
+        )
+        socket.send_json(
+            {
+                "type": "event",
+                "task_id": task["task_id"],
+                "event_type": "agent.state",
+                "data": {"phase": "answering", "next_step": "reply"},
+            }
+        )
+        socket.send_json(
+            {
+                "type": "terminal",
+                "task_id": task["task_id"],
+                "status": "completed",
+                "stop_reason": "final_answer_returned",
+                "final_answer": "Hello",
+                "message_total": 2,
+            }
+        )
+
+        terminal = _wait_status(client, task["task_id"], "completed")
+        assert terminal["final_answer"] == "Hello"
+
+    skipped = next(item for item in published if item["type"] == "plan.skipped")
+    assert skipped["data"] == {
+        "reason": "plain_conversation",
+        "intent": "conversation",
+        "summary": "Answer directly",
+    }
+    assert "future.progress" not in {item["type"] for item in published}
+    assert "agent.state" in {item["type"] for item in published}
+    assert "task.completed" in {item["type"] for item in published}
+    assert "Ignoring unsupported Worker progress event" in caplog.text
+
+
 def test_worker_auth_owner_isolation_and_revocation(client, app):
     paired = _pair(client)
     with pytest.raises(WebSocketDisconnect), client.websocket_connect(

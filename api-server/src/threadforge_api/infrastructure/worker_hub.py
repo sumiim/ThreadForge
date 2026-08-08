@@ -51,6 +51,7 @@ _PUBLIC_WORKER_EVENTS = {
     "policy.violation",
     "agent.state",
     "plan.created",
+    "plan.skipped",
     "assistant.commentary",
     "review.started",
     "review.completed",
@@ -58,6 +59,7 @@ _PUBLIC_WORKER_EVENTS = {
 _WORKSPACE_ID = re.compile(r"^ws_[a-f0-9]{32}$")
 _SESSION_ID = re.compile(r"^ses_[a-f0-9]{32}$")
 _CAPABILITY = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
+_PUBLIC_EVENT_TYPE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 _WORKSPACE_SELECTION_TTL_SECONDS = 120
 _EPHEMERAL_ANSWER_TTL_SECONDS = 600
 _EPHEMERAL_PROGRESS_TTL_SECONDS = 600
@@ -1303,8 +1305,18 @@ class WorkerHub:
         task_id = str(message.get("task_id", ""))
         event_type = str(message.get("event_type", ""))
         task = self._assigned_task(connection, task_id)
+        if not _PUBLIC_EVENT_TYPE.fullmatch(event_type):
+            raise WorkerProtocolError("Worker event type is invalid")
         if event_type not in _PUBLIC_WORKER_EVENTS:
-            raise WorkerProtocolError("Worker event type is not public")
+            LOGGER.warning(
+                "Ignoring unsupported Worker progress event",
+                extra={
+                    "device_id": connection.device.device_id,
+                    "task_id": task_id,
+                    "worker_event_type": event_type,
+                },
+            )
+            return
         data = message.get("data", {})
         if not isinstance(data, dict):
             raise WorkerProtocolError("Worker event data must be an object")
@@ -1931,6 +1943,14 @@ def _sanitize_event_data(event_type: str, data: dict) -> dict:
                 "risk_level": str(data.get("risk_level", ""))[:16],
                 "step_count": min(20, _nonnegative_int(data.get("step_count", 0))),
                 "steps": steps,
+            }
+        )
+    if event_type == "plan.skipped":
+        return redact_artifact(
+            {
+                "reason": str(data.get("reason", ""))[:100],
+                "intent": str(data.get("intent", ""))[:32],
+                "summary": str(data.get("summary", ""))[:500],
             }
         )
     if event_type == "review.started":
