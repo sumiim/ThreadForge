@@ -46,6 +46,7 @@ from .planning import (
 
 MAX_FIX_ATTEMPTS = 2
 MAX_REPLAN_ATTEMPTS = 2
+MAX_REQUIRED_TOOL_ATTEMPTS = 2
 READ_ONLY_TOOLS = ("list_files", "read_file", "search")
 COMPLETION_METADATA_KEYS = (
     "input_tokens",
@@ -306,6 +307,40 @@ def _call_graph_role_delegate(agent, spec):
                 exc.at_stage(str(spec.role))
             raise
         return {"ok": False, "text": "", "error_type": type(exc).__name__}
+
+
+def _child_task_states(agent, config):
+    """Return unique child states produced by delegates and isolated executors."""
+    states = [*getattr(agent, "child_task_states", ())]
+    states.extend(config["configurable"].get("node_child_states", ()))
+    unique = {}
+    for item in states:
+        if item is not None and getattr(item, "run_id", None):
+            unique[str(item.run_id)] = item
+    return tuple(unique.values())
+
+
+def _successful_read_tool_names(agent, config):
+    names = set()
+    for child in _child_task_states(agent, config):
+        names.update(
+            str(item.get("tool_name", ""))
+            for item in getattr(child, "evidence", ())
+            if item.get("tool_name") in READ_ONLY_TOOLS
+            and item.get("status") in {"ok", "partial_success"}
+        )
+    return names
+
+
+def _planned_read_tools(state, agent):
+    if not state["planning_enabled"]:
+        return ()
+    required = []
+    for step in state.get("plan", {}).get("steps", []):
+        for name in step.get("required_tools", []):
+            if name in READ_ONLY_TOOLS and name in agent.tools and name not in required:
+                required.append(name)
+    return tuple(required)
 
 
 def _create_isolated_executor(
@@ -748,27 +783,56 @@ def research_node(state: AgentState, config: RunnableConfig) -> AgentState:
             "Coordinator step budget was exhausted.",
         )
     else:
-        call = _call_graph_role_delegate(
-            agent,
-            RoleDelegateSpec(
-                role="research",
-                task=state["task"],
-                allowed_tools=READ_ONLY_TOOLS,
-                max_steps=3,
-            ),
-        )
+        required_tools = _planned_read_tools(state, agent)
+        observed_tools = _successful_read_tool_names(agent, config)
+        missing_tools = tuple(name for name in required_tools if name not in observed_tools)
+        call = {"ok": False, "text": "", "child": None}
+        delegate_calls = 0
+        for attempt in range(1, MAX_REQUIRED_TOOL_ATTEMPTS + 1):
+            requirement = ""
+            if missing_tools:
+                requirement = (
+                    "\nMANDATORY PLAN CONTRACT: call each required read-only tool before returning findings: "
+                    + ", ".join(missing_tools)
+                    + ". A prose-only response is invalid."
+                )
+            call = _call_graph_role_delegate(
+                agent,
+                RoleDelegateSpec(
+                    role="research",
+                    task=state["task"] + requirement,
+                    allowed_tools=READ_ONLY_TOOLS,
+                    max_steps=3,
+                ),
+            )
+            delegate_calls += 1
+            if not call["ok"] or not missing_tools:
+                break
+            observed_tools = _successful_read_tool_names(agent, config)
+            missing_tools = tuple(name for name in required_tools if name not in observed_tools)
+            if not missing_tools:
+                break
+            agent.emit_trace(
+                agent.current_task_state,
+                "required_tools_retry",
+                {
+                    "stage": "research",
+                    "attempt": attempt,
+                    "missing_tools": list(missing_tools),
+                },
+            )
         if not call["ok"]:
             next_state = {
                 **state,
                 "research_result": "research delegate failed; continue using workspace evidence",
                 "delegate_failures": state["delegate_failures"] + 1,
-                "coordinator_steps_used": state["coordinator_steps_used"] + 1,
+                "coordinator_steps_used": state["coordinator_steps_used"] + delegate_calls,
             }
         else:
             next_state = {
                 **state,
                 "research_result": call["text"],
-                "coordinator_steps_used": state["coordinator_steps_used"] + 1,
+                "coordinator_steps_used": state["coordinator_steps_used"] + delegate_calls,
             }
     next_state = _budget_failure(next_state, config) or next_state
     route = route_after_research(next_state)
@@ -855,37 +919,69 @@ def _read_only_answer(state, config):
             "runtime_error",
             "No read-only tools are permitted by the parent agent.",
         )
-    remaining = state["step_budget"] - state["coordinator_steps_used"]
-    if remaining < 1:
-        return _failed_state(
-            state,
-            "budget_exhausted",
-            "Coordinator step budget was exhausted.",
+    required_tools = _planned_read_tools(state, agent)
+    initial_child_tool_steps = sum(
+        child.tool_steps for child in _child_task_states(agent, config)
+    )
+    result = ""
+    task_state = None
+    for attempt in range(1, MAX_REQUIRED_TOOL_ATTEMPTS + 1):
+        remaining = state["step_budget"] - state["coordinator_steps_used"] - sum(
+            child.tool_steps for child in _child_task_states(agent, config)
         )
-    executor = _create_isolated_executor(
-        agent,
-        allowed_tools=read_allowed,
-        read_only=True,
-        approval_policy="never",
-        max_steps=remaining,
-    )
-    result = _run_isolated_executor(
-        executor,
-        build_read_only_prompt(
-            state["task"],
-            state["intent_context"],
-            state["research_result"],
-        ),
-        config,
-        collect_answer_attempts=True,
-    )
-    task_state = executor.current_task_state
+        if remaining < 1:
+            return _failed_state(
+                state,
+                "budget_exhausted",
+                "Coordinator step budget was exhausted.",
+            )
+        observed_tools = _successful_read_tool_names(agent, config)
+        missing_tools = tuple(name for name in required_tools if name not in observed_tools)
+        require_evidence = state["planning_enabled"] and not observed_tools
+        executor = _create_isolated_executor(
+            agent,
+            allowed_tools=read_allowed,
+            read_only=True,
+            approval_policy="never",
+            max_steps=remaining,
+        )
+        result = _run_isolated_executor(
+            executor,
+            build_read_only_prompt(
+                state["task"],
+                state["intent_context"],
+                state["research_result"],
+                required_tools=missing_tools,
+                require_tool_evidence=require_evidence,
+                retry=attempt > 1,
+            ),
+            config,
+            collect_answer_attempts=True,
+        )
+        task_state = executor.current_task_state
+        observed_tools = _successful_read_tool_names(agent, config)
+        missing_tools = tuple(name for name in required_tools if name not in observed_tools)
+        if not state["planning_enabled"] or (observed_tools and not missing_tools):
+            break
+        if attempt < MAX_REQUIRED_TOOL_ATTEMPTS:
+            agent.emit_trace(
+                agent.current_task_state,
+                "required_tools_retry",
+                {
+                    "stage": "answer",
+                    "attempt": attempt,
+                    "missing_tools": list(missing_tools),
+                    "evidence_found": bool(observed_tools),
+                },
+            )
     if task_state is None:
         return _failed_state(state, "runtime_error", "Read-only executor produced no task state.")
     answer_state = {
         **state,
         "answer_attempts": task_state.attempts,
-        "coordinator_steps_used": state["coordinator_steps_used"] + task_state.tool_steps,
+        "coordinator_steps_used": state["coordinator_steps_used"]
+        + sum(child.tool_steps for child in _child_task_states(agent, config))
+        - initial_child_tool_steps,
     }
     if task_state.affected_paths:
         agent.emit_trace(
@@ -908,18 +1004,22 @@ def _read_only_answer(state, config):
             task_state.stop_reason or "runtime_error",
             result,
         )
-    read_evidence = [
-        item
-        for item in task_state.evidence
-        if item.get("tool_name") in READ_ONLY_TOOLS
-        and item.get("status") in {"ok", "partial_success"}
-    ]
+    read_evidence = _successful_read_tool_names(agent, config)
     if state["planning_enabled"] and not read_evidence:
         return _failed_state(
             answer_state,
             "missing_current_run_evidence",
-            "Read-only answer was rejected because this run produced no successful workspace evidence.",
+            "Read-only answer was rejected because this run produced no successful workspace evidence; "
+            "the model did not execute any required read-only workspace tool.",
         )
+    if state["planning_enabled"] and required_tools:
+        missing_tools = [name for name in required_tools if name not in read_evidence]
+        if missing_tools:
+            return _failed_state(
+                answer_state,
+                "missing_current_run_evidence",
+                "Required read-only tools were not executed: " + ", ".join(missing_tools),
+            )
     if not str(result).strip():
         return _failed_state(answer_state, "runtime_error", "Answer executor returned an empty result.")
     return {

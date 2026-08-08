@@ -523,7 +523,13 @@ def test_v11_read_only_fails_without_current_run_evidence(tmp_path):
 
     agent, _, _ = _build_runtime(
         tmp_path,
-        [_v11_plan("read_only", ["read_file"]), "<final>Ungrounded answer.</final>"],
+        [
+            _v11_plan("read_only", ["read_file"]),
+            "<final>Ungrounded research.</final>",
+            "<final>Ungrounded research retry.</final>",
+            "<final>Ungrounded answer.</final>",
+            "<final>Ungrounded answer retry.</final>",
+        ],
     )
     result = run_agent(
         agent,
@@ -534,6 +540,39 @@ def test_v11_read_only_fails_without_current_run_evidence(tmp_path):
     )
     assert result.task_state.stop_reason == "runtime_error"
     assert "no successful workspace evidence" in result.final_answer
+    assert any(event.get("event") == "required_tools_retry" for event in result.events)
+
+
+def test_v11_research_evidence_can_ground_answer_without_duplicate_read(tmp_path):
+    from langgraph_pico import run_agent
+
+    plan = _v11_plan("read_only", ["read_file"])
+    agent, _, _ = _build_runtime(
+        tmp_path,
+        [
+            plan,
+            '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
+            "<final>Research found the README.</final>",
+            "<final>The README contains the requested project description.</final>",
+            "status: pass\nThe answer is grounded in current workspace evidence.",
+        ],
+    )
+
+    result = run_agent(
+        agent,
+        "Explain README",
+        task_mode="auto",
+        requires_research=True,
+        enable_planning=True,
+    )
+
+    assert result.task_state.stop_reason == "final_answer_returned"
+    assert result.final_answer == "The README contains the requested project description."
+    assert any(item.get("tool_name") == "read_file" for item in result.task_state.evidence)
+    assert not any(
+        event.get("event") == "required_tools_retry" and event.get("stage") == "answer"
+        for event in result.events
+    )
 
 
 def test_v11_code_change_fails_without_write_evidence(tmp_path):

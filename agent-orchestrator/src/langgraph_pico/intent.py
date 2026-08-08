@@ -104,7 +104,15 @@ def build_conversation_prompt(task, context, *, retry=False):
     )
 
 
-def build_read_only_prompt(task, context, research_result):
+def build_read_only_prompt(
+    task,
+    context,
+    research_result,
+    *,
+    required_tools=(),
+    require_tool_evidence=False,
+    retry=False,
+):
     payload = json.dumps(
         {
             "task": str(task),
@@ -113,8 +121,28 @@ def build_read_only_prompt(task, context, research_result):
         },
         ensure_ascii=False,
     )
+    requirements = []
+    if required_tools:
+        names = ", ".join(str(name) for name in required_tools)
+        requirements.append(
+            "Before returning a final answer, you MUST call each of these read-only tools at least once: "
+            f"{names}. Do not claim completion without executing them."
+        )
+    elif require_tool_evidence:
+        requirements.append(
+            "Before returning a final answer, you MUST call at least one read-only workspace tool "
+            "(list_files, read_file, or search) and use its successful result as evidence."
+        )
+    correction = (
+        "The previous attempt did not execute the required workspace tools. Retry by calling the "
+        "required read-only tools first, then answer.\n"
+        if retry and (required_tools or require_tool_evidence)
+        else ""
+    )
     return (
-        "Answer using read-only workspace evidence. Do not modify files.\n"
-        "Use tools only when the supplied evidence is insufficient.\n"
-        f"PAYLOAD={payload}"
+        correction
+        + "Answer using read-only workspace evidence. Do not modify files.\n"
+        + "Use the available read-only tools when required by the task plan.\n"
+        + ("\n".join(requirements) + "\n" if requirements else "")
+        + f"PAYLOAD={payload}"
     )
