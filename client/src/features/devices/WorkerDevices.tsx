@@ -125,8 +125,19 @@ export default function WorkerDevices() {
     try {
       setError('')
       setUninstallingDeviceId(device.device_id)
-      await uninstallWorker(device.device_id)
-      setNotice(`已请求 ${device.name} 启动卸载程序；设备稍后会离线，但仍会保留绑定记录和本地数据。`)
+      const remoteUninstall = device.online && (device.capabilities ?? []).includes('worker_uninstall')
+      if (remoteUninstall) {
+        await uninstallWorker(device.device_id)
+        setNotice(`已请求 ${device.name} 启动卸载程序；设备稍后会离线，但仍会保留绑定记录和本地数据。`)
+      } else {
+        // An offline/old Worker cannot receive the authenticated command. The
+        // protocol handler is local to the computer where this page is open,
+        // so it remains available as a recovery path for a broken install.
+        setNotice(
+          `正在尝试在当前电脑启动 ${device.name} 的卸载程序；如果该设备不在当前电脑，请在目标电脑打开 ThreadForge 后再操作。`,
+        )
+        window.location.href = 'threadforge://worker/uninstall'
+      }
       await delay(2_000)
       await refresh()
     } catch (cause) {
@@ -216,7 +227,7 @@ export default function WorkerDevices() {
           {devices.map((device) => {
             const canSelectWorkspace =
               workerIsReady(device, release) && (device.capabilities ?? []).includes('workspace_selection')
-            const canUninstall = device.online && (device.capabilities ?? []).includes('worker_uninstall')
+            const canRemoteUninstall = device.online && (device.capabilities ?? []).includes('worker_uninstall')
             const updateStatus = device.update_status
             const updateProgress = updateStatus?.total_bytes
               ? Math.min(100, Math.round((updateStatus.downloaded_bytes / updateStatus.total_bytes) * 100))
@@ -255,24 +266,32 @@ export default function WorkerDevices() {
                   </Popconfirm>
                   <Popconfirm
                     title={`卸载 ${device.name} 上的 Worker？`}
-                    description="目标电脑会打开卸载程序并停止 Worker；本地会话、工作区授权、模型配置和设备绑定都会保留。"
+                    description={
+                      canRemoteUninstall
+                        ? '目标电脑会打开卸载程序并停止 Worker；本地会话、工作区授权、模型配置和设备绑定都会保留。'
+                        : '该 Worker 当前离线或版本过旧，将尝试在当前电脑打开本机卸载程序。远程设备请先在目标电脑启动 Worker。'
+                    }
                     okText="卸载 Worker"
                     okButtonProps={{ danger: true }}
                     cancelText="取消"
-                    disabled={!canUninstall}
                     onConfirm={() => void uninstall(device)}
                   >
-                    <Tooltip title={canUninstall ? '卸载这台设备上的 Worker' : '设备离线或 Worker 版本过旧，请先更新'}>
+                    <Tooltip
+                      title={
+                        canRemoteUninstall
+                          ? '卸载这台设备上的 Worker'
+                          : 'Worker 离线/旧版：尝试启动当前电脑的本机卸载程序'
+                      }
+                    >
                       <span>
                         <Button
                           type="text"
                           danger
                           size="small"
                           icon={<DeleteOutlined />}
-                          disabled={!canUninstall}
                           loading={uninstallingDeviceId === device.device_id}
                         >
-                          卸载
+                          {canRemoteUninstall ? '卸载' : '本机卸载'}
                         </Button>
                       </span>
                     </Tooltip>
