@@ -634,3 +634,101 @@ def test_v11_conversation_normalizes_budget_below_observed_planning_usage(tmp_pa
     assert result.final_answer == "你好! 有什么我可以帮你?"
     assert result.task_state.plan_history[-1]["budgets"]["input_tokens"] == 20_000
     assert not any(event.get("event") == "plan_budget_exhausted" for event in result.events)
+
+
+def test_v11_successful_research_extends_soft_token_budget(tmp_path):
+    from langgraph_pico import run_agent
+
+    class UsageModelClient(FakeModelClient):
+        def __init__(self, outputs, usages):
+            super().__init__(outputs)
+            self.usages = list(usages)
+
+        def complete(self, prompt, max_new_tokens, **kwargs):
+            result = super().complete(prompt, max_new_tokens, **kwargs)
+            self.last_completion_metadata = self.usages.pop(0)
+            return result
+
+    plan = json.loads(_v11_plan("read_only", ["read_file"]))
+    plan["budgets"].update(
+        {
+            "model_rounds": 8,
+            "tool_calls": 4,
+            "input_tokens": 20_000,
+            "output_tokens": 4_000,
+            "elapsed_seconds": 300,
+        }
+    )
+    client = UsageModelClient(
+        [
+            json.dumps(plan),
+            '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
+            "<final>Research evidence from README.</final>",
+            '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
+            "<final>README contains the fixture project description.</final>",
+            "status: pass\nThe answer is grounded in current workspace evidence.",
+        ],
+        [
+            {"input_tokens": 4_846, "output_tokens": 705},
+            {"input_tokens": 14_000, "output_tokens": 1_600},
+            {"input_tokens": 14_480, "output_tokens": 1_758},
+            {"input_tokens": 1_000, "output_tokens": 100},
+            {"input_tokens": 1_000, "output_tokens": 100},
+            {"input_tokens": 1_000, "output_tokens": 100},
+        ],
+    )
+    agent, _, _ = _build_runtime(tmp_path, [], model_client=client)
+
+    result = run_agent(
+        agent,
+        "Explain README",
+        task_mode="auto",
+        requires_research=True,
+        enable_planning=True,
+    )
+
+    assert result.task_state.stop_reason == "final_answer_returned"
+    assert result.final_answer == "README contains the fixture project description."
+    extensions = [event for event in result.events if event.get("event") == "plan_budget_extended"]
+    assert extensions
+    assert {"input_tokens", "output_tokens"}.issubset(extensions[0]["budget_keys"])
+    assert extensions[0]["usage"]["input_tokens"] == 33_326
+    assert extensions[0]["usage"]["output_tokens"] == 4_063
+    assert not any(event.get("event") == "plan_budget_exhausted" for event in result.events)
+
+
+def test_v11_system_token_budget_remains_a_hard_limit(tmp_path):
+    from langgraph_pico import run_agent
+
+    class UsageModelClient(FakeModelClient):
+        def complete(self, prompt, max_new_tokens, **kwargs):
+            result = super().complete(prompt, max_new_tokens, **kwargs)
+            self.last_completion_metadata = {"input_tokens": 1_000_001, "output_tokens": 1}
+            return result
+
+    plan = json.loads(_v11_plan("conversation", []))
+    plan["steps"][0]["required_evidence"] = []
+    plan["budgets"].update(
+        {
+            "model_rounds": 3,
+            "tool_calls": 0,
+            "input_tokens": 1_000_000,
+            "output_tokens": 4_000,
+            "elapsed_seconds": 300,
+        }
+    )
+    client = UsageModelClient([json.dumps(plan)])
+    agent, _, _ = _build_runtime(tmp_path, [], model_client=client)
+
+    result = run_agent(
+        agent,
+        "hello",
+        task_mode="auto",
+        requires_research=False,
+        enable_planning=True,
+    )
+
+    assert result.task_state.stop_reason == "budget_exhausted"
+    exhausted = [event for event in result.events if event.get("event") == "plan_budget_exhausted"]
+    assert exhausted[-1]["budget_keys"] == ["input_tokens"]
+    assert not any(event.get("event") == "plan_budget_extended" for event in result.events)

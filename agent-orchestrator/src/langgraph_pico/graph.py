@@ -63,8 +63,8 @@ COMPLETION_METADATA_KEYS = (
 PLAN_MAXIMUM_BUDGETS = {
     "model_rounds": 64,
     "tool_calls": 25,
-    "input_tokens": 500_000,
-    "output_tokens": 32_000,
+    "input_tokens": 1_000_000,
+    "output_tokens": 64_000,
     "elapsed_seconds": 3_600,
 }
 
@@ -187,21 +187,57 @@ def _budget_failure(state, config):
     if not state["planning_enabled"] or not state["plan"]:
         return None
     usage = _run_budget_usage(state, config)
-    budgets = state["plan"].get("budgets", {})
-    exceeded = [key for key, value in usage.items() if value > int(budgets.get(key, 0))]
-    if not exceeded:
+    configurable = config["configurable"]
+    agent = configurable["agent"]
+    maximum = _plan_limits(state, agent)
+    hard_exceeded = [key for key, value in usage.items() if value > int(maximum[key])]
+    if hard_exceeded:
+        agent.emit_trace(
+            agent.current_task_state,
+            "plan_budget_exhausted",
+            {
+                "budget_keys": hard_exceeded,
+                "usage": usage,
+                "maximum_budgets": maximum,
+            },
+        )
+        return _failed_state(
+            state,
+            "budget_exhausted",
+            "System run budget was exhausted: " + ", ".join(hard_exceeded),
+        )
+
+    plan = state["plan"]
+    planned = {key: int(plan.get("budgets", {}).get(key, 0)) for key in maximum}
+    runtime = configurable.setdefault("plan_budget_runtime", {})
+    identity = (str(plan.get("plan_id", "")), int(plan.get("revision", 0)))
+    if runtime.get("identity") != identity:
+        runtime.clear()
+        runtime.update({"identity": identity, "effective": dict(planned)})
+    effective = runtime["effective"]
+    soft_exceeded = [key for key, value in usage.items() if value > int(effective[key])]
+    if not soft_exceeded:
         return None
-    agent = config["configurable"]["agent"]
+
+    minimum = _plan_minimum_budgets(state, config, maximum)
+    previous = dict(effective)
+    for key in maximum:
+        effective[key] = min(
+            int(maximum[key]),
+            max(int(effective[key]), int(planned[key]), int(minimum[key]), int(usage[key])),
+        )
     agent.emit_trace(
         agent.current_task_state,
-        "plan_budget_exhausted",
-        {"budget_keys": exceeded, "usage": usage},
+        "plan_budget_extended",
+        {
+            "budget_keys": soft_exceeded,
+            "usage": usage,
+            "planned_budgets": planned,
+            "previous_effective_budgets": previous,
+            "effective_budgets": dict(effective),
+        },
     )
-    return _failed_state(
-        state,
-        "budget_exhausted",
-        "Run budget was exhausted: " + ", ".join(exceeded),
-    )
+    return None
 
 
 def _complete_graph_model(agent, model_client, prompt, max_new_tokens, *, stage):

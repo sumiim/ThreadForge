@@ -39,11 +39,12 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
     skills,
     mcpServers,
     loading,
-    historyLoading,
+    historyStatus,
     running,
     stopping,
     agentProgress,
     refreshWorkspaces,
+    retryHistory,
     select,
     createSession,
     sendMessage,
@@ -159,10 +160,11 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
               active ? (
                 <ChatView
                   session={active}
-                  historyLoading={historyLoading}
+                  historyStatus={historyStatus}
                   running={running}
                   agentProgress={agentProgress}
                   onSend={sendMessage}
+                  onRetryHistory={retryHistory}
                   stopping={stopping}
                   onStop={stopRun}
                   onSelectRun={selectRun}

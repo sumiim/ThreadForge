@@ -4,8 +4,10 @@ import type { SessionTask } from '../api/types'
 import {
   getFinalAnswer,
   getLatestTask,
+  historyAllowsSending,
   isInternalReviewDiagnostic,
   reconcileToolCalls,
+  resolveHistoryStatus,
 } from './session-state.ts'
 
 function task(taskId: string): SessionTask {
@@ -22,6 +24,19 @@ function task(taskId: string): SessionTask {
 }
 
 describe('session task recovery', () => {
+  it('keeps unloaded history out of the empty state and send path', () => {
+    const loaded = new Set(['loaded-session'])
+    const failed = new Set(['failed-session'])
+
+    assert.equal(resolveHistoryStatus('pending-session', loaded, failed), 'loading')
+    assert.equal(resolveHistoryStatus('failed-session', loaded, failed), 'error')
+    assert.equal(resolveHistoryStatus('loaded-session', loaded, failed), 'loaded')
+    assert.equal(historyAllowsSending(false, 'loading'), false)
+    assert.equal(historyAllowsSending(false, 'error'), false)
+    assert.equal(historyAllowsSending(false, 'loaded'), true)
+    assert.equal(historyAllowsSending(true, 'loading'), true)
+  })
+
   it('uses the first task because the API returns newest first', () => {
     assert.equal(getLatestTask([task('newest'), task('oldest')])?.task_id, 'newest')
     assert.equal(getLatestTask([]), undefined)

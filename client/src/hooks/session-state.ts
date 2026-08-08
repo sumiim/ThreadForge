@@ -1,5 +1,20 @@
 import type { SessionTask, ToolCall } from '../api/types'
 
+export type HistoryStatus = 'loading' | 'error' | 'loaded'
+
+export function resolveHistoryStatus(
+  sessionId: string | null,
+  loadedSessions: ReadonlySet<string>,
+  failedSessions: ReadonlySet<string>,
+): HistoryStatus {
+  if (!sessionId || loadedSessions.has(sessionId)) return 'loaded'
+  return failedSessions.has(sessionId) ? 'error' : 'loading'
+}
+
+export function historyAllowsSending(draft: boolean, status: HistoryStatus): boolean {
+  return draft || status === 'loaded'
+}
+
 // api-server returns session tasks newest first (mtime DESC).
 export function getLatestTask(tasks: SessionTask[]): SessionTask | undefined {
   return tasks[0]
