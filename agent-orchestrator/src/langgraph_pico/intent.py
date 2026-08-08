@@ -18,6 +18,10 @@ VALID_TASK_MODES = {TASK_MODE_AUTO, *VALID_INTENTS}
 MAX_INTENT_ATTEMPTS = 2
 MAX_CONVERSATION_ATTEMPTS = 2
 ROUTER_MAX_NEW_TOKENS = 96
+ROUTER_PLAN_MAX_NEW_TOKENS = 1400
+
+ROUTE_MODE_DIRECT = "direct"
+ROUTE_MODE_PLAN = "plan"
 
 
 @dataclass(frozen=True)
@@ -27,6 +31,15 @@ class IntentDecision:
     source: str
     attempts: int = 0
     malformed_attempts: int = 0
+
+
+@dataclass(frozen=True)
+class RoutedTaskDecision:
+    mode: str
+    intent: str
+    requires_research: bool
+    answer: str
+    plan: dict | None
 
 
 def normalize_task_mode(value):
@@ -64,6 +77,44 @@ def parse_conversation_output(text):
     if not isinstance(answer, str) or not answer.strip():
         raise ValueError("conversation answer must be a non-empty string")
     return answer.strip()
+
+
+def parse_routed_task_output(text):
+    """Parse the route-first response without validating the nested plan contract."""
+    value = json.loads(str(text).strip())
+    required = {"mode", "intent", "requires_research", "answer", "plan"}
+    if not isinstance(value, dict) or set(value) != required:
+        raise ValueError("route output fields do not match the contract")
+    mode = value["mode"]
+    intent = value["intent"]
+    requires_research = value["requires_research"]
+    answer = value["answer"]
+    plan = value["plan"]
+    if mode not in {ROUTE_MODE_DIRECT, ROUTE_MODE_PLAN}:
+        raise ValueError("route output has an invalid mode")
+    if intent not in VALID_INTENTS or not isinstance(requires_research, bool):
+        raise ValueError("route output has an invalid intent")
+    if not isinstance(answer, str):
+        raise ValueError("route answer must be text")
+    if mode == ROUTE_MODE_DIRECT:
+        if intent != INTENT_CONVERSATION or requires_research or not answer.strip() or plan is not None:
+            raise ValueError("direct route must be a complete conversational response")
+        return RoutedTaskDecision(
+            mode=mode,
+            intent=intent,
+            requires_research=False,
+            answer=answer.strip(),
+            plan=None,
+        )
+    if intent == INTENT_CONVERSATION or answer.strip() or not isinstance(plan, dict):
+        raise ValueError("planned route must include a non-conversational plan")
+    return RoutedTaskDecision(
+        mode=mode,
+        intent=intent,
+        requires_research=requires_research,
+        answer="",
+        plan=plan,
+    )
 
 
 def build_intent_prompt(task, context, *, retry=False):

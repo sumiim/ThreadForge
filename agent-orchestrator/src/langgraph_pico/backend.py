@@ -38,6 +38,7 @@ from .intent import (
     TASK_MODE_AUTO,
     normalize_task_mode,
 )
+from .planning import is_continuation_request
 
 RUN_METADATA_KEYS = (
     "requested_task_mode",
@@ -194,6 +195,19 @@ def _intent_context(agent, max_messages=4, max_chars=2000):
     return agent.redact_text("\n".join(lines))[-max_chars:]
 
 
+def _continuation_context(agent, task_input, max_chars=1200):
+    """Return the preceding user task for a short explicit continuation request."""
+    if not is_continuation_request(task_input):
+        return ""
+    for item in reversed(agent.session.get("history", [])):
+        if item.get("role") != "user":
+            continue
+        previous = str(item.get("content", "")).strip()
+        if previous and not is_continuation_request(previous):
+            return agent.redact_text(previous)[-max_chars:]
+    return ""
+
+
 def _validate_run_agent_args(
     *,
     task_mode,
@@ -321,6 +335,7 @@ def run_agent(
             "intent_attempts": 0,
             "answer_attempts": 0,
             "intent_context": _intent_context(agent),
+            "continuation_context": _continuation_context(agent, task_input),
             "completion_status": "pending",
             "step_budget": step_budget,
             "coordinator_steps_used": 0,
@@ -343,6 +358,7 @@ def run_agent(
             "replan_requested": False,
             "replan_reason": "",
             "replan_attempts": 0,
+            "router_direct_answer": False,
             "started_monotonic": started_at,
         }
 
@@ -425,7 +441,7 @@ def run_agent(
                 raise RuntimeError("graph run metadata drift")
 
             final_answer = result["final_result"]
-            if enable_planning:
+            if enable_planning and result["plan"]:
                 _complete_satisfied_plan_steps(
                     task_state,
                     result["plan"],
@@ -435,6 +451,7 @@ def run_agent(
             if result["completion_status"] == "success" and not result["terminal_reason"]:
                 if (
                     enable_planning
+                    and result["plan"]
                     and task_state.checklist
                     and set(task_state.completed_items) != set(task_state.checklist)
                 ):

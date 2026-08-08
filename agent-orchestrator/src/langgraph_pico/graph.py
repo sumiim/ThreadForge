@@ -1,5 +1,6 @@
 """Pure-data LangGraph orchestration for Pico's routed three-role workflow."""
 
+import json
 import time
 from copy import deepcopy
 from typing import TypedDict
@@ -26,7 +27,9 @@ from .intent import (
     INTENT_READ_ONLY,
     MAX_CONVERSATION_ATTEMPTS,
     MAX_INTENT_ATTEMPTS,
+    ROUTE_MODE_DIRECT,
     ROUTER_MAX_NEW_TOKENS,
+    ROUTER_PLAN_MAX_NEW_TOKENS,
     TASK_MODE_AUTO,
     IntentDecision,
     build_conversation_prompt,
@@ -34,6 +37,7 @@ from .intent import (
     build_read_only_prompt,
     parse_conversation_output,
     parse_intent_output,
+    parse_routed_task_output,
 )
 from .planning import (
     MAX_PLAN_ATTEMPTS,
@@ -41,6 +45,7 @@ from .planning import (
     PLANNER_MAX_NEW_TOKENS,
     PlanValidationError,
     build_plan_prompt,
+    build_routed_planning_prompt,
     is_plain_conversation_request,
     parse_and_validate_plan,
 )
@@ -81,6 +86,7 @@ class AgentState(TypedDict):
     intent_attempts: int
     answer_attempts: int
     intent_context: str
+    continuation_context: str
     completion_status: str
     step_budget: int
     coordinator_steps_used: int
@@ -103,6 +109,7 @@ class AgentState(TypedDict):
     replan_requested: bool
     replan_reason: str
     replan_attempts: int
+    router_direct_answer: bool
     started_monotonic: float
 
 
@@ -682,8 +689,297 @@ def _classify_auto_intent(agent, router_client, metadata_collector, task, contex
     )
 
 
+def _apply_initial_plan(
+    state: AgentState,
+    *,
+    agent,
+    metadata_collector,
+    plan,
+    attempt,
+    source,
+    intent_attempts,
+    requires_research,
+    duration_ms,
+):
+    task_state = agent.current_task_state
+    task_state.plan_id = plan["plan_id"]
+    task_state.plan_revision = plan["revision"]
+    task_state.intent = plan["intent"]
+    task_state.checklist = [step["goal"] for step in plan["steps"]]
+    task_state.done_when = [item for step in plan["steps"] for item in step["done_when"]]
+    task_state.completed_items = []
+    _write_graph_task_state(agent)
+    metadata_collector.update(
+        {
+            "resolved_intent": plan["intent"],
+            "intent_source": source,
+            "intent_attempts": intent_attempts,
+        }
+    )
+    agent.emit_trace(
+        task_state,
+        "plan_created",
+        {
+            "plan_id": plan["plan_id"],
+            "revision": plan["revision"],
+            "intent": plan["intent"],
+            "summary": plan["summary"],
+            "step_count": len(plan["steps"]),
+            "risk_level": plan["risk_level"],
+            "steps": [
+                {
+                    "id": step["id"],
+                    "goal": step["goal"],
+                    "dependencies": list(step["dependencies"]),
+                    "done_when": list(step["done_when"]),
+                }
+                for step in plan["steps"]
+            ],
+            "duration_ms": duration_ms,
+            "replan_reason": "",
+            "completion_metadata": _safe_completion_metadata(agent, agent.model_client),
+        },
+    )
+    return {
+        **state,
+        "acceptance": "\n".join(plan["acceptance"]),
+        "resolved_intent": plan["intent"],
+        "intent_source": source,
+        "intent_attempts": intent_attempts,
+        "requires_research": requires_research,
+        "plan": plan,
+        "plan_attempts": attempt,
+        "plan_error": "",
+        "replan_requested": False,
+        "replan_reason": "",
+        "router_direct_answer": False,
+    }
+
+
+def _route_and_plan_initial_task(state: AgentState, config: RunnableConfig) -> AgentState:
+    """Route the request and, when needed, validate its initial execution plan in one call."""
+    configurable = config["configurable"]
+    agent = configurable["agent"]
+    metadata_collector = configurable["run_metadata_collector"]
+    mode = state["requested_task_mode"]
+    available_tools = tuple(name for name in (agent.allowed_tools or agent.tools) if name != "delegate")
+    maximum_budgets = _plan_limits(state, agent)
+    minimum_budgets = _plan_minimum_budgets(state, config, maximum_budgets)
+    error_message = ""
+
+    for attempt in range(1, MAX_PLAN_ATTEMPTS + 1):
+        _record_graph_model_attempt(
+            agent,
+            metadata_collector,
+            event="intent_classification_requested",
+            attempt=attempt,
+            counter_key="intent_attempts",
+        )
+        started_at = time.monotonic()
+        raw = _complete_graph_model(
+            agent,
+            configurable["router_model_client"],
+            build_routed_planning_prompt(
+                state["task"],
+                state["intent_context"],
+                available_tools,
+                maximum_budgets,
+                continuation_context=state["continuation_context"],
+                requested_mode=mode,
+                retry=attempt > 1,
+                validation_error=error_message,
+                minimum_budgets=minimum_budgets,
+            ),
+            ROUTER_PLAN_MAX_NEW_TOKENS,
+            stage="intent",
+        )
+        duration_ms = int((time.monotonic() - started_at) * 1000)
+        protocol_status = "valid"
+        source = "router_plan"
+        decision = None
+        plan = None
+        direct_answer = ""
+        error_message = ""
+        try:
+            decision = parse_routed_task_output(raw)
+            if decision.mode == ROUTE_MODE_DIRECT:
+                if state["continuation_context"]:
+                    raise ValueError("continuation requests must be planned")
+                if mode != TASK_MODE_AUTO and mode != INTENT_CONVERSATION:
+                    raise ValueError("direct route conflicts with explicit task mode")
+            else:
+                plan = parse_and_validate_plan(
+                    json.dumps(decision.plan),
+                    available_tools=available_tools,
+                    maximum_budgets=maximum_budgets,
+                    minimum_budgets=minimum_budgets,
+                )
+                if plan["intent"] != decision.intent:
+                    raise PlanValidationError("route_plan_intent_mismatch", "route intent must match plan intent")
+            if decision.mode == ROUTE_MODE_DIRECT:
+                direct_answer = decision.answer
+        except (ValueError, PlanValidationError) as route_error:
+            # Existing stored and test fixtures use the pre-route bare plan contract. Keep it
+            # readable during the migration, but all new model prompts use the routed contract.
+            try:
+                plan = parse_and_validate_plan(
+                    raw,
+                    available_tools=available_tools,
+                    maximum_budgets=maximum_budgets,
+                    minimum_budgets=minimum_budgets,
+                )
+                decision = IntentDecision(
+                    intent=plan["intent"],
+                    requires_research=plan["intent"] != INTENT_CONVERSATION,
+                    source="plan",
+                )
+                source = "plan"
+            except PlanValidationError:
+                try:
+                    answer = parse_conversation_output(raw)
+                except ValueError:
+                    protocol_status = "malformed"
+                    error_message = str(route_error)
+                else:
+                    if state["continuation_context"]:
+                        protocol_status = "malformed"
+                        error_message = "continuation requests must be planned"
+                    elif mode != TASK_MODE_AUTO and mode != INTENT_CONVERSATION:
+                        protocol_status = "malformed"
+                        error_message = "direct route conflicts with explicit task mode"
+                    else:
+                        decision = IntentDecision(
+                            intent=INTENT_CONVERSATION,
+                            requires_research=False,
+                            source="direct_conversation",
+                        )
+                        plan = None
+                        direct_answer = answer
+                        source = "direct_conversation"
+
+        agent.emit_trace(
+            agent.current_task_state,
+            "intent_classification_completed",
+            {
+                "attempt": attempt,
+                "duration_ms": duration_ms,
+                "protocol_status": protocol_status,
+                "completion_metadata": _safe_completion_metadata(
+                    agent, configurable["router_model_client"]
+                ),
+            },
+        )
+        if protocol_status == "malformed":
+            agent.current_task_state.record_malformed_output_recovered()
+            _write_graph_task_state(agent)
+            agent.emit_trace(
+                agent.current_task_state,
+                "intent_classification_rejected",
+                {"attempt": attempt, "error_code": "invalid_route_contract"},
+            )
+            continue
+
+        resolved_intent = decision.intent
+        proposed_research = decision.requires_research
+        if mode != TASK_MODE_AUTO and resolved_intent != mode:
+            error_message = "route intent conflicts with the explicit task mode"
+            agent.current_task_state.record_malformed_output_recovered()
+            _write_graph_task_state(agent)
+            continue
+
+        if plan is None:
+            answer = direct_answer
+            task_state = agent.current_task_state
+            task_state.intent = INTENT_CONVERSATION
+            task_state.checklist = []
+            task_state.done_when = []
+            task_state.completed_items = []
+            _write_graph_task_state(agent)
+            metadata_collector.update(
+                {
+                    "resolved_intent": INTENT_CONVERSATION,
+                    "intent_source": source,
+                    "intent_attempts": attempt,
+                    "answer_attempts": 1,
+                }
+            )
+            agent.emit_trace(
+                task_state,
+                "intent_classified",
+                {
+                    "requested_mode": mode,
+                    "resolved_intent": INTENT_CONVERSATION,
+                    "source": source,
+                    "attempts": attempt,
+                    "requires_research": False,
+                },
+            )
+            if is_plain_conversation_request(state["task"]):
+                agent.emit_trace(
+                    task_state,
+                    "plan_skipped",
+                    {"reason": "plain_conversation", "intent": INTENT_CONVERSATION},
+                )
+            agent.emit_trace(
+                task_state,
+                "answer_completed",
+                {"intent": INTENT_CONVERSATION, "child_task_id": ""},
+            )
+            return {
+                **state,
+                "resolved_intent": INTENT_CONVERSATION,
+                "intent_source": source,
+                "intent_attempts": attempt,
+                "answer_attempts": 1,
+                "requires_research": False,
+                "execution_result": answer,
+                "completion_status": "success",
+                "plan_attempts": 0,
+                "router_direct_answer": True,
+            }
+
+        resolved_research = _resolve_research(
+            resolved_intent,
+            proposed_research,
+            state["requires_research"],
+        )
+        return _apply_initial_plan(
+            state,
+            agent=agent,
+            metadata_collector=metadata_collector,
+            plan=plan,
+            attempt=attempt,
+            source=source,
+            intent_attempts=attempt,
+            requires_research=resolved_research,
+            duration_ms=duration_ms,
+        )
+
+    failed = {
+        **state,
+        "resolved_intent": "",
+        "intent_source": "router_failed",
+        "intent_attempts": MAX_PLAN_ATTEMPTS,
+        "plan_attempts": MAX_PLAN_ATTEMPTS,
+    }
+    metadata_collector.update(
+        {
+            "resolved_intent": "",
+            "intent_source": "router_failed",
+            "intent_attempts": MAX_PLAN_ATTEMPTS,
+        }
+    )
+    return _failed_state(
+        failed,
+        "retry_limit_reached",
+        "Intent router did not return a valid route or execution plan.",
+    )
+
+
 def route_after_intent(state: AgentState):
     if state["terminal_reason"]:
+        return "finalize"
+    if state["router_direct_answer"]:
         return "finalize"
     intent = state["resolved_intent"]
     if intent == INTENT_CONVERSATION:
@@ -714,16 +1010,17 @@ def intent_router_node(state: AgentState, config: RunnableConfig) -> AgentState:
         _emit_route(agent, "intent_router", route, state["terminal_reason"])
         return state
     if state["planning_enabled"]:
-        planned_intent = state["resolved_intent"]
-        if mode != TASK_MODE_AUTO and planned_intent != mode:
-            next_state = _failed_state(
-                state,
-                "runtime_error",
-                "Validated plan intent conflicts with the explicit task mode.",
-            )
+        if not (state["plan"] and state["replan_attempts"]):
+            next_state = _route_and_plan_initial_task(state, config)
             route = route_after_intent(next_state)
-            _emit_route(agent, "intent_router", route, next_state["terminal_reason"])
+            _emit_route(
+                agent,
+                "intent_router",
+                route,
+                next_state["terminal_reason"] or next_state["resolved_intent"],
+            )
             return next_state
+        planned_intent = state["plan"].get("intent", "")
         decision = IntentDecision(
             intent=planned_intent,
             requires_research=planned_intent != INTENT_CONVERSATION,
@@ -1117,7 +1414,9 @@ def route_after_answer(state: AgentState):
         return "finalize"
     if state["resolved_intent"] == INTENT_CONVERSATION:
         return "finalize"
-    return "review" if state["planning_enabled"] else "finalize"
+    if state["resolved_intent"] == INTENT_READ_ONLY:
+        return "review"
+    return "finalize"
 
 
 def route_after_execute_change(state: AgentState):
@@ -1221,8 +1520,31 @@ def route_finish_or_fix(state: AgentState):
     if state["terminal_reason"] or state["review_status"] == "pass":
         return "finalize"
     if state["review_status"] == "needs_fix":
-        return "replan" if state["planning_enabled"] else "execute_change"
+        if state["planning_enabled"]:
+            return "replan"
+        if state["resolved_intent"] == INTENT_READ_ONLY:
+            return "answer"
+        return "execute_change"
     raise RuntimeError("review route received an unresolved status")
+
+
+def _read_only_review_evidence(agent, config):
+    evidence = []
+    for child_state in _child_task_states(agent, config):
+        for item in child_state.evidence:
+            if item.get("tool_name") not in READ_ONLY_TOOLS:
+                continue
+            if item.get("status") not in {"ok", "partial_success"}:
+                continue
+            evidence.append(
+                {
+                    "tool_name": item.get("tool_name", ""),
+                    "paths": list(item.get("relative_paths", [])),
+                    "freshness": item.get("freshness", ""),
+                    "summary": item.get("summary", ""),
+                }
+            )
+    return evidence
 
 
 def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
@@ -1248,6 +1570,14 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
         task_state = agent.current_task_state
         task_state.record_attempt()
         _write_graph_task_state(agent)
+        evidence_prompt = ""
+        if state["resolved_intent"] == INTENT_READ_ONLY:
+            evidence_prompt = (
+                "\nREAD_ONLY_EVIDENCE="
+                + json.dumps(_read_only_review_evidence(agent, config), ensure_ascii=False)
+                + "\nFor a read-only task, return status: needs_fix unless this current-run evidence "
+                "is sufficient for the candidate answer."
+            )
         raw = _complete_graph_model(
             agent,
             agent.model_client,
@@ -1259,6 +1589,7 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 f"ACCEPTANCE={state['acceptance']}\n"
                 f"INTENT={state['resolved_intent']}\n"
                 f"CANDIDATE={state['execution_result']}"
+                + evidence_prompt
             ),
             agent.max_new_tokens,
             stage="review",
@@ -1282,19 +1613,27 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 "issue_count": len(review.get("issue_codes", [])),
             },
         )
+        review_attempt = state["fix_attempts"] + 1
         if review["status"] == "pass":
             next_state = {**updated, "completion_status": "success"}
-        elif state["replan_attempts"] >= MAX_REPLAN_ATTEMPTS:
+        elif state["planning_enabled"] and state["replan_attempts"] >= MAX_REPLAN_ATTEMPTS:
             next_state = _failed_state(
                 updated,
                 "review_retry_limit_reached",
                 "自动审查未通过，已达到重试上限。请查看运行详情中的审查记录后重试。",
             )
+        elif not state["planning_enabled"] and review_attempt >= MAX_FIX_ATTEMPTS:
+            next_state = _failed_state(
+                {**updated, "fix_attempts": review_attempt},
+                "review_retry_limit_reached",
+                "Read-only review did not confirm that the requested result was complete.",
+            )
         else:
             next_state = {
                 **updated,
-                "replan_requested": True,
-                "replan_reason": review["text"],
+                "fix_attempts": review_attempt,
+                "replan_requested": bool(state["planning_enabled"]),
+                "replan_reason": review["text"] if state["planning_enabled"] else "",
             }
     else:
         call = _call_graph_role_delegate(
@@ -1407,8 +1746,7 @@ def build_graph():
     builder.add_node("review_delegate", review_node)
     builder.add_node("replan", prepare_plan_node)
     builder.add_node("finalize", finalize_node)
-    builder.add_edge(START, "prepare_plan")
-    builder.add_edge("prepare_plan", "intent_router")
+    builder.add_edge(START, "intent_router")
     builder.add_conditional_edges(
         "intent_router",
         route_after_intent,
@@ -1441,7 +1779,12 @@ def build_graph():
     builder.add_conditional_edges(
         "review_delegate",
         route_finish_or_fix,
-        {"execute_change": "execute_change", "replan": "replan", "finalize": "finalize"},
+        {
+            "answer": "answer",
+            "execute_change": "execute_change",
+            "replan": "replan",
+            "finalize": "finalize",
+        },
     )
     builder.add_edge("replan", "intent_router")
     builder.add_edge("finalize", END)
