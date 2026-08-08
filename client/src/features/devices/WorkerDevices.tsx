@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Alert, Button, Form, Input, Modal, Popconfirm, Progress, Spin, Tag, Tooltip, Typography } from 'antd'
+import { Alert, Button, Dropdown, Form, Input, Modal, Progress, Spin, Tag, Tooltip, Typography } from 'antd'
 import {
   DeleteOutlined,
   FolderOpenOutlined,
   LaptopOutlined,
   LinkOutlined,
+  MoreOutlined,
   PoweroffOutlined,
   ReloadOutlined,
   SettingOutlined,
@@ -21,6 +22,7 @@ import {
   uninstallWorker,
 } from '../../api/client'
 import type { Device, WorkerReleaseManifest } from '../../api/types'
+import { getWorkerDeviceActionState } from './worker-actions'
 import { workerIsReady } from './worker-version'
 
 const delay = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds))
@@ -46,9 +48,11 @@ export default function WorkerDevices() {
   const [selectionDeviceId, setSelectionDeviceId] = useState('')
   const [modelDevice, setModelDevice] = useState<Device | null>(null)
   const [modelSaving, setModelSaving] = useState(false)
+  const [revokingDeviceId, setRevokingDeviceId] = useState('')
   const [uninstallingDeviceId, setUninstallingDeviceId] = useState('')
   const [statusClock, setStatusClock] = useState(0)
   const [modelForm] = Form.useForm<{ base_url: string; api_key: string; model: string }>()
+  const [modal, modalContextHolder] = Modal.useModal()
   const operationVersion = useRef(0)
   const workerServer = window.threadforge?.apiBaseUrl ?? window.location.origin
 
@@ -105,18 +109,23 @@ export default function WorkerDevices() {
     }
   }
 
-  const revoke = async (deviceId: string) => {
+  const revoke = async (device: Device) => {
     try {
-      await revokeDevice(deviceId)
+      setError('')
+      setRevokingDeviceId(device.device_id)
+      await revokeDevice(device.device_id)
+      setNotice(`${device.name} 已解绑`)
       await refresh()
     } catch (cause) {
       setError(friendlyMessage(cause))
+    } finally {
+      setRevokingDeviceId('')
     }
   }
 
   const startLocalService = async () => {
     setNotice('已请求系统启动 ThreadForge Worker')
-    window.location.href = 'threadforge://worker/start'
+    window.location.assign('threadforge://worker/start')
     await delay(1500)
     await refresh()
   }
@@ -136,7 +145,7 @@ export default function WorkerDevices() {
         setNotice(
           `正在尝试在当前电脑启动 ${device.name} 的卸载程序；如果该设备不在当前电脑，请在目标电脑打开 ThreadForge 后再操作。`,
         )
-        window.location.href = 'threadforge://worker/uninstall'
+        window.location.assign('threadforge://worker/uninstall')
       }
       await delay(2_000)
       await refresh()
@@ -145,6 +154,30 @@ export default function WorkerDevices() {
     } finally {
       setUninstallingDeviceId('')
     }
+  }
+
+  const confirmRevoke = (device: Device) => {
+    modal.confirm({
+      title: '解绑这台设备？',
+      content: '设备将立即断开，正在执行的任务会失败。',
+      okText: '解绑',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: () => revoke(device),
+    })
+  }
+
+  const confirmUninstall = (device: Device, canRemoteUninstall: boolean) => {
+    modal.confirm({
+      title: `卸载 ${device.name} 上的 Worker？`,
+      content: canRemoteUninstall
+        ? '目标电脑会打开卸载程序并停止 Worker；本地会话、工作区授权、模型配置和设备绑定都会保留。'
+        : '该 Worker 当前离线或版本过旧，将尝试在当前电脑打开本机卸载程序。远程设备请先在目标电脑启动 Worker。',
+      okText: '卸载 Worker',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: () => uninstall(device),
+    })
   }
 
   const selectWorkspace = async (deviceId: string) => {
@@ -207,6 +240,7 @@ export default function WorkerDevices() {
 
   return (
     <div>
+      {modalContextHolder}
       <div className="mb-1.5 flex items-center justify-between">
         <div className="text-sm font-medium text-stone-800">本地 Worker</div>
         <Button type="text" size="small" icon={<ReloadOutlined />} onClick={() => void refresh()} />
@@ -227,7 +261,8 @@ export default function WorkerDevices() {
           {devices.map((device) => {
             const canSelectWorkspace =
               workerIsReady(device, release) && (device.capabilities ?? []).includes('workspace_selection')
-            const canRemoteUninstall = device.online && (device.capabilities ?? []).includes('worker_uninstall')
+            const { canRemoteUninstall, pending: deviceActionPending, uninstallLabel } =
+              getWorkerDeviceActionState(device, revokingDeviceId, uninstallingDeviceId)
             const updateStatus = device.update_status
             const updateProgress = updateStatus?.total_bytes
               ? Math.min(100, Math.round((updateStatus.downloaded_bytes / updateStatus.total_bytes) * 100))
@@ -254,48 +289,37 @@ export default function WorkerDevices() {
                     {device.name}
                   </span>
                   <Tag color={device.online ? 'green' : 'default'}>{device.online ? '在线' : '离线'}</Tag>
-                  <Popconfirm
-                    title="解绑这台设备？"
-                    description="设备将立即断开，正在执行的任务会失败。"
-                    okText="解绑"
-                    okButtonProps={{ danger: true }}
-                    cancelText="取消"
-                    onConfirm={() => void revoke(device.device_id)}
+                  <Dropdown
+                    trigger={['click']}
+                    placement="bottomRight"
+                    disabled={deviceActionPending}
+                    menu={{
+                      items: [
+                        {
+                          key: 'revoke',
+                          label: '解绑设备',
+                          danger: true,
+                          onClick: () => confirmRevoke(device),
+                        },
+                        {
+                          key: 'uninstall',
+                          icon: <DeleteOutlined />,
+                          label: uninstallLabel,
+                          danger: true,
+                          onClick: () => confirmUninstall(device, canRemoteUninstall),
+                        },
+                      ],
+                    }}
                   >
-                    <Button type="text" danger size="small">解绑设备</Button>
-                  </Popconfirm>
-                  <Popconfirm
-                    title={`卸载 ${device.name} 上的 Worker？`}
-                    description={
-                      canRemoteUninstall
-                        ? '目标电脑会打开卸载程序并停止 Worker；本地会话、工作区授权、模型配置和设备绑定都会保留。'
-                        : '该 Worker 当前离线或版本过旧，将尝试在当前电脑打开本机卸载程序。远程设备请先在目标电脑启动 Worker。'
-                    }
-                    okText="卸载 Worker"
-                    okButtonProps={{ danger: true }}
-                    cancelText="取消"
-                    onConfirm={() => void uninstall(device)}
-                  >
-                    <Tooltip
-                      title={
-                        canRemoteUninstall
-                          ? '卸载这台设备上的 Worker'
-                          : 'Worker 离线/旧版：尝试启动当前电脑的本机卸载程序'
-                      }
-                    >
-                      <span>
-                        <Button
-                          type="text"
-                          danger
-                          size="small"
-                          icon={<DeleteOutlined />}
-                          loading={uninstallingDeviceId === device.device_id}
-                        >
-                          {canRemoteUninstall ? '卸载' : '本机卸载'}
-                        </Button>
-                      </span>
-                    </Tooltip>
-                  </Popconfirm>
+                    <Button
+                      type="text"
+                      size="small"
+                      shape="circle"
+                      aria-label={`${device.name} 的设备操作`}
+                      icon={<MoreOutlined />}
+                      loading={deviceActionPending}
+                    />
+                  </Dropdown>
                 </div>
                 <div className="mt-2 text-[11px] text-stone-500">
                   {device.platform || 'unknown'} / {device.architecture || 'unknown'} · Worker{' '}
