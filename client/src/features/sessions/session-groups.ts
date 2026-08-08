@@ -21,6 +21,19 @@ export interface DeviceGroup {
   workspaces: WorkspaceGroup[]
 }
 
+function workspaceForSession(session: Session, workspaces: Workspace[]): Workspace | undefined {
+  return workspaces.find(
+    (workspace) => workspaceKey(workspace) === sessionWorkspaceKey(session),
+  )
+}
+
+export function selectInitialNavigableSession(
+  sessions: Session[],
+  workspaces: Workspace[],
+): Session | undefined {
+  return sessions.find((session) => workspaceForSession(session, workspaces))
+}
+
 export function buildDeviceGroups(
   workspaces: Workspace[],
   sessions: Session[],
@@ -62,9 +75,7 @@ export function buildDeviceGroups(
   }
 
   sessions.forEach((session) => {
-    const known = workspaces.find(
-      (workspace) => workspaceKey(workspace) === sessionWorkspaceKey(session),
-    )
+    const known = workspaceForSession(session, workspaces)
     // An unbound device no longer belongs in the active navigation tree.
     // Keep its session data intact so re-pairing can restore it later.
     if (!known) return

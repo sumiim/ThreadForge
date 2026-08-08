@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Session, Workspace } from '../../api/types.ts'
-import { buildDeviceGroups } from './session-groups.ts'
+import { buildDeviceGroups, selectInitialNavigableSession } from './session-groups.ts'
 
 function workspace(overrides: Partial<Workspace> = {}): Workspace {
   return {
@@ -68,4 +68,12 @@ test('does not synthesize a raw workspace id when every retained session is unbo
 test('keeps an empty current workspace visible outside search mode', () => {
   assert.equal(buildDeviceGroups([workspace()], [], true).length, 1)
   assert.equal(buildDeviceGroups([workspace()], [], false).length, 0)
+})
+
+test('selects the first current session instead of an earlier unbound history item', () => {
+  const unbound = session({ id: 'session_unbound', workspaceId: 'ws_unbound', deviceId: 'dev_unbound' })
+  const current = session({ id: 'session_current' })
+
+  assert.equal(selectInitialNavigableSession([unbound, current], [workspace()])?.id, 'session_current')
+  assert.equal(selectInitialNavigableSession([unbound], [workspace()]), undefined)
 })
