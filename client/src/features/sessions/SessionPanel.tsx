@@ -20,7 +20,9 @@ import Logo from '../../components/Logo'
 import type { Session, Workspace } from '../../api/types'
 import type { ThemeMode } from '../../hooks/useTheme'
 import NewSessionModal from './NewSessionModal'
-import { sessionWorkspaceKey, workspaceDeviceKey, workspaceDeviceLabel, workspaceKey } from './workspaceIdentity'
+import { buildDeviceGroups } from './session-groups'
+import type { WorkspaceGroup } from './session-groups'
+import { sessionWorkspaceKey, workspaceKey } from './workspaceIdentity'
 
 export type PanelView = 'chat' | 'skills' | 'mcp'
 
@@ -186,7 +188,7 @@ export default function SessionPanel({
         <span className="h-px min-w-0 flex-1 bg-stone-200" aria-hidden />
       </div>
       {/* 会话树：设备/Worker -> 工作区 -> 会话 */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-2">
+      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2">
         {loading ? (
           <div className="flex items-center justify-center gap-2 px-3 py-5 text-xs text-stone-500" role="status">
             <Spin size="small" />
@@ -199,7 +201,7 @@ export default function SessionPanel({
         ) : (
           <Collapse
             ghost
-            className="[&_.ant-collapse-header]:!px-2 [&_.ant-collapse-content-box]:!px-2 [&_.ant-collapse-content-box]:!py-1"
+            className="min-w-0 [&_.ant-collapse-content-box]:!px-2 [&_.ant-collapse-content-box]:!py-1 [&_.ant-collapse-header-text]:!min-w-0 [&_.ant-collapse-header]:!min-w-0 [&_.ant-collapse-header]:!px-2"
             defaultActiveKey={deviceGroups.map((group) => group.key)}
             items={deviceGroups.map((device) => ({
               key: device.key,
@@ -251,7 +253,7 @@ export default function SessionPanel({
               children: (
                 <Collapse
                   ghost
-                  className="[&_.ant-collapse-header]:!px-2 [&_.ant-collapse-content-box]:!px-0 [&_.ant-collapse-content-box]:!py-0"
+                  className="min-w-0 [&_.ant-collapse-content-box]:!px-0 [&_.ant-collapse-content-box]:!py-0 [&_.ant-collapse-header-text]:!min-w-0 [&_.ant-collapse-header]:!min-w-0 [&_.ant-collapse-header]:!px-2"
                   defaultActiveKey={device.workspaces.map((group) => group.key)}
                   items={device.workspaces.map((workspace) => ({
                     key: workspace.key,
@@ -423,85 +425,6 @@ export default function SessionPanel({
       />
     </div>
   )
-}
-
-interface WorkspaceGroup {
-  key: string
-  label: string
-  workspaceId: string
-  deviceId?: string
-  sessions: Session[]
-}
-
-interface DeviceGroup {
-  key: string
-  label: string
-  deviceId?: string
-  workspaces: WorkspaceGroup[]
-}
-
-function buildDeviceGroups(workspaces: Workspace[], sessions: Session[], includeEmpty: boolean): DeviceGroup[] {
-  const devices = new Map<string, DeviceGroup>()
-  const workspaceGroups = new Map<string, WorkspaceGroup>()
-
-  const addWorkspace = (workspace: Workspace) => {
-    const deviceKey = workspaceDeviceKey(workspace)
-    let device = devices.get(deviceKey)
-    if (!device) {
-      device = {
-        key: deviceKey,
-        label: workspaceDeviceLabel(workspace),
-        deviceId: workspace.device_id,
-        workspaces: [],
-      }
-      devices.set(deviceKey, device)
-    }
-    const key = workspaceKey(workspace)
-    let group = workspaceGroups.get(key)
-    if (!group) {
-      group = {
-        key,
-        label: workspace.display_name || workspace.name || workspace.display_path || workspace.workspace_id,
-        workspaceId: workspace.workspace_id,
-        deviceId: workspace.device_id,
-        sessions: [],
-      }
-      workspaceGroups.set(key, group)
-      device.workspaces.push(group)
-    }
-    return group
-  }
-
-  if (includeEmpty) {
-    workspaces.forEach(addWorkspace)
-  }
-
-  sessions.forEach((session) => {
-    const known = workspaces.find(
-      (workspace) => workspaceKey(workspace) === sessionWorkspaceKey(session),
-    )
-    const group = addWorkspace(
-      known ?? {
-        workspace_id: session.workspaceId,
-        name: session.workspaceId,
-        display_path: session.workspaceId,
-        available: false,
-        is_git: false,
-        execution_environment: session.executionEnvironment || 'backend_process',
-        container_sandbox_enabled: false,
-        device_id: session.deviceId,
-        device_name: session.deviceId ? 'Worker' : undefined,
-      },
-    )
-    group.sessions.push(session)
-  })
-
-  return Array.from(devices.values())
-    .map((device) => ({
-      ...device,
-      workspaces: device.workspaces.filter((workspace) => includeEmpty || workspace.sessions.length > 0),
-    }))
-    .filter((device) => device.workspaces.length > 0)
 }
 
 function InlineName({
