@@ -38,9 +38,12 @@ import type {
 import {
   getFinalAnswer,
   getLatestTask,
+  historyAllowsSending,
   isInternalReviewDiagnostic,
   reconcileToolCalls,
+  resolveHistoryStatus,
 } from './session-state.ts'
+import type { HistoryStatus } from './session-state.ts'
 import { workspaceKey } from '../features/sessions/workspaceIdentity'
 
 let idCounter = 0
@@ -154,11 +157,12 @@ export interface UseSessions {
   skills: SkillMetadata[]
   mcpServers: McpServerMetadata[]
   loading: boolean
-  historyLoading: boolean
+  historyStatus: HistoryStatus
   running: boolean
   stopping: boolean
   agentProgress: AgentProgress | null
   refreshWorkspaces: () => Promise<Workspace[]>
+  retryHistory: () => void
   select: (id: string) => void
   createSession: (workspaceId: string, deviceId?: string) => void
   sendMessage: (content: string, modelId?: string, reasoningEffort?: ReasoningEffort) => void
@@ -180,7 +184,8 @@ export function useSessions(): UseSessions {
   const [skills, setSkills] = useState<SkillMetadata[]>([])
   const [mcpServers, setMcpServers] = useState<McpServerMetadata[]>([])
   const [loading, setLoading] = useState(true)
-  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyStatus, setHistoryStatus] = useState<HistoryStatus>('loaded')
+  const [historyFailures, setHistoryFailures] = useState<Set<string>>(() => new Set())
   const [running, setRunning] = useState(false)
   const [stopping, setStopping] = useState(false)
   const [agentProgress, setAgentProgress] = useState<AgentProgress | null>(null)
@@ -188,6 +193,7 @@ export function useSessions(): UseSessions {
 
   // 已从后端拉过完整消息的会话（避免选中时重复请求覆盖本地流式状态）
   const loadedRef = useRef<Set<string>>(new Set())
+  const activeIdRef = useRef<string | null>(null)
   // 当前在跑的任务（后端单活跃任务）
   const activeRunRef = useRef<ActiveRun | null>(null)
   const cancelRequestedRef = useRef(false)
@@ -201,6 +207,9 @@ export function useSessions(): UseSessions {
   useEffect(() => {
     sessionsRef.current = sessions
   }, [sessions])
+  useEffect(() => {
+    activeIdRef.current = activeId
+  }, [activeId])
 
   const broadcastSessionChange = useCallback((sessionId?: string) => {
     channelRef.current?.postMessage({ type: 'session.changed', session_id: sessionId ?? null })
@@ -213,7 +222,16 @@ export function useSessions(): UseSessions {
     channel.onmessage = (event) => {
       const payload = event.data as { type?: string; session_id?: string | null } | null
       if (payload?.type !== 'session.changed') return
-      if (payload.session_id) loadedRef.current.delete(payload.session_id)
+      if (payload.session_id) {
+        loadedRef.current.delete(payload.session_id)
+        if (activeIdRef.current === payload.session_id) setHistoryStatus('loading')
+        setHistoryFailures((current) => {
+          if (!current.has(payload.session_id!)) return current
+          const next = new Set(current)
+          next.delete(payload.session_id!)
+          return next
+        })
+      }
       setSyncVersion((value) => value + 1)
     }
     return () => {
@@ -769,7 +787,11 @@ export function useSessions(): UseSessions {
             messages: [],
           }))
         setSessions(items)
-        if (items.length > 0) setActiveId(items[0].id)
+        if (items.length > 0) {
+          setHistoryStatus('loading')
+          activeIdRef.current = items[0].id
+          setActiveId(items[0].id)
+        }
       } catch (err) {
         if (!cancelled) notify.error(friendlyMessage(err))
       } finally {
@@ -784,17 +806,20 @@ export function useSessions(): UseSessions {
   // ---- 会话选中：按需拉取详情；未结束的任务续接事件流 -------------------------
 
   useEffect(() => {
-    if (!activeId || loadedRef.current.has(activeId)) {
-      setHistoryLoading(false)
-      return
-    }
+    if (!activeId || loadedRef.current.has(activeId) || historyFailures.has(activeId)) return
     let cancelled = false
-    setHistoryLoading(true)
     ;(async () => {
       try {
         const detail: SessionDetail = await getSession(activeId, 200)
         if (cancelled) return
         loadedRef.current.add(activeId)
+        setHistoryStatus('loaded')
+        setHistoryFailures((current) => {
+          if (!current.has(activeId)) return current
+          const next = new Set(current)
+          next.delete(activeId)
+          return next
+        })
 
         const messages: Message[] = detail.messages
           .filter(
@@ -888,16 +913,17 @@ export function useSessions(): UseSessions {
           )
           attachEventStream(lastTask.task_id, detail.session_id, assistantId)
         }
-      } catch (err) {
-        if (!cancelled) notify.error(friendlyMessage(err))
-      } finally {
-        if (!cancelled) setHistoryLoading(false)
+      } catch {
+        if (!cancelled) {
+          setHistoryStatus('error')
+          setHistoryFailures((current) => new Set(current).add(activeId))
+        }
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [activeId, attachEventStream, runtimeConfig, syncVersion, workspaces])
+  }, [activeId, attachEventStream, historyFailures, runtimeConfig, syncVersion, workspaces])
 
   // SSE 只覆盖当前窗口的任务；索引轮询负责把其他窗口的创建、重命名和完成状态带过来。
   useEffect(() => {
@@ -962,7 +988,22 @@ export function useSessions(): UseSessions {
 
   // ---- 用户操作 ---------------------------------------------------------------
 
-  const select = useCallback((id: string) => setActiveId(id), [])
+  const select = useCallback((id: string) => {
+    setHistoryStatus(resolveHistoryStatus(id, loadedRef.current, historyFailures))
+    activeIdRef.current = id
+    setActiveId(id)
+  }, [historyFailures])
+
+  const retryHistory = useCallback(() => {
+    if (!activeId) return
+    loadedRef.current.delete(activeId)
+    setHistoryStatus('loading')
+    setHistoryFailures((current) => {
+      const next = new Set(current)
+      next.delete(activeId)
+      return next
+    })
+  }, [activeId])
 
   const createSession = useCallback(
     (workspaceId: string, deviceId?: string) => {
@@ -998,6 +1039,8 @@ export function useSessions(): UseSessions {
           }
           loadedRef.current.add(session.id)
           setSessions((prev) => [session, ...prev])
+          setHistoryStatus('loaded')
+          activeIdRef.current = session.id
           setActiveId(session.id)
           broadcastSessionChange(session.id)
         } catch (err) {
@@ -1012,13 +1055,18 @@ export function useSessions(): UseSessions {
     (content: string, modelId?: string, reasoningEffort: ReasoningEffort = 'none') => {
       const sessionId = activeId
       if (!sessionId || !content.trim() || running) return
+      const activeSession = sessionsRef.current.find((session) => session.id === sessionId)
+      const historyStatus = resolveHistoryStatus(sessionId, loadedRef.current, historyFailures)
+      if (!activeSession || !historyAllowsSending(Boolean(activeSession.draft), historyStatus)) {
+        notify.warning(historyStatus === 'error' ? '请先重新加载会话历史' : '会话历史仍在加载，请稍候')
+        return
+      }
       setRunning(true)
       setStopping(false)
       cancelRequestedRef.current = false
       setAgentProgress(null)
 
       const now = new Date().toISOString()
-      const activeSession = sessionsRef.current.find((session) => session.id === sessionId)
       const firstRequestTitle = activeSession?.draft && activeSession.displayNameSource !== 'user'
         ? automaticSessionTitle(content)
         : undefined
@@ -1090,7 +1138,7 @@ export function useSessions(): UseSessions {
         }
       })()
     },
-    [activeId, attachEventStream, broadcastSessionChange, running, updateSession, updateSessionMessages],
+    [activeId, attachEventStream, broadcastSessionChange, historyFailures, running, updateSession, updateSessionMessages],
   )
 
   const approveTool = useCallback(
@@ -1247,11 +1295,12 @@ export function useSessions(): UseSessions {
     skills,
     mcpServers,
     loading,
-    historyLoading,
+    historyStatus,
     running,
     stopping,
     agentProgress,
     refreshWorkspaces,
+    retryHistory,
     select,
     createSession,
     sendMessage,

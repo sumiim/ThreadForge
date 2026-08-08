@@ -354,6 +354,7 @@ def run_agent(
                         "router_model_client": resolved_router_client,
                         "node_child_states": node_child_states,
                         "run_metadata_collector": run_metadata_collector,
+                        "plan_budget_runtime": {},
                     }
                 },
             )

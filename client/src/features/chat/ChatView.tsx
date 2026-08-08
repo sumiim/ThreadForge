@@ -1,6 +1,8 @@
 import { Button, Spin } from 'antd'
+import { ReloadOutlined } from '@ant-design/icons'
 import Logo from '../../components/Logo'
 import type { AgentProgress, Session } from '../../api/types'
+import type { HistoryStatus } from '../../hooks/session-state'
 import ApprovalNotice from './ApprovalNotice'
 import MessageList from './MessageList'
 import Composer from './Composer'
@@ -8,11 +10,12 @@ import RunMinimap from './RunMinimap'
 
 interface ChatViewProps {
   session: Session
-  historyLoading: boolean
+  historyStatus: HistoryStatus
   running: boolean
   stopping: boolean
   agentProgress: AgentProgress | null
   onSend: Parameters<typeof Composer>[0]['onSend']
+  onRetryHistory: () => void
   onStop: () => void
   onSelectRun: (runId: string) => void
   onApprove: (messageId: string, toolCallId: string) => void
@@ -32,7 +35,7 @@ const phaseLabels: Record<string, string> = {
   FINAL: '已完成',
 }
 
-export default function ChatView({ session, historyLoading, running, stopping, agentProgress, onSend, onStop, onSelectRun, onApprove, onReject }: ChatViewProps) {
+export default function ChatView({ session, historyStatus, running, stopping, agentProgress, onSend, onRetryHistory, onStop, onSelectRun, onApprove, onReject }: ChatViewProps) {
   const empty = session.messages.length === 0
 
   // 待审批的工具调用（per_call_only，逐次审批）
@@ -84,11 +87,17 @@ export default function ChatView({ session, historyLoading, running, stopping, a
         activeRunId={session.activeRunId ?? session.lastRunId}
         onSelectRun={onSelectRun}
       />
-      {historyLoading && !session.draft ? (
+      {historyStatus === 'loading' && !session.draft ? (
         <div id="run-scroll-container" className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-sm text-stone-500" role="status">
           <Spin size="large" />
           <span>正在读取历史记录...</span>
           <span className="text-xs text-stone-400">正在加载会话消息和运行记录</span>
+        </div>
+      ) : historyStatus === 'error' && !session.draft ? (
+        <div id="run-scroll-container" className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 text-center" role="alert">
+          <div className="text-sm font-medium text-stone-800">历史记录加载失败</div>
+          <div className="text-xs text-stone-500">当前会话尚未就绪，为避免消息发往错误会话，发送功能已暂停。</div>
+          <Button icon={<ReloadOutlined />} onClick={onRetryHistory}>重新加载</Button>
         </div>
       ) : empty ? (
         // 空态：引导用户开始，无装饰元素
@@ -106,6 +115,7 @@ export default function ChatView({ session, historyLoading, running, stopping, a
               <Button
                 key={s}
                 shape="round"
+                disabled={historyStatus !== 'loaded'}
                 onClick={() => onSend(s)}
                 className="border-stone-200 text-stone-500 hover:!border-blue-500 hover:!text-blue-700"
               >
@@ -122,10 +132,12 @@ export default function ChatView({ session, historyLoading, running, stopping, a
       <ApprovalNotice count={pendingApprovals.length} onLocate={locatePending} />
 
       <Composer
+        key={session.id}
         model={session.model}
         modelOptions={session.modelOptions}
         running={running}
         stopping={stopping}
+        disabled={historyStatus !== 'loaded'}
         onSend={onSend}
         onStop={onStop}
       />
