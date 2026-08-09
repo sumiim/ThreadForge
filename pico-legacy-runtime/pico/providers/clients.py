@@ -10,7 +10,7 @@ import socket
 import time
 import urllib.error
 import urllib.request
-from http.client import RemoteDisconnected
+from http.client import IncompleteRead, RemoteDisconnected
 
 OPENAI_COMPATIBLE_USER_AGENT = "pico/0.1"
 RETRYABLE_HTTP_STATUSES = {408, 425, 429}
@@ -250,6 +250,79 @@ def _extract_openai_response_from_sse(body_text):
     return "", {}
 
 
+def _consume_openai_response_stream(response, *, on_text_delta=None, should_cancel=None):
+    """Consume an OpenAI Responses SSE body while it is still arriving.
+
+    The old implementation first buffered the entire response and only then
+    parsed SSE.  Keeping this parser line-oriented lets the runtime expose a
+    safe projection of final-answer deltas and also gives cancellation and
+    watchdogs a heartbeat during long reasoning calls.
+    """
+    last_response = None
+    deltas = []
+    response_data = {}
+    done_text = ""
+
+    def emit_missing_suffix(text):
+        current = "".join(deltas)
+        if not text.startswith(current):
+            return
+        suffix = text[len(current):]
+        if not suffix:
+            return
+        deltas.append(suffix)
+        if on_text_delta is not None:
+            on_text_delta(suffix)
+
+    for raw_line in response:
+        if should_cancel is not None:
+            should_cancel()
+        if isinstance(raw_line, bytes):
+            line = raw_line.decode("utf-8", errors="replace")
+        else:
+            line = str(raw_line)
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        response_payload = event.get("response")
+        if isinstance(response_payload, dict):
+            last_response = response_payload
+            if event.get("type") == "response.completed":
+                response_data = response_payload
+        event_type = event.get("type", "")
+        if event_type == "response.output_text.delta":
+            delta = event.get("delta")
+            if isinstance(delta, str) and delta:
+                deltas.append(delta)
+                if on_text_delta is not None:
+                    on_text_delta(delta)
+            continue
+        if event_type == "response.output_text.done":
+            text = event.get("text")
+            if isinstance(text, str) and text:
+                emit_missing_suffix(text)
+                done_text = text
+                continue
+        if event_type == "response.completed" and isinstance(last_response, dict):
+            text = _extract_openai_text(last_response)
+            if text:
+                emit_missing_suffix(text)
+                done_text = text
+            break
+    if done_text:
+        return done_text, response_data or last_response or {}
+    if deltas:
+        return "".join(deltas), response_data or last_response or {}
+    return "", response_data or last_response or {}
+
+
 def _extract_usage_cache_details(data):
     # 把不同 OpenAI-compatible 返回里的 usage 字段整理成统一结构，
     # 让 runtime/trace/report 不需要关心 provider 细节。
@@ -301,7 +374,18 @@ class OpenAICompatibleModelClient:
         self.supports_prompt_cache = any(host in self.base_url for host in ("openai.com", "right.codes"))
         self.last_completion_metadata = {}
 
-    def complete(self, prompt, max_new_tokens, prompt_cache_key=None, prompt_cache_retention=None):
+    def complete(
+        self,
+        prompt,
+        max_new_tokens,
+        prompt_cache_key=None,
+        prompt_cache_retention=None,
+        *,
+        deadline_monotonic=None,
+        on_retry=None,
+        on_text_delta=None,
+        should_cancel=None,
+    ):
         """向 OpenAI-compatible `/responses` 接口发起一次模型调用。
 
         为什么存在：
@@ -333,7 +417,7 @@ class OpenAICompatibleModelClient:
                 }
             ],
             "max_output_tokens": max_new_tokens,
-            "stream": False,
+            "stream": True,
         }
         if self.reasoning_effort:
             payload["reasoning"] = {"effort": self.reasoning_effort}
@@ -350,7 +434,7 @@ class OpenAICompatibleModelClient:
 
         headers = {
             "Content-Type": "application/json",
-            "Accept": "application/json",
+            "Accept": "text/event-stream",
             "User-Agent": OPENAI_COMPATIBLE_USER_AGENT,
         }
         if self.api_key:
@@ -362,22 +446,79 @@ class OpenAICompatibleModelClient:
             headers=headers,
             method="POST",
         )
+        def check_cancelled():
+            if should_cancel is not None:
+                should_cancel()
+
+        def remaining_timeout(attempt):
+            check_cancelled()
+            if deadline_monotonic is None:
+                return self.timeout
+            remaining = float(deadline_monotonic) - time.monotonic()
+            if remaining <= 0:
+                self.last_completion_metadata = {
+                    "provider_error_code": "model_timeout",
+                    "provider_error_retryable": True,
+                    "provider_request_attempts": int(attempt),
+                }
+                raise ModelProviderError("model_timeout", retryable=True, attempts=attempt)
+            return min(float(self.timeout), remaining)
+
+        def notify_retry(attempt, error, delay):
+            if on_retry is not None:
+                on_retry(
+                    {
+                        "attempt": int(attempt),
+                        "max_attempts": int(self.max_attempts),
+                        "error_code": str(getattr(error, "code", "model_connection_error")),
+                        "retry_delay_seconds": float(delay),
+                    }
+                )
+
         for attempt in range(1, self.max_attempts + 1):
+            check_cancelled()
             try:
-                with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                    body_text = response.read().decode("utf-8")
+                with urllib.request.urlopen(request, timeout=remaining_timeout(attempt)) as response:
                     headers = getattr(response, "headers", {}) or {}
                     content_type = headers.get("Content-Type", "")
+                    if content_type.startswith("text/event-stream"):
+                        streamed_text, response_data = _consume_openai_response_stream(
+                            response,
+                            on_text_delta=on_text_delta,
+                            should_cancel=check_cancelled,
+                        )
+                        self.last_completion_metadata = {
+                            "requested_reasoning_effort": self.reasoning_effort,
+                            "effective_reasoning_effort": self.reasoning_effort,
+                            "prompt_cache_supported": self.supports_prompt_cache,
+                            "prompt_cache_key": prompt_cache_key,
+                            "prompt_cache_retention": prompt_cache_retention,
+                            **_extract_usage_cache_details(response_data or {}),
+                        }
+                        if streamed_text:
+                            return streamed_text
+                        raise ModelProviderError("model_response_invalid", attempts=attempt)
+                    else:
+                        body_text = response.read().decode("utf-8")
+                        response_data = {}
                 break
             except urllib.error.HTTPError as exc:
                 provider_error = _provider_http_error(exc.code, attempt)
+                delay = _retry_delay(
+                    attempt,
+                    (getattr(exc, "headers", None) or {}).get("Retry-After", ""),
+                )
                 if provider_error.retryable and attempt < self.max_attempts:
-                    time.sleep(
-                        _retry_delay(
-                            attempt,
-                            (getattr(exc, "headers", None) or {}).get("Retry-After", ""),
-                        )
-                    )
+                    if deadline_monotonic is not None and time.monotonic() + delay >= deadline_monotonic:
+                        provider_error.attempts = attempt
+                        self.last_completion_metadata = {
+                            "provider_error_code": provider_error.code,
+                            "provider_error_retryable": provider_error.retryable,
+                            "provider_request_attempts": attempt,
+                        }
+                        raise provider_error from exc
+                    notify_retry(attempt, provider_error, delay)
+                    time.sleep(delay)
                     continue
                 self.last_completion_metadata = {
                     "provider_error_code": provider_error.code,
@@ -385,18 +526,42 @@ class OpenAICompatibleModelClient:
                     "provider_request_attempts": provider_error.attempts,
                 }
                 raise provider_error from exc
-            except (urllib.error.URLError, RemoteDisconnected, TimeoutError, socket.timeout, ConnectionError) as exc:
-                if attempt < self.max_attempts:
-                    time.sleep(_retry_delay(attempt))
-                    continue
+            except (
+                urllib.error.URLError,
+                IncompleteRead,
+                RemoteDisconnected,
+                TimeoutError,
+                socket.timeout,
+                ConnectionError,
+            ) as exc:
+                delay = _retry_delay(attempt)
                 reason = getattr(exc, "reason", exc)
-                code = (
+                connection_code = (
                     "model_timeout"
                     if isinstance(reason, (TimeoutError, socket.timeout))
                     else "model_connection_error"
                 )
+                connection_error = ModelProviderError(
+                    connection_code,
+                    retryable=True,
+                    attempts=attempt,
+                )
+                if attempt < self.max_attempts:
+                    if deadline_monotonic is not None and time.monotonic() + delay >= deadline_monotonic:
+                        provider_error = ModelProviderError(
+                            "model_timeout", retryable=True, attempts=attempt
+                        )
+                        self.last_completion_metadata = {
+                            "provider_error_code": provider_error.code,
+                            "provider_error_retryable": True,
+                            "provider_request_attempts": attempt,
+                        }
+                        raise provider_error from exc
+                    notify_retry(attempt, connection_error, delay)
+                    time.sleep(delay)
+                    continue
                 provider_error = ModelProviderError(
-                    code,
+                    connection_code,
                     retryable=True,
                     attempts=attempt,
                 )
@@ -465,10 +630,17 @@ class AnthropicCompatibleModelClient:
         self.supports_prompt_cache = False
         self.last_completion_metadata = {}
 
-    def complete(self, prompt, max_new_tokens, prompt_cache_key=None, prompt_cache_retention=None):
+    def complete(
+        self,
+        prompt,
+        max_new_tokens,
+        prompt_cache_key=None,
+        prompt_cache_retention=None,
+        **kwargs,
+    ):
         # 为了保持统一接口，runtime 仍然会传缓存参数进来；
         # 这里只是显式丢弃，因为当前 Anthropic-compatible 路径没有接缓存复用。
-        del prompt_cache_key, prompt_cache_retention
+        del prompt_cache_key, prompt_cache_retention, kwargs
         self.last_completion_metadata = {}
         payload = {
             "model": self.model,

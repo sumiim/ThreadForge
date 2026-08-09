@@ -808,6 +808,44 @@ def test_v11_conversation_accepts_scalar_plan_fields_and_zero_tool_budget(tmp_pa
     assert result.task_state.tool_steps == 0
 
 
+def test_v11_route_plan_repair_attempts_share_one_deadline(tmp_path):
+    from langgraph_pico import run_agent
+
+    plan = json.loads(_v11_plan("conversation", []))
+    plan["steps"][0]["required_evidence"] = []
+
+    class DeadlineModelClient(FakeModelClient):
+        def __init__(self, outputs):
+            super().__init__(outputs)
+            self.deadlines = []
+
+        def complete(self, prompt, max_new_tokens, **kwargs):
+            if "planning" in prompt.lower() or "route" in prompt.lower():
+                self.deadlines.append(kwargs.get("deadline_monotonic"))
+            return super().complete(prompt, max_new_tokens, **kwargs)
+
+    client = DeadlineModelClient(
+        [
+            "invalid route",
+            json.dumps(plan),
+            '{"answer":"done"}',
+        ]
+    )
+    agent, _, _ = _build_runtime(tmp_path, [], model_client=client)
+
+    result = run_agent(
+        agent,
+        "Explain the approach",
+        task_mode="auto",
+        enable_planning=True,
+        planning_deadline_seconds=75,
+    )
+
+    assert result.final_answer == "done"
+    assert len(client.deadlines) == 2
+    assert client.deadlines[0] == client.deadlines[1]
+
+
 def test_v11_conversation_normalizes_budget_below_observed_planning_usage(tmp_path):
     from langgraph_pico import run_agent
 

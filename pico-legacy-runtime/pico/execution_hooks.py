@@ -47,6 +47,10 @@ class ExecutionHooks(Protocol):
 
     def commentary(self, task_state, text: str) -> None: ...
 
+    def model_retrying(self, task_state, stage: str, details: dict) -> None: ...
+
+    def model_text_delta(self, task_state, stage: str, text: str) -> None: ...
+
 
 class NoopExecutionHooks:
     """Default hooks; CLI behavior is unchanged."""
@@ -67,4 +71,10 @@ class NoopExecutionHooks:
         return None
 
     def commentary(self, task_state, text: str) -> None:
+        return None
+
+    def model_retrying(self, task_state, stage: str, details: dict) -> None:
+        return None
+
+    def model_text_delta(self, task_state, stage: str, text: str) -> None:
         return None

@@ -217,6 +217,12 @@ class AgentLoop:
                 agent.max_new_tokens,
                 prompt_cache_key=prompt_cache_key,
                 prompt_cache_retention=prompt_cache_retention,
+                on_retry=lambda details: getattr(
+                    hooks, "model_retrying", lambda *_args: None
+                )(task_state, "execute", details),
+                on_text_delta=lambda delta: getattr(
+                    hooks, "model_text_delta", lambda *_args: None
+                )(task_state, "execute", delta),
             )
             completion_metadata = dict(getattr(agent.model_client, "last_completion_metadata", {}) or {})
             task_state.record_model_usage(completion_metadata)

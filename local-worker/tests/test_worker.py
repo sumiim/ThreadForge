@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import time
@@ -861,6 +862,56 @@ def test_remote_execution_hooks_publish_read_only_preview_and_hide_risky_result(
     assert "result_preview" not in events[-1][1]
     hooks.commentary(None, "still working")
     assert events[-1] == ("assistant.commentary", {"text": "still working"})
+
+
+def test_remote_execution_hooks_stream_only_final_answer_projection():
+    events = []
+    hooks = RemoteExecutionHooks(lambda event_type, data: events.append((event_type, data)), CancellationToken())
+
+    hooks.before_model(None)
+    hooks.model_text_delta(None, "execute", '<tool>{"name":"read_file"}</tool>')
+    assert not [item for item in events if item[0] == "assistant.delta"]
+
+    hooks.before_model(None)
+    for delta in ("prefix", "<fi", "nal>hel", "lo</fi", "nal>"):
+        hooks.model_text_delta(None, "execute", delta)
+    assert "".join(data["text"] for event, data in events if event == "assistant.delta") == "hello"
+
+    visible_count = len([item for item in events if item[0] == "assistant.delta"])
+    hooks.before_model(None)
+    hooks.model_text_delta(None, "review", "<final>private review</final>")
+    assert len([item for item in events if item[0] == "assistant.delta"]) == visible_count
+
+    hooks.model_retrying(
+        None,
+        "planning",
+        {
+            "attempt": 1,
+            "max_attempts": 2,
+            "error_code": "model_timeout",
+            "retry_delay_seconds": 0.5,
+        },
+    )
+    assert events[-1][0] == "model.retrying"
+    assert events[-1][1]["stage"] == "planning"
+    assert events[-1][1]["reset_stream"] is True
+
+
+def test_remote_execution_hooks_redact_secret_split_across_deltas():
+    events = []
+    secret = "split-secret-value"
+    with patch.dict(os.environ, {"PICO_OPENAI_API_KEY": secret}, clear=False):
+        hooks = RemoteExecutionHooks(
+            lambda event_type, data: events.append((event_type, data)),
+            CancellationToken(),
+        )
+        hooks.before_model(None)
+        hooks.model_text_delta(None, "execute", "<final>public split-se")
+        hooks.model_text_delta(None, "execute", "cret-value done</final>")
+
+    visible = "".join(data["text"] for event, data in events if event == "assistant.delta")
+    assert visible == "public <redacted> done"
+    assert secret not in visible
 
 
 def test_runtime_completes_with_fake_model_without_provider_call(tmp_path):

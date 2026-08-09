@@ -8,6 +8,7 @@ import {
   deleteWorkspace as apiDeleteWorkspace,
   friendlyMessage,
   getSession,
+  getTask,
   getRuntimeConfig,
   listMcpServers,
   listSessions,
@@ -205,6 +206,7 @@ export function useSessions(): UseSessions {
   const channelRef = useRef<BroadcastChannel | null>(null)
   const esRef = useRef<EventSource | null>(null)
   const postToolWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const reconcileTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   // approval_id -> tool call（approval.required 建立，resolved 时回查）
   const approvalMapRef = useRef<Map<string, string>>(new Map())
   // 事件回调里需要读到最新 sessions（在 effect 中同步，避免 render 期间改 ref）
@@ -248,6 +250,7 @@ export function useSessions(): UseSessions {
   useEffect(
     () => () => {
       if (postToolWatchdogRef.current) clearTimeout(postToolWatchdogRef.current)
+      if (reconcileTimerRef.current) clearInterval(reconcileTimerRef.current)
       esRef.current?.close()
       esRef.current = null
     },
@@ -310,6 +313,10 @@ export function useSessions(): UseSessions {
       clearTimeout(postToolWatchdogRef.current)
       postToolWatchdogRef.current = null
     }
+    if (reconcileTimerRef.current) {
+      clearInterval(reconcileTimerRef.current)
+      reconcileTimerRef.current = null
+    }
     setRunning(false)
     setStopping(false)
     setAgentProgress(null)
@@ -370,6 +377,35 @@ export function useSessions(): UseSessions {
       esRef.current?.close()
       const es = openTaskEventStream(taskId)
       esRef.current = es
+      es.addEventListener('error', () => {
+        const current = activeRunRef.current
+        if (!current || current.taskId !== taskId) return
+        setAgentProgress((progress) => progress ? {
+          ...progress,
+          nextStep: '实时连接正在恢复，任务状态仍会自动对账',
+          reason: 'sse_reconnecting',
+        } : progress)
+      })
+      if (reconcileTimerRef.current) clearInterval(reconcileTimerRef.current)
+      reconcileTimerRef.current = setInterval(() => {
+        const activeRun = activeRunRef.current
+        if (!activeRun || activeRun.taskId !== taskId) return
+        void getTask(taskId).then((snapshot) => {
+          const current = activeRunRef.current
+          if (!current || current.taskId !== taskId) return
+          const finalAnswer = getFinalAnswer(snapshot as unknown as Record<string, unknown>)
+            ?? terminalFailureMessage(snapshot as unknown as Record<string, unknown>)
+          if (finalAnswer) {
+            updateSessionMessages(sessionId, (messages) => messages.map((message) =>
+              message.id === assistantId ? { ...message, content: finalAnswer } : message,
+            ))
+          }
+          if (TERMINAL_STATUSES.has(snapshot.status)) finishRun(snapshot.status)
+        }).catch(() => {
+          // SSE remains the primary path. A transient reconciliation failure
+          // must not turn a healthy run into a client-side failure.
+        })
+      }, 7_000)
 
       const parse = (event: MessageEvent) => {
         try {
@@ -546,6 +582,40 @@ export function useSessions(): UseSessions {
           }
           case 'model.started':
           case 'model.completed': {
+            return
+          }
+          case 'model.heartbeat': {
+            const seconds = Math.max(0, Math.floor(Number(data.elapsed_seconds ?? 0)))
+            setAgentProgress((current) => current ? {
+              ...current,
+              nextStep: `模型正在${String(data.stage ?? '') === 'planning' ? '规划' : '推理'}（已等待 ${seconds} 秒）`,
+              reason: 'model_streaming',
+            } : current)
+            return
+          }
+          case 'model.retrying': {
+            const attempt = Number(data.attempt ?? 1)
+            const maxAttempts = Number(data.max_attempts ?? 1)
+            const stage = String(data.stage ?? '') === 'planning' ? '规划' : '执行'
+            setAgentProgress((current) => current ? {
+              ...current,
+              nextStep: `模型${stage}请求暂时失败，正在重试（${attempt + 1}/${maxAttempts}）`,
+              reason: String(data.error_code ?? 'model_retrying'),
+            } : current)
+            if (data.reset_stream === true) {
+              updateSessionMessages(sessionId, (messages) => messages.map((message) =>
+                message.id === assistantId ? { ...message, content: '' } : message,
+              ))
+            }
+            appendActivity(envelope, '模型请求重试', `${stage}阶段 ${attempt + 1}/${maxAttempts}`)
+            return
+          }
+          case 'assistant.delta': {
+            const text = String(data.text ?? '')
+            if (!text) return
+            updateSessionMessages(sessionId, (messages) => messages.map((message) =>
+              message.id === assistantId ? { ...message, content: `${message.content}${text}` } : message,
+            ))
             return
           }
           case 'plan.created': {
@@ -735,6 +805,9 @@ export function useSessions(): UseSessions {
         'agent.state',
         'model.started',
         'model.completed',
+        'model.retrying',
+        'model.heartbeat',
+        'assistant.delta',
         'plan.created',
         'assistant.commentary',
         'review.started',

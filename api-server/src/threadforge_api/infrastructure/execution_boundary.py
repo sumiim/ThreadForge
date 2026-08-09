@@ -113,3 +113,18 @@ class ExecutionBoundary:
                 "assistant.commentary",
                 {"text": str(text)[:1000]},
             )
+
+    def model_retrying(self, task_state, stage: str, details: dict) -> None:
+        with self._gate:
+            self._check()
+            self._publisher.publish(
+                self._task_id,
+                self._run_id,
+                "model.retrying",
+                {"stage": str(stage), **dict(details or {})},
+            )
+
+    def model_text_delta(self, task_state, stage: str, text: str) -> None:
+        # Native server execution keeps protocol output private. Local Worker
+        # execution applies the final-answer projector before publishing deltas.
+        return None

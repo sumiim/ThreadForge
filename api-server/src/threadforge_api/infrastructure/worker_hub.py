@@ -44,6 +44,9 @@ from .device_store import Device, DeviceStore, WorkerWorkspace
 _PUBLIC_WORKER_EVENTS = {
     "model.started",
     "model.completed",
+    "model.retrying",
+    "model.heartbeat",
+    "assistant.delta",
     "tool.requested",
     "tool.started",
     "tool.completed",
@@ -1911,6 +1914,23 @@ def _sanitize_event_data(event_type: str, data: dict) -> dict:
         }
     if event_type == "model.started":
         return {}
+    if event_type == "model.retrying":
+        return {
+            "stage": str(data.get("stage", ""))[:32],
+            "attempt": max(1, _nonnegative_int(data.get("attempt", 1))),
+            "max_attempts": max(1, _nonnegative_int(data.get("max_attempts", 1))),
+            "error_code": str(data.get("error_code", ""))[:100],
+            "retry_delay_seconds": _nonnegative_float(data.get("retry_delay_seconds", 0.0)),
+            "elapsed_seconds": _nonnegative_float(data.get("elapsed_seconds", 0.0)),
+            "reset_stream": bool(data.get("reset_stream", False)),
+        }
+    if event_type == "model.heartbeat":
+        return {
+            "stage": str(data.get("stage", ""))[:32],
+            "elapsed_seconds": _nonnegative_float(data.get("elapsed_seconds", 0.0)),
+        }
+    if event_type == "assistant.delta":
+        return {"text": redact_artifact(str(data.get("text", ""))[:4000])}
     if event_type == "assistant.commentary":
         return {"text": redact_artifact(str(data.get("text", ""))[:1000])}
     if event_type == "plan.created":
@@ -2027,6 +2047,13 @@ def _nonnegative_int(value) -> int:
         return max(0, int(value))
     except (TypeError, ValueError):
         return 0
+
+
+def _nonnegative_float(value) -> float:
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _safe_relative_path(value) -> str | None:

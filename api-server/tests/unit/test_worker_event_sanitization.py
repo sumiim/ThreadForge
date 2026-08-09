@@ -70,3 +70,33 @@ def test_agent_state_event_is_bounded_and_does_not_expose_evidence():
     assert state["checklist"] == ["one", "two"]
     assert state["tool_steps"] == 2
     assert "secret_output" not in state
+
+
+def test_streaming_events_keep_only_safe_public_fields():
+    retrying = _sanitize_event_data(
+        "model.retrying",
+        {
+            "stage": "planning",
+            "attempt": 1,
+            "max_attempts": 2,
+            "error_code": "model_timeout",
+            "retry_delay_seconds": "0.5",
+            "private_error": "provider stack trace",
+            "reset_stream": True,
+        },
+    )
+    delta = _sanitize_event_data(
+        "assistant.delta",
+        {"text": "visible answer", "planning_json": "must not pass"},
+    )
+
+    assert retrying == {
+        "stage": "planning",
+        "attempt": 1,
+        "max_attempts": 2,
+        "error_code": "model_timeout",
+        "retry_delay_seconds": 0.5,
+        "elapsed_seconds": 0.0,
+        "reset_stream": True,
+    }
+    assert delta == {"text": "visible answer"}
