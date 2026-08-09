@@ -367,6 +367,16 @@ def test_route_first_direct_answer_finishes_in_router(tmp_path):
     assert model_client.outputs == []
 
 
+def test_v11_run_wide_model_budget_is_independent_from_one_agent_loop(tmp_path):
+    from langgraph_pico.graph import PLAN_MAXIMUM_BUDGETS, _plan_limits
+
+    agent, _, _ = _build_runtime(tmp_path, [])
+    agent.max_total_steps = 18
+
+    assert agent.max_total_steps < PLAN_MAXIMUM_BUDGETS["model_rounds"]
+    assert _plan_limits({"step_budget": agent.max_steps}, agent)["model_rounds"] == 64
+
+
 def test_continuation_reuses_workspace_context_and_stays_read_only(tmp_path):
     from langgraph_pico import run_agent
 

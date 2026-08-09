@@ -140,12 +140,9 @@ def _safe_completion_metadata(agent, model_client):
 
 
 def _plan_limits(state, agent):
+    """Return run-wide limits without conflating them with one agent loop."""
     limits = dict(PLAN_MAXIMUM_BUDGETS)
     limits["tool_calls"] = min(limits["tool_calls"], max(1, int(state["step_budget"])))
-    limits["model_rounds"] = min(
-        limits["model_rounds"],
-        max(1, int(agent.max_total_steps or limits["model_rounds"])),
-    )
     return limits
 
 
@@ -213,7 +210,17 @@ def _budget_failure(state, config):
         return _failed_state(
             state,
             "budget_exhausted",
-            "System run budget was exhausted: " + ", ".join(hard_exceeded),
+            "系统运行预算已耗尽："
+            + "、".join(
+                {
+                    "model_rounds": "模型调用轮次",
+                    "tool_calls": "工具调用次数",
+                    "input_tokens": "输入 Token",
+                    "output_tokens": "输出 Token",
+                    "elapsed_seconds": "运行时间",
+                }.get(key, key)
+                for key in hard_exceeded
+            ),
         )
 
     plan = state["plan"]
