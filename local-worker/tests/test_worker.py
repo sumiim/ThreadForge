@@ -897,6 +897,55 @@ def test_remote_execution_hooks_stream_only_final_answer_projection():
     assert events[-1][1]["reset_stream"] is True
 
 
+def test_remote_execution_hooks_commit_only_accepted_answer_candidate():
+    events = []
+    hooks = RemoteExecutionHooks(
+        lambda event_type, data: events.append((event_type, data)),
+        CancellationToken(),
+    )
+
+    hooks.begin_answer_candidate(None)
+    hooks.before_model(None)
+    hooks.model_text_delta(None, "execute", "<final>rejected answer</final>")
+    assert not [item for item in events if item[0] == "assistant.delta"]
+    hooks.discard_answer_candidate(None)
+    assert not [item for item in events if item[0] == "assistant.delta"]
+
+    hooks.begin_answer_candidate(None)
+    hooks.before_model(None)
+    hooks.model_text_delta(None, "execute", "<final>accepted answer</final>")
+    hooks.commit_answer_candidate(None)
+
+    visible = "".join(data["text"] for event, data in events if event == "assistant.delta")
+    assert visible == "accepted answer"
+
+
+def test_remote_execution_hooks_review_retry_keeps_answer_candidate():
+    events = []
+    hooks = RemoteExecutionHooks(
+        lambda event_type, data: events.append((event_type, data)),
+        CancellationToken(),
+    )
+
+    hooks.begin_answer_candidate(None)
+    hooks.before_model(None)
+    hooks.model_text_delta(None, "execute", "<final>accepted after review</final>")
+    hooks.model_retrying(
+        None,
+        "review",
+        {
+            "attempt": 1,
+            "max_attempts": 2,
+            "error_code": "model_timeout",
+            "retry_delay_seconds": 0.5,
+        },
+    )
+    hooks.commit_answer_candidate(None)
+
+    visible = "".join(data["text"] for event, data in events if event == "assistant.delta")
+    assert visible == "accepted after review"
+
+
 def test_remote_execution_hooks_redact_secret_split_across_deltas():
     events = []
     secret = "split-secret-value"

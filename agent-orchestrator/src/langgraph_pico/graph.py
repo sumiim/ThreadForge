@@ -377,6 +377,12 @@ def _planned_read_tools(state, agent):
     return tuple(required)
 
 
+def _begin_answer_candidate(agent):
+    getattr(agent.execution_hooks, "begin_answer_candidate", lambda *_args: None)(
+        agent.current_task_state
+    )
+
+
 def _create_isolated_executor(
     agent,
     *,
@@ -1257,6 +1263,7 @@ def _conversation_answer(state, config):
     answer_attempts = 0
 
     for attempt in range(1, MAX_CONVERSATION_ATTEMPTS + 1):
+        _begin_answer_candidate(agent)
         answer_attempts = attempt
         _record_graph_model_attempt(
             agent,
@@ -1342,6 +1349,7 @@ def _read_only_answer(state, config):
         observed_tools = _successful_read_tool_names(agent, config)
         missing_tools = tuple(name for name in required_tools if name not in observed_tools)
         require_evidence = state["planning_enabled"] and not observed_tools
+        _begin_answer_candidate(agent)
         executor = _create_isolated_executor(
             agent,
             allowed_tools=read_allowed,
@@ -1501,6 +1509,7 @@ def execute_change_node(state: AgentState, config: RunnableConfig) -> AgentState
                 "No executable tools are permitted by the parent agent.",
             )
         else:
+            _begin_answer_candidate(agent)
             executor = _create_isolated_executor(
                 agent,
                 allowed_tools=exec_allowed,

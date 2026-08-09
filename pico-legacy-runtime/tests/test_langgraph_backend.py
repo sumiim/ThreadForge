@@ -8,7 +8,7 @@ from pico import Pico
 from pico.evaluation.backends import build_backend_runner
 from pico.evaluation.evaluator import _scripted_outputs_for_task, load_benchmark
 from pico.event_sink import NullSink
-from pico.execution_hooks import RunCancelled
+from pico.execution_hooks import NoopExecutionHooks, RunCancelled
 from pico.providers.clients import FakeModelClient
 from pico.run_store import RunStore
 from pico.session_store import SessionStore
@@ -35,7 +35,14 @@ def _run_task(tmp_path, task, outputs, *, null_sink=False):
     return result, fixture_root
 
 
-def _build_runtime(tmp_path, outputs, *, allowed_tools=None, model_client=None):
+def _build_runtime(
+    tmp_path,
+    outputs,
+    *,
+    allowed_tools=None,
+    model_client=None,
+    execution_hooks=None,
+):
     source = Path("tests/fixtures/bench_repo_readme")
     fixture_root = tmp_path / "runtime-workspace"
     shutil.copytree(source, fixture_root)
@@ -49,6 +56,7 @@ def _build_runtime(tmp_path, outputs, *, allowed_tools=None, model_client=None):
         max_steps=6,
         allowed_tools=allowed_tools or ["delegate", "list_files", "read_file", "search", "patch_file"],
         event_sink=NullSink(),
+        execution_hooks=execution_hooks,
     )
     return agent, model_client, fixture_root
 
@@ -726,6 +734,90 @@ def test_v11_read_only_fails_without_current_run_evidence(tmp_path):
     assert result.task_state.stop_reason == "runtime_error"
     assert "no successful workspace evidence" in result.final_answer
     assert any(event.get("event") == "required_tools_retry" for event in result.events)
+
+
+def test_v11_rejected_answer_candidates_are_discarded(tmp_path):
+    from langgraph_pico import run_agent
+
+    class TransactionHooks(NoopExecutionHooks):
+        def __init__(self):
+            self.begins = 0
+            self.commits = 0
+            self.discards = 0
+
+        def begin_answer_candidate(self, task_state):
+            self.begins += 1
+
+        def commit_answer_candidate(self, task_state):
+            self.commits += 1
+
+        def discard_answer_candidate(self, task_state):
+            self.discards += 1
+
+    hooks = TransactionHooks()
+    agent, _, _ = _build_runtime(
+        tmp_path,
+        [
+            _v11_plan("read_only", ["read_file"]),
+            "<final>Ungrounded first answer.</final>",
+            "<final>Ungrounded retry answer.</final>",
+        ],
+        execution_hooks=hooks,
+    )
+
+    result = run_agent(
+        agent,
+        "Inspect README",
+        task_mode="auto",
+        requires_research=False,
+        enable_planning=True,
+    )
+
+    assert result.task_state.stop_reason == "runtime_error"
+    assert hooks.begins == 2
+    assert hooks.commits == 0
+    assert hooks.discards >= 1
+
+
+def test_v11_accepted_answer_candidate_commits_after_review(tmp_path):
+    from langgraph_pico import run_agent
+
+    class TransactionHooks(NoopExecutionHooks):
+        def __init__(self):
+            self.events = []
+
+        def begin_answer_candidate(self, task_state):
+            self.events.append("begin")
+
+        def commit_answer_candidate(self, task_state):
+            self.events.append("commit")
+
+        def discard_answer_candidate(self, task_state):
+            self.events.append("discard")
+
+    hooks = TransactionHooks()
+    agent, _, _ = _build_runtime(
+        tmp_path,
+        [
+            _v11_plan("read_only", ["read_file"]),
+            '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
+            "<final>Grounded answer.</final>",
+            "status: pass\nThe answer is grounded.",
+        ],
+        execution_hooks=hooks,
+    )
+
+    result = run_agent(
+        agent,
+        "Inspect README",
+        task_mode="auto",
+        requires_research=False,
+        enable_planning=True,
+    )
+
+    assert result.task_state.stop_reason == "final_answer_returned"
+    assert result.final_answer == "Grounded answer."
+    assert hooks.events == ["begin", "commit"]
 
 
 def test_v11_research_evidence_can_ground_answer_without_duplicate_read(tmp_path):

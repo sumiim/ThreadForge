@@ -353,6 +353,7 @@ class OpenAICompatibleModelClient:
         reasoning_effort=None,
         supported_reasoning_efforts=(),
         supports_temperature_with_reasoning=False,
+        instructions=None,
     ):
         self.model = model
         self.base_url = _normalize_versioned_base_url(base_url)
@@ -366,6 +367,7 @@ class OpenAICompatibleModelClient:
         if self.reasoning_effort and self.reasoning_effort not in self.supported_reasoning_efforts:
             raise ValueError("reasoning_effort is not supported by this provider/model")
         self.supports_temperature_with_reasoning = bool(supports_temperature_with_reasoning)
+        self.instructions = str(instructions or "").strip()
         if not isinstance(max_attempts, int) or max_attempts < 1:
             raise ValueError("max_attempts must be a positive integer")
         self.max_attempts = max_attempts
@@ -419,6 +421,8 @@ class OpenAICompatibleModelClient:
             "max_output_tokens": max_new_tokens,
             "stream": True,
         }
+        if self.instructions:
+            payload["instructions"] = self.instructions
         if self.reasoning_effort:
             payload["reasoning"] = {"effort": self.reasoning_effort}
         if self.temperature is not None and (

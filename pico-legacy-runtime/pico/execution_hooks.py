@@ -51,6 +51,12 @@ class ExecutionHooks(Protocol):
 
     def model_text_delta(self, task_state, stage: str, text: str) -> None: ...
 
+    def begin_answer_candidate(self, task_state) -> None: ...
+
+    def commit_answer_candidate(self, task_state) -> None: ...
+
+    def discard_answer_candidate(self, task_state) -> None: ...
+
 
 class NoopExecutionHooks:
     """Default hooks; CLI behavior is unchanged."""
@@ -77,4 +83,13 @@ class NoopExecutionHooks:
         return None
 
     def model_text_delta(self, task_state, stage: str, text: str) -> None:
+        return None
+
+    def begin_answer_candidate(self, task_state) -> None:
+        return None
+
+    def commit_answer_candidate(self, task_state) -> None:
+        return None
+
+    def discard_answer_candidate(self, task_state) -> None:
         return None
