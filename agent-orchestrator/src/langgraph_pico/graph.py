@@ -835,6 +835,11 @@ def _route_and_plan_initial_task(state: AgentState, config: RunnableConfig) -> A
                     maximum_budgets=maximum_budgets,
                     minimum_budgets=minimum_budgets,
                 )
+                if state["continuation_context"] and plan["intent"] == INTENT_CONVERSATION:
+                    raise PlanValidationError(
+                        "continuation_plan_lost_capability",
+                        "continuation plans must preserve workspace capability",
+                    )
                 decision = IntentDecision(
                     intent=plan["intent"],
                     requires_research=plan["intent"] != INTENT_CONVERSATION,
@@ -950,8 +955,14 @@ def _route_and_plan_initial_task(state: AgentState, config: RunnableConfig) -> A
             proposed_research,
             state["requires_research"],
         )
+        execution_state = state
+        if state["continuation_context"]:
+            execution_state = {
+                **state,
+                "task": state["continuation_context"],
+            }
         return _apply_initial_plan(
-            state,
+            execution_state,
             agent=agent,
             metadata_collector=metadata_collector,
             plan=plan,

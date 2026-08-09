@@ -438,8 +438,11 @@ def test_continuation_after_initial_model_failure_restores_workspace_route(tmp_p
         task_mode="auto",
         enable_planning=True,
     )
+    legacy_conversation_plan = json.loads(_v11_plan("conversation", []))
+    legacy_conversation_plan["steps"][0]["required_evidence"] = []
     model_client.outputs.extend(
         [
+            json.dumps(legacy_conversation_plan),
             _v11_plan("read_only", ["read_file"]),
             '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
             "<final>The architecture is documented in README.</final>",
@@ -458,6 +461,11 @@ def test_continuation_after_initial_model_failure_restores_workspace_route(tmp_p
     assert resumed.task_state.stop_reason == "final_answer_returned"
     assert resumed.task_state.intent == "read_only"
     assert any(child.read_files > 0 for child in resumed.child_task_states)
+    assert any(
+        event.get("event") == "intent_classification_rejected"
+        for event in resumed.events
+    )
+    assert "Read the project files and explain the architecture." in model_client.prompts[-3]
 
 
 def test_planned_conversation_without_tools_skips_review(tmp_path):
