@@ -53,6 +53,7 @@ from .planning import (
 MAX_FIX_ATTEMPTS = 2
 MAX_REPLAN_ATTEMPTS = 2
 MAX_REQUIRED_TOOL_ATTEMPTS = 2
+PLANNING_DEADLINE_SECONDS = 75.0
 READ_ONLY_TOOLS = ("list_files", "read_file", "search")
 COMPLETION_METADATA_KEYS = (
     "input_tokens",
@@ -256,11 +257,29 @@ def _budget_failure(state, config):
     return None
 
 
-def _complete_graph_model(agent, model_client, prompt, max_new_tokens, *, stage):
+def _complete_graph_model(
+    agent,
+    model_client,
+    prompt,
+    max_new_tokens,
+    *,
+    stage,
+    deadline_monotonic=None,
+):
     agent.cancellation_token.raise_if_cancelled()
     agent.execution_hooks.before_model(agent.current_task_state)
     try:
-        raw = model_client.complete(prompt, max_new_tokens)
+        raw = model_client.complete(
+            prompt,
+            max_new_tokens,
+            deadline_monotonic=deadline_monotonic,
+            on_retry=lambda details: getattr(
+                agent.execution_hooks, "model_retrying", lambda *_args: None
+            )(agent.current_task_state, stage, details),
+            on_text_delta=lambda delta: getattr(
+                agent.execution_hooks, "model_text_delta", lambda *_args: None
+            )(agent.current_task_state, stage, delta),
+        )
     except Exception as exc:
         if hasattr(exc, "at_stage"):
             exc.at_stage(stage)
@@ -421,6 +440,9 @@ def prepare_plan_node(state: AgentState, config: RunnableConfig) -> AgentState:
     maximum_budgets = _plan_limits(state, agent)
     error_code = ""
     error_message = ""
+    planning_deadline = time.monotonic() + float(
+        configurable.get("planning_deadline_seconds", PLANNING_DEADLINE_SECONDS)
+    )
 
     if not is_replan and is_plain_conversation_request(state["task"]):
         minimum_budgets = _plan_minimum_budgets(state, config, maximum_budgets)
@@ -489,7 +511,7 @@ def prepare_plan_node(state: AgentState, config: RunnableConfig) -> AgentState:
         started_at = time.monotonic()
         raw = _complete_graph_model(
             agent,
-            agent.model_client,
+            configurable["router_model_client"],
             build_plan_prompt(
                 state["task"],
                 state["intent_context"],
@@ -506,6 +528,7 @@ def prepare_plan_node(state: AgentState, config: RunnableConfig) -> AgentState:
             ),
             PLANNER_MAX_NEW_TOKENS,
             stage="planning",
+            deadline_monotonic=planning_deadline,
         )
         try:
             plan = parse_and_validate_plan(
@@ -528,7 +551,9 @@ def prepare_plan_node(state: AgentState, config: RunnableConfig) -> AgentState:
                     "attempt": attempt,
                     "error_code": error_code,
                     "duration_ms": int((time.monotonic() - started_at) * 1000),
-                    "completion_metadata": _safe_completion_metadata(agent, agent.model_client),
+                    "completion_metadata": _safe_completion_metadata(
+                        agent, configurable["router_model_client"]
+                    ),
                 },
             )
             continue
@@ -569,7 +594,9 @@ def prepare_plan_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 ],
                 "duration_ms": int((time.monotonic() - started_at) * 1000),
                 "replan_reason": state["replan_reason"] if is_replan else "",
-                "completion_metadata": _safe_completion_metadata(agent, agent.model_client),
+                "completion_metadata": _safe_completion_metadata(
+                    agent, configurable["router_model_client"]
+                ),
             },
         )
         return {
@@ -700,6 +727,7 @@ def _apply_initial_plan(
     state: AgentState,
     *,
     agent,
+    model_client,
     metadata_collector,
     plan,
     attempt,
@@ -744,7 +772,7 @@ def _apply_initial_plan(
             ],
             "duration_ms": duration_ms,
             "replan_reason": "",
-            "completion_metadata": _safe_completion_metadata(agent, agent.model_client),
+            "completion_metadata": _safe_completion_metadata(agent, model_client),
         },
     )
     return {
@@ -773,6 +801,9 @@ def _route_and_plan_initial_task(state: AgentState, config: RunnableConfig) -> A
     maximum_budgets = _plan_limits(state, agent)
     minimum_budgets = _plan_minimum_budgets(state, config, maximum_budgets)
     error_message = ""
+    planning_deadline = time.monotonic() + float(
+        configurable.get("planning_deadline_seconds", PLANNING_DEADLINE_SECONDS)
+    )
 
     for attempt in range(1, MAX_PLAN_ATTEMPTS + 1):
         _record_graph_model_attempt(
@@ -798,7 +829,8 @@ def _route_and_plan_initial_task(state: AgentState, config: RunnableConfig) -> A
                 minimum_budgets=minimum_budgets,
             ),
             ROUTER_PLAN_MAX_NEW_TOKENS,
-            stage="intent",
+            stage="planning",
+            deadline_monotonic=planning_deadline,
         )
         duration_ms = int((time.monotonic() - started_at) * 1000)
         protocol_status = "valid"
@@ -964,6 +996,7 @@ def _route_and_plan_initial_task(state: AgentState, config: RunnableConfig) -> A
         return _apply_initial_plan(
             execution_state,
             agent=agent,
+            model_client=configurable["router_model_client"],
             metadata_collector=metadata_collector,
             plan=plan,
             attempt=attempt,

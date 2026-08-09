@@ -22,9 +22,11 @@ from pico.providers.clients import OpenAICompatibleModelClient
 from pico.run_lifecycle import finalize_failed_run
 from pico.run_store import RunStore
 from pico.security import (
+    detected_secret_env_items,
     public_tool_args_preview,
     public_tool_result_preview,
     redact_artifact,
+    redact_text,
 )
 from pico.session_store import SessionStore
 from pico.task_state import (
@@ -77,6 +79,7 @@ class CancellableModelClient:
 
     def complete(self, prompt, max_new_tokens, **kwargs):
         self._token.raise_if_cancelled()
+        kwargs.setdefault("should_cancel", self._token.raise_if_cancelled)
         outcome = queue.Queue(maxsize=1)
 
         def invoke() -> None:
@@ -153,6 +156,14 @@ class RemoteExecutionHooks:
         self._token = token
         self._active_tool_call_id = ""
         self._active_tool_name = ""
+        self._model_started_at = 0.0
+        self._last_heartbeat_at = 0.0
+        self._stream_buffer = ""
+        self._stream_mode = "pending"
+        self._redaction_buffer = ""
+        self._stream_secrets = tuple(
+            value for _, value in detected_secret_env_items() if value
+        )
 
     def _check(self) -> None:
         if self._token.is_cancelled():
@@ -160,6 +171,11 @@ class RemoteExecutionHooks:
 
     def before_model(self, task_state) -> None:
         self._check()
+        self._model_started_at = time.monotonic()
+        self._last_heartbeat_at = self._model_started_at
+        self._stream_buffer = ""
+        self._stream_mode = "pending"
+        self._redaction_buffer = ""
         self._send("model.started", {})
 
     def after_model(self, task_state, metadata: dict) -> None:
@@ -223,6 +239,96 @@ class RemoteExecutionHooks:
     def commentary(self, task_state, text: str) -> None:
         self._check()
         self._send("assistant.commentary", {"text": str(text)[:1000]})
+
+    def model_retrying(self, task_state, stage: str, details: dict) -> None:
+        self._check()
+        self._stream_buffer = ""
+        self._stream_mode = "pending"
+        self._redaction_buffer = ""
+        self._send(
+            "model.retrying",
+            {
+                "stage": str(stage)[:32],
+                "attempt": max(1, int(details.get("attempt", 1))),
+                "max_attempts": max(1, int(details.get("max_attempts", 1))),
+                "error_code": str(details.get("error_code", "model_connection_error"))[:100],
+                "retry_delay_seconds": max(0.0, float(details.get("retry_delay_seconds", 0.0))),
+                "elapsed_seconds": max(0.0, time.monotonic() - self._model_started_at),
+                "reset_stream": True,
+            },
+        )
+
+    def model_text_delta(self, task_state, stage: str, text: str) -> None:
+        self._check()
+        now = time.monotonic()
+        if now - self._last_heartbeat_at >= 1.0:
+            self._last_heartbeat_at = now
+            self._send(
+                "model.heartbeat",
+                {
+                    "stage": str(stage)[:32],
+                    "elapsed_seconds": max(0.0, now - self._model_started_at),
+                },
+            )
+        if stage != "execute" or self._stream_mode == "blocked":
+            return
+
+        self._stream_buffer += str(text)
+        if self._stream_mode == "pending":
+            marker_positions = [
+                (self._stream_buffer.find("<final>"), "final"),
+                (self._stream_buffer.find("<tool"), "blocked"),
+                (self._stream_buffer.find("<talk>"), "blocked"),
+            ]
+            marker_positions = [item for item in marker_positions if item[0] >= 0]
+            if not marker_positions:
+                self._stream_buffer = self._stream_buffer[-32:]
+                return
+            position, mode = min(marker_positions, key=lambda item: item[0])
+            self._stream_mode = mode
+            if mode != "final":
+                self._stream_buffer = ""
+                return
+            self._stream_buffer = self._stream_buffer[position + len("<final>"):]
+
+        closing = "</final>"
+        close_at = self._stream_buffer.find(closing)
+        completed = close_at >= 0
+        if completed:
+            visible = self._stream_buffer[:close_at]
+            self._stream_buffer = ""
+            self._stream_mode = "blocked"
+        else:
+            keep = len(closing) - 1
+            if len(self._stream_buffer) <= keep:
+                return
+            visible = self._stream_buffer[:-keep]
+            self._stream_buffer = self._stream_buffer[-keep:]
+        self._emit_public_delta(visible, completed=completed)
+
+    def _emit_public_delta(self, text: str, *, completed: bool) -> None:
+        self._redaction_buffer += str(text)
+        if completed:
+            visible = redact_text(self._redaction_buffer)
+            self._redaction_buffer = ""
+        else:
+            self._redaction_buffer = redact_text(self._redaction_buffer)
+            keep = 0
+            for secret in self._stream_secrets:
+                maximum = min(len(secret) - 1, len(self._redaction_buffer))
+                for size in range(maximum, keep, -1):
+                    if self._redaction_buffer.endswith(secret[:size]):
+                        keep = size
+                        break
+            if keep:
+                visible = self._redaction_buffer[:-keep]
+                self._redaction_buffer = self._redaction_buffer[-keep:]
+            else:
+                visible = self._redaction_buffer
+                self._redaction_buffer = ""
+        if visible:
+            for offset in range(0, len(visible), 4000):
+                self._send("assistant.delta", {"text": visible[offset:offset + 4000]})
 
 
 class RemoteAgentStateSink(EventSink):
@@ -321,21 +427,6 @@ def run_task(
     requested_effort = str(settings.get("reasoning_effort", "none")).strip().lower() or "none"
     if requested_effort not in supported_efforts:
         raise RuntimeError("requested reasoning effort is not supported by the local Worker")
-    provider_model_client = (
-        model_client_factory()
-        if model_client_factory is not None
-        else OpenAICompatibleModelClient(
-            model=requested_model,
-            base_url=_required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
-            api_key=_required_env("PICO_OPENAI_API_KEY"),
-            temperature=0.2,
-            timeout=int(settings.get("model_timeout_seconds", 120)),
-            max_attempts=max(1, min(5, int(settings.get("model_max_attempts", 3)))),
-            reasoning_effort=requested_effort,
-            supported_reasoning_efforts=supported_efforts,
-        )
-    )
-    model_client = CancellableModelClient(provider_model_client, active.token)
     def send_runtime_event(event_type: str, data: dict) -> None:
         send(
             {
@@ -347,6 +438,41 @@ def run_task(
         )
 
     hooks = RemoteExecutionHooks(send_runtime_event, active.token)
+    model_timeout = int(settings.get("model_timeout_seconds", 120))
+    model_max_attempts = max(1, min(5, int(settings.get("model_max_attempts", 3))))
+    if model_client_factory is not None:
+        provider_model_client = model_client_factory()
+        router_provider_client = provider_model_client
+    else:
+        provider_model_client = OpenAICompatibleModelClient(
+            model=requested_model,
+            base_url=_required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
+            api_key=_required_env("PICO_OPENAI_API_KEY"),
+            temperature=0.2,
+            timeout=model_timeout,
+            max_attempts=model_max_attempts,
+            reasoning_effort=requested_effort,
+            supported_reasoning_efforts=supported_efforts,
+        )
+        router_effort = "none" if "none" in supported_efforts else (
+            "low" if "low" in supported_efforts else ""
+        )
+        router_provider_client = OpenAICompatibleModelClient(
+            model=requested_model,
+            base_url=_required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
+            api_key=_required_env("PICO_OPENAI_API_KEY"),
+            temperature=0.2,
+            timeout=min(45, model_timeout),
+            max_attempts=min(2, model_max_attempts),
+            reasoning_effort=router_effort,
+            supported_reasoning_efforts=supported_efforts,
+        )
+    model_client = CancellableModelClient(provider_model_client, active.token)
+    router_model_client = (
+        model_client
+        if router_provider_client is provider_model_client
+        else CancellableModelClient(router_provider_client, active.token)
+    )
     pico = Pico(
         model_client=model_client,
         workspace=WorkspaceContext.build(workspace_path),
@@ -373,10 +499,12 @@ def run_task(
             pico,
             task["input"],
             task_mode="auto",
+            router_model_client=router_model_client,
             enable_planning=True,
             task_id=task["task_id"],
             run_id=task["run_id"],
             workspace_id=task.get("workspace_id", ""),
+            planning_deadline_seconds=float(settings.get("planning_deadline_seconds", 75)),
         )
     except Exception as exc:
         if pico.current_task_state is not None and pico.current_task_state.status == STATUS_RUNNING:

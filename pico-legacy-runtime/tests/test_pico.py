@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 from pathlib import Path
 from unittest.mock import patch
@@ -456,8 +457,9 @@ def test_openai_compatible_client_posts_expected_responses_payload():
     assert captured["timeout"] == 30
     assert captured["headers"]["Authorization"] == "Bearer sk-test"
     assert captured["headers"]["Content-type"] == "application/json"
-    assert captured["headers"]["Accept"] == "application/json"
+    assert captured["headers"]["Accept"] == "text/event-stream"
     assert captured["headers"]["User-agent"] == "pico/0.1"
+    assert captured["body"]["stream"] is True
 
 
 def test_openai_compatible_reasoning_omits_temperature_and_records_effort():
@@ -509,7 +511,7 @@ def test_openai_compatible_reasoning_omits_temperature_and_records_effort():
             }
         ],
         "max_output_tokens": 42,
-        "stream": False,
+        "stream": True,
         "reasoning": {"effort": "high"},
     }
 
@@ -587,9 +589,48 @@ def test_openai_compatible_client_retries_rate_limit_without_leaking_provider_bo
         max_attempts=3,
     )
 
+    retries = []
     with patch("urllib.request.urlopen", fake_urlopen), patch("time.sleep"):
-        assert client.complete("hello", 42) == "<final>recovered</final>"
+        assert client.complete("hello", 42, on_retry=retries.append) == "<final>recovered</final>"
     assert calls == 2
+    assert retries == [
+        {
+            "attempt": 1,
+            "max_attempts": 3,
+            "error_code": "model_rate_limited",
+            "retry_delay_seconds": 0.5,
+        }
+    ]
+
+
+def test_openai_compatible_client_does_not_retry_past_deadline():
+    calls = 0
+
+    def fake_urlopen(request, timeout):
+        nonlocal calls
+        calls += 1
+        raise urllib.error.HTTPError(
+            request.full_url,
+            429,
+            "too many",
+            {"Retry-After": "2"},
+            io.BytesIO(b"private provider response"),
+        )
+
+    client = OpenAICompatibleModelClient(
+        model="gpt-5.5",
+        base_url="https://api.openai.com/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+        max_attempts=3,
+    )
+
+    with patch("urllib.request.urlopen", fake_urlopen), pytest.raises(Exception) as caught:
+        client.complete("hello", 42, deadline_monotonic=time.monotonic() + 0.1)
+
+    assert calls == 1
+    assert getattr(caught.value, "code", "") == "model_rate_limited"
 
 
 def test_openai_compatible_client_does_not_retry_auth_error_or_expose_body():
@@ -686,12 +727,13 @@ def test_openai_compatible_client_extracts_text_from_event_stream():
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def read(self):
-            return (
+        def __iter__(self):
+            body = (
                 'data: {"type":"response.created","response":{"id":"resp_1","output":[]}}\n'
-                'data: {"type":"response.completed","response":{"output":[{"content":[{"text":"<final>stream ok</final>"}]}]}}\n'
+                'data: {"type":"response.completed","response":{"output":[{"content":[{"text":"<final>stream ok</final>"}]}],"usage":{"input_tokens":12,"output_tokens":4,"total_tokens":16}}}\n'
                 "data: [DONE]\n"
             ).encode("utf-8")
+            return iter(body.splitlines(keepends=True))
 
     client = OpenAICompatibleModelClient(
         model="right.codes/codex-mini",
@@ -705,6 +747,7 @@ def test_openai_compatible_client_extracts_text_from_event_stream():
         result = client.complete("hello", 42)
 
     assert result == "<final>stream ok</final>"
+    assert client.last_completion_metadata["total_tokens"] == 16
 
 
 def test_openai_compatible_client_extracts_text_from_event_stream_deltas():
@@ -717,8 +760,8 @@ def test_openai_compatible_client_extracts_text_from_event_stream_deltas():
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def read(self):
-            return (
+        def __iter__(self):
+            body = (
                 'event: response.output_text.delta\n'
                 'data: {"type":"response.output_text.delta","delta":"<final>"}\n'
                 'event: response.output_text.delta\n'
@@ -727,6 +770,7 @@ def test_openai_compatible_client_extracts_text_from_event_stream_deltas():
                 'data: {"type":"response.output_text.done","text":"<final>OK</final>"}\n'
                 "data: [DONE]\n"
             ).encode("utf-8")
+            return iter(body.splitlines(keepends=True))
 
     client = OpenAICompatibleModelClient(
         model="right.codes/codex-mini",
@@ -736,10 +780,12 @@ def test_openai_compatible_client_extracts_text_from_event_stream_deltas():
         timeout=30,
     )
 
+    deltas = []
     with patch("urllib.request.urlopen", return_value=FakeResponse()):
-        result = client.complete("hello", 42)
+        result = client.complete("hello", 42, on_text_delta=deltas.append)
 
     assert result == "<final>OK</final>"
+    assert "".join(deltas) == result
 
 
 def test_anthropic_compatible_client_posts_expected_messages_payload():

@@ -245,6 +245,7 @@ def run_agent(
     task_id=None,
     run_id=None,
     workspace_id="",
+    planning_deadline_seconds=75,
 ):
     """Run the routed LangGraph workflow with an already configured Pico instance."""
     task_input = str(task_input).strip()
@@ -264,6 +265,9 @@ def run_agent(
     step_budget = int(agent.max_steps if step_budget is None else step_budget)
     if step_budget < 1:
         raise ValueError("step_budget must be positive")
+    planning_deadline_seconds = float(planning_deadline_seconds)
+    if planning_deadline_seconds <= 0:
+        raise ValueError("planning_deadline_seconds must be positive")
     review_paths = _normalized_focus_paths(agent, raw_focus_paths)
     initial_state = _initial_state_snapshot(agent)
 
@@ -372,6 +376,7 @@ def run_agent(
                         "node_child_states": node_child_states,
                         "run_metadata_collector": run_metadata_collector,
                         "plan_budget_runtime": {},
+                        "planning_deadline_seconds": planning_deadline_seconds,
                     }
                 },
             )

@@ -224,6 +224,7 @@ class WorkerClient:
                         "resumable_auto_update",
                         "langgraph_v1_1",
                         "run_model_settings",
+                        "model_streaming_sse",
                         "rename_entities",
                         "delete_entities",
                         *(["worker_uninstall"] if self._uninstall_callback else []),

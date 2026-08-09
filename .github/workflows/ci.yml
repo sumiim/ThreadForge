@@ -16,6 +16,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  worker-version:
+    name: Worker version gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository history
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Require a version bump for shipped Worker changes
+        run: python scripts/check-worker-version.py
+
   legacy-runtime:
     name: Legacy runtime (${{ matrix.os }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
@@ -241,7 +255,7 @@ jobs:
     name: Build Python packages
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [legacy-runtime, api-server, local-worker, worker-installer, client]
+    needs: [worker-version, legacy-runtime, api-server, local-worker, worker-installer, client]
 
     steps:
       - name: Checkout repository
