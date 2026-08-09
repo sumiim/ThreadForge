@@ -48,6 +48,13 @@ RUN_METADATA_KEYS = (
     "answer_attempts",
 )
 
+
+def _answer_candidate(agent, action):
+    getattr(agent.execution_hooks, f"{action}_answer_candidate", lambda *_args: None)(
+        agent.current_task_state
+    )
+
+
 STOP_REASON_MAP = {
     "budget_exhausted": STOP_REASON_BUDGET_EXHAUSTED,
     "delegate_failed": STOP_REASON_DELEGATE_FAILED,
@@ -460,6 +467,7 @@ def run_agent(
                     and task_state.checklist
                     and set(task_state.completed_items) != set(task_state.checklist)
                 ):
+                    _answer_candidate(agent, "discard")
                     task_state.stop(
                         STOP_REASON_RUNTIME_ERROR,
                         status=STATUS_FAILED,
@@ -471,7 +479,9 @@ def run_agent(
                     )
                 else:
                     task_state.finish_success(final_answer)
+                    _answer_candidate(agent, "commit")
             else:
+                _answer_candidate(agent, "discard")
                 terminal_reason = result["terminal_reason"]
                 if terminal_reason == STOP_REASON_USER_CANCELLED:
                     task_state.stop_user_cancelled(final_answer=final_answer)
@@ -479,9 +489,11 @@ def run_agent(
                     stop_reason = STOP_REASON_MAP[terminal_reason]
                     task_state.stop(stop_reason, status=STATUS_FAILED, final_answer=final_answer)
         except RunCancelled:
+            _answer_candidate(agent, "discard")
             task_state.stop_user_cancelled()
             final_answer = ""
         except Exception as exc:
+            _answer_candidate(agent, "discard")
             error_code, final_answer = _safe_execution_failure(exc)
             stop_reason = getattr(exc, "stop_reason", STOP_REASON_RUNTIME_ERROR)
             if stop_reason not in {
@@ -500,6 +512,7 @@ def run_agent(
         finally:
             budget_task_states = [task_state, *node_child_states]
             if task_state.status == "running":
+                _answer_candidate(agent, "discard")
                 task_state.stop(
                     STOP_REASON_RUNTIME_ERROR,
                     status=STATUS_FAILED,

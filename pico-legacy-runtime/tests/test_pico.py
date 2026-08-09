@@ -462,6 +462,40 @@ def test_openai_compatible_client_posts_expected_responses_payload():
     assert captured["body"]["stream"] is True
 
 
+def test_openai_compatible_client_sends_threadforge_instructions():
+    captured = {}
+
+    class FakeResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"output_text": "<final>ok</final>"}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    client = OpenAICompatibleModelClient(
+        model="gpt-5.5",
+        base_url="https://api.openai.com/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+        instructions="Use the ThreadForge local tool protocol.",
+    )
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        assert client.complete("hello", 42) == "<final>ok</final>"
+
+    assert captured["body"]["instructions"] == "Use the ThreadForge local tool protocol."
+
+
 def test_openai_compatible_reasoning_omits_temperature_and_records_effort():
     captured = {}
 
