@@ -1376,6 +1376,10 @@ def _read_only_answer(state, config):
             collect_answer_attempts=True,
         )
         task_state = executor.current_task_state
+        if task_state is not None and task_state.status != STATUS_COMPLETED:
+            # A protocol/provider terminal is already authoritative. Retrying
+            # the outer evidence gate would create a second hidden retry loop.
+            break
         observed_tools = _successful_read_tool_names(agent, config)
         missing_tools = tuple(name for name in required_tools if name not in observed_tools)
         if not state["planning_enabled"] or (observed_tools and not missing_tools):

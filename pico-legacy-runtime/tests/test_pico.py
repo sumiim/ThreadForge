@@ -143,8 +143,13 @@ def test_agent_retries_after_empty_model_output(tmp_path):
     answer = agent.ask("Do the task")
 
     assert answer == "Recovered after retry."
-    notices = [item["content"] for item in agent.session["history"] if item["role"] == "assistant"]
-    assert any("empty response" in item for item in notices)
+    assert "Runtime control feedback:" in agent.model_client.prompts[1]
+    assert "empty response" in agent.model_client.prompts[1]
+    assert not any(
+        "Runtime notice" in item["content"]
+        for item in agent.session["history"]
+        if item["role"] == "assistant"
+    )
 
 
 def test_agent_retries_after_malformed_tool_payload(tmp_path):
@@ -162,9 +167,30 @@ def test_agent_retries_after_malformed_tool_payload(tmp_path):
 
     assert answer == "Recovered after malformed tool output."
     assert any(item["role"] == "tool" and item["name"] == "read_file" for item in agent.session["history"])
-    notices = [item["content"] for item in agent.session["history"] if item["role"] == "assistant"]
-    assert any("valid <tool> call" in item for item in notices)
+    assert "valid <tool> call" in agent.model_client.prompts[1]
     assert agent.current_task_state.malformed_output_recovered == 1
+
+
+def test_agent_stops_after_one_protocol_repair(tmp_path):
+    agent = build_agent(tmp_path, ["plain output one", "plain output two", "<final>too late</final>"])
+
+    answer = agent.ask("Do the task")
+
+    assert answer == "Stopped after too many malformed model responses without a valid tool call or final answer."
+    assert agent.current_task_state.stop_reason == "retry_limit_reached"
+    assert agent.current_task_state.attempts == 2
+    assert agent.current_task_state.malformed_output_recovered == 2
+    assert len(agent.model_client.outputs) == 1
+
+
+def test_response_shape_diagnostics_do_not_retain_model_text():
+    diagnostics = Pico.diagnose_response_shape('{"secret":"private model response","tool":"read_file"}')
+
+    assert diagnostics["error_code"] == "model_protocol_invalid"
+    assert diagnostics["detected_format"] == "json_object"
+    assert diagnostics["top_level_keys"] == ["secret", "tool"]
+    assert len(diagnostics["response_hash"]) == 16
+    assert "private model response" not in json.dumps(diagnostics)
 
 
 def test_agent_retries_when_final_only_announces_future_work(tmp_path):
@@ -242,20 +268,21 @@ def test_checkpoint_and_durable_memory_writes_can_be_disabled(tmp_path):
     assert not any(event["event"] == "checkpoint_created" for event in trace)
 
 
-def test_retries_do_not_consume_the_whole_budget(tmp_path):
+def test_one_protocol_repair_does_not_consume_the_tool_budget(tmp_path):
     agent = build_agent(
         tmp_path,
         [
             "",
-            "",
-            "<final>Recovered after several retries.</final>",
+            "<final>Recovered after one repair.</final>",
         ],
         max_steps=1,
     )
 
     answer = agent.ask("Do the task")
 
-    assert answer == "Recovered after several retries."
+    assert answer == "Recovered after one repair."
+    assert agent.current_task_state.attempts == 2
+    assert agent.current_task_state.tool_steps == 0
 
 
 def test_agent_saves_and_resumes_session(tmp_path):
@@ -494,6 +521,70 @@ def test_openai_compatible_client_sends_threadforge_instructions():
         assert client.complete("hello", 42) == "<final>ok</final>"
 
     assert captured["body"]["instructions"] == "Use the ThreadForge local tool protocol."
+
+
+def test_openai_compatible_client_sends_native_tools_and_normalizes_function_call():
+    captured = {}
+
+    class FakeResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "name": "list_files",
+                            "arguments": '{"path":"."}',
+                            "call_id": "call_native",
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    tools = [
+        {
+            "type": "function",
+            "name": "list_files",
+            "description": "List files.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+            "strict": True,
+        }
+    ]
+    client = OpenAICompatibleModelClient(
+        model="gpt-5.5",
+        base_url="https://api.openai.com/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        result = client.complete("hello", 42, tool_definitions=tools)
+
+    assert json.loads(result.removeprefix("<tool>").removesuffix("</tool>")) == {
+        "name": "list_files",
+        "args": {"path": "."},
+    }
+    assert captured["body"]["tools"] == tools
+    assert captured["body"]["parallel_tool_calls"] is False
+    assert client.last_completion_metadata["native_tool_call"] is True
 
 
 def test_openai_compatible_reasoning_omits_temperature_and_records_effort():
@@ -782,6 +873,42 @@ def test_openai_compatible_client_extracts_text_from_event_stream():
 
     assert result == "<final>stream ok</final>"
     assert client.last_completion_metadata["total_tokens"] == 16
+
+
+def test_openai_compatible_client_extracts_function_call_from_event_stream():
+    class FakeResponse:
+        headers = {"Content-Type": "text/event-stream"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            body = (
+                'data: {"type":"response.created","response":{"id":"resp_1","output":[]}}\n'
+                'data: {"type":"response.completed","response":{"output":[{"type":"function_call","name":"read_file","arguments":"{\\"path\\":\\"README.md\\",\\"start\\":1,\\"end\\":20}","call_id":"call_1"}],"usage":{"input_tokens":12,"output_tokens":4,"total_tokens":16}}}\n'
+                "data: [DONE]\n"
+            ).encode("utf-8")
+            return iter(body.splitlines(keepends=True))
+
+    client = OpenAICompatibleModelClient(
+        model="gpt-5.5",
+        base_url="https://api.openai.com/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+
+    with patch("urllib.request.urlopen", return_value=FakeResponse()):
+        result = client.complete("hello", 42, tool_definitions=[{"type": "function"}])
+
+    assert json.loads(result.removeprefix("<tool>").removesuffix("</tool>")) == {
+        "name": "read_file",
+        "args": {"path": "README.md", "start": 1, "end": 20},
+    }
+    assert client.last_completion_metadata["native_tool_call"] is True
 
 
 def test_openai_compatible_client_extracts_text_from_event_stream_deltas():

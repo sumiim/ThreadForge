@@ -136,6 +136,12 @@ class ExecutionBoundary:
                     "attempt": int(details.get("attempt", 1)),
                     "max_attempts": int(details.get("max_attempts", 1)),
                     "error_code": "model_protocol_invalid",
+                    "response_chars": max(0, int(details.get("response_chars", 0))),
+                    "detected_format": str(details.get("detected_format", ""))[:32],
+                    "top_level_keys": [
+                        str(key)[:64] for key in details.get("top_level_keys", [])[:20]
+                    ],
+                    "response_hash": str(details.get("response_hash", ""))[:64],
                     "reset_stream": True,
                 },
             )

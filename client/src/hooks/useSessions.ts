@@ -523,18 +523,27 @@ export function useSessions(): UseSessions {
 
       const appendActivity = (envelope: RunEventEnvelope, label: string, detail?: string) => {
         updateSessionMessages(sessionId, (messages) => messages.map((message) =>
-          message.id === assistantId
-            ? {
-                ...message,
-                activity: [...(message.activity ?? []), {
-                  id: envelope.event_id,
-                  type: envelope.type,
-                  label,
-                  detail: detail?.trim() || undefined,
-                  createdAt: envelope.timestamp,
-                }].slice(-50),
+          message.id === assistantId ? (() => {
+            const activity = message.activity ?? []
+            const next = {
+              id: envelope.event_id,
+              type: envelope.type,
+              label,
+              detail: detail?.trim() || undefined,
+              createdAt: envelope.timestamp,
+            }
+            if (envelope.type === 'model.protocol_retrying') {
+              const reverseIndex = [...activity].reverse().findIndex((item) => item.type === envelope.type)
+              if (reverseIndex >= 0) {
+                const previousIndex = activity.length - reverseIndex - 1
+                return {
+                  ...message,
+                  activity: activity.map((item, index) => index === previousIndex ? next : item),
+                }
               }
-            : message,
+            }
+            return { ...message, activity: [...activity, next].slice(-50) }
+          })() : message,
         ))
       }
 
@@ -621,6 +630,11 @@ export function useSessions(): UseSessions {
               nextStep: `模型${stage}输出格式不符合执行协议，正在重试（${attempt + 1}/${maxAttempts}）`,
               reason: 'model_protocol_invalid',
             } : current)
+            if (data.reset_stream === true) {
+              updateSessionMessages(sessionId, (messages) => messages.map((message) =>
+                message.id === assistantId ? { ...message, content: '' } : message,
+              ))
+            }
             appendActivity(envelope, '模型输出协议重试', `${stage}阶段 ${attempt + 1}/${maxAttempts}`)
             return
           }

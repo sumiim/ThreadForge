@@ -57,6 +57,48 @@ DELEGATE_TOOL_SPEC = {
 def legal_tool_names():
     return set(BASE_TOOL_SPECS) | {"delegate"}
 
+
+def provider_tool_definitions(tools):
+    """Project the runtime registry into OpenAI Responses function tools.
+
+    Runtime validation remains authoritative. The provider schema makes the
+    action boundary explicit so capable models do not have to reproduce the
+    legacy XML envelope before a tool can run.
+    """
+    type_map = {
+        "str": "string",
+        "int": "integer",
+        "float": "number",
+        "bool": "boolean",
+    }
+    definitions = []
+    for name, spec in tools.items():
+        properties = {}
+        schema = spec.get("schema", {})
+        for argument, declaration in schema.items():
+            type_name = str(declaration).split("=", 1)[0].strip()
+            properties[str(argument)] = {
+                "type": type_map.get(type_name, "string"),
+            }
+        definitions.append(
+            {
+                "type": "function",
+                "name": str(name),
+                "description": str(spec.get("description", "")),
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    # Strict Responses schemas require every property to be
+                    # listed. Runtime defaults remain useful for legacy calls.
+                    "required": list(properties),
+                    "additionalProperties": False,
+                },
+                "strict": True,
+            }
+        )
+    return definitions
+
+
 TOOL_EXAMPLES = {
     "list_files": '<tool>{"name":"list_files","args":{"path":"."}}</tool>',
     "read_file": '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":80}}</tool>',

@@ -93,8 +93,12 @@ def test_streaming_events_keep_only_safe_public_fields():
         "model.protocol_retrying",
         {
             "stage": "execute",
-            "attempt": 2,
-            "max_attempts": 9,
+            "attempt": 1,
+            "max_attempts": 2,
+            "response_chars": 84,
+            "detected_format": "json_object",
+            "top_level_keys": ["answer", "private model response"],
+            "response_hash": "0123456789abcdef",
             "raw_model_output": "must not pass",
         },
     )
@@ -121,9 +125,13 @@ def test_streaming_events_keep_only_safe_public_fields():
     assert delta == {"text": "visible answer"}
     assert protocol_retrying == {
         "stage": "execute",
-        "attempt": 2,
-        "max_attempts": 9,
+        "attempt": 1,
+        "max_attempts": 2,
         "error_code": "model_protocol_invalid",
+        "response_chars": 84,
+        "detected_format": "json_object",
+        "top_level_keys": ["answer"],
+        "response_hash": "0123456789abcdef",
         "reset_stream": True,
     }
     assert heartbeat == {

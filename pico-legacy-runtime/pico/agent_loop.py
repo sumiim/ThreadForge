@@ -20,6 +20,7 @@ from .task_state import (
     TaskState,
 )
 from .tool_executor import ToolExecutionResult
+from .tools import provider_tool_definitions
 from .workspace import clip, now
 
 
@@ -28,6 +29,7 @@ def _new_tool_call_id():
 
 
 MAX_CONSECUTIVE_TALKS = 2
+MAX_PROTOCOL_REPAIRS = 1
 
 
 class AgentLoop:
@@ -124,6 +126,10 @@ class AgentLoop:
         tool_steps = 0
         attempts = 0
         consecutive_talks = 0
+        protocol_repairs = 0
+        protocol_feedback = ""
+        protocol_failed = False
+        tool_definitions = provider_tool_definitions(agent.tools)
         max_attempts = min(
             max(agent.max_steps * 3, agent.max_steps + 4),
             task_state.max_total_steps,
@@ -143,6 +149,14 @@ class AgentLoop:
             agent.emit_progress(f"step {attempts}: building prompt")
             prompt_started_at = time.monotonic()
             prompt, prompt_metadata = agent._build_prompt_and_metadata(user_message)
+            if protocol_feedback:
+                prompt += (
+                    "\n\nRuntime control feedback:\n"
+                    f"{protocol_feedback}\n"
+                    "This feedback is control-plane input, not an assistant message."
+                )
+                prompt_metadata["runtime_protocol_feedback"] = True
+                prompt_metadata["prompt_chars"] = len(prompt)
             agent.emit_progress(f"step {attempts}: prompt ready ({prompt_metadata.get('prompt_chars', len(prompt))} chars)")
             agent.emit_trace(
                 task_state,
@@ -223,6 +237,7 @@ class AgentLoop:
                 on_text_delta=lambda delta: getattr(
                     hooks, "model_text_delta", lambda *_args: None
                 )(task_state, "execute", delta),
+                tool_definitions=tool_definitions,
             )
             completion_metadata = dict(getattr(agent.model_client, "last_completion_metadata", {}) or {})
             task_state.record_model_usage(completion_metadata)
@@ -241,6 +256,9 @@ class AgentLoop:
                 payload = agent.retry_notice(
                     "model announced future work instead of performing it"
                 )
+            response_diagnostics = agent.diagnose_response_shape(raw) if kind == "retry" else {}
+            if kind != "retry":
+                protocol_feedback = ""
             agent.emit_progress(f"step {attempts}: model returned {kind}")
             agent.emit_trace(
                 task_state,
@@ -249,6 +267,7 @@ class AgentLoop:
                     "kind": kind,
                     "completion_metadata": completion_metadata,
                     "duration_ms": int((time.monotonic() - model_started_at) * 1000),
+                    **response_diagnostics,
                 },
             )
 
@@ -389,20 +408,31 @@ class AgentLoop:
                 consecutive_talks = 0
                 task_state.record_malformed_output_recovered()
                 task_state.set_phase(PHASE_ACT_OR_ANSWER, next_step="Retry with a valid tool call or final answer")
-                if attempts < max_attempts:
+                if protocol_repairs < MAX_PROTOCOL_REPAIRS:
+                    protocol_repairs += 1
+                    protocol_feedback = str(payload)
                     getattr(agent.execution_hooks, "model_protocol_retrying", lambda *_args: None)(
                         task_state,
                         "execute",
                         {
-                            "attempt": attempts,
-                            "max_attempts": max_attempts,
-                            "error_code": "model_protocol_invalid",
+                            "attempt": protocol_repairs,
+                            "max_attempts": MAX_PROTOCOL_REPAIRS + 1,
+                            **response_diagnostics,
                         },
                     )
-                agent.record({"role": "assistant", "content": payload, "created_at": now()})
-                agent.run_store.write_task_state(task_state)
-                agent.emit_agent_state(task_state, "malformed_output_recovered")
-                continue
+                    agent.run_store.write_task_state(task_state)
+                    agent.emit_agent_state(task_state, "malformed_output_recovered")
+                    continue
+                protocol_failed = True
+                agent.emit_trace(
+                    task_state,
+                    "model_protocol_failed",
+                    {
+                        "repairs": protocol_repairs,
+                        **response_diagnostics,
+                    },
+                )
+                break
 
             # 边界 8：写最终回答和 durable memory 前。
             token.raise_if_cancelled()
@@ -452,7 +482,7 @@ class AgentLoop:
             agent.emit_progress(f"run {task_state.run_id} finished")
             return final
 
-        if attempts >= max_attempts and tool_steps < agent.max_steps:
+        if protocol_failed or (attempts >= max_attempts and tool_steps < agent.max_steps):
             final = "Stopped after too many malformed model responses without a valid tool call or final answer."
             task_state.stop_retry_limit(final)
         else:

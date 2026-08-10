@@ -41,7 +41,7 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
         {message.activity && message.activity.length > 0 ? (
           <details className="mb-2 max-w-full rounded-lg border border-stone-100 bg-stone-50/70 px-3 py-2 text-xs text-stone-500" open={message.status === 'streaming'}>
             <summary className="cursor-pointer select-none text-[11px] text-stone-500">
-              已完成 {message.activity.length} 个过程步骤
+              已记录 {message.activity.length} 条运行事件
             </summary>
             <div className="mt-2 space-y-1.5 border-l border-stone-200 pl-2">
               {message.activity.map((activity) => (
