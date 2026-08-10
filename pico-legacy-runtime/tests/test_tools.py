@@ -1,7 +1,12 @@
 from pathlib import Path
 
 from pico.tool_context import ToolContext
-from pico.tools import build_tool_registry, tool_delegate, tool_read_file
+from pico.tools import (
+    build_tool_registry,
+    provider_tool_definitions,
+    tool_delegate,
+    tool_read_file,
+)
 
 
 def test_tool_context_supports_file_tools_without_full_pico(tmp_path):
@@ -52,3 +57,30 @@ def test_build_tool_registry_binds_runners_to_tool_context(tmp_path):
 
     assert "read_file" in tools
     assert "delegate" not in tools
+
+
+def test_provider_tool_definitions_are_strict_responses_functions(tmp_path):
+    context = ToolContext(
+        root=tmp_path,
+        path_resolver=lambda raw_path: Path(tmp_path / raw_path),
+        shell_env_provider=lambda: {"PWD": str(tmp_path)},
+        depth=1,
+        max_depth=1,
+        spawn_delegate=lambda args: "unused",
+    )
+
+    definitions = provider_tool_definitions(build_tool_registry(context))
+    read_file = next(item for item in definitions if item["name"] == "read_file")
+
+    assert read_file["type"] == "function"
+    assert read_file["strict"] is True
+    assert read_file["parameters"] == {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "start": {"type": "integer"},
+            "end": {"type": "integer"},
+        },
+        "required": ["path", "start", "end"],
+        "additionalProperties": False,
+    }

@@ -1929,11 +1929,38 @@ def _sanitize_event_data(event_type: str, data: dict) -> dict:
             "reset_stream": bool(data.get("reset_stream", False)),
         }
     if event_type == "model.protocol_retrying":
+        top_level_keys = data.get("top_level_keys", [])
+        if not isinstance(top_level_keys, list):
+            top_level_keys = []
+        safe_keys = [
+            str(key)
+            for key in top_level_keys[:20]
+            if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", str(key))
+        ]
+        detected_format = str(data.get("detected_format", ""))[:32]
+        if detected_format not in {
+            "empty",
+            "markdown_fence",
+            "xml_tool",
+            "xml_talk",
+            "xml_final",
+            "json_object",
+            "json_array",
+            "plain_text",
+        }:
+            detected_format = "unknown"
+        response_hash = str(data.get("response_hash", ""))[:64].lower()
+        if not re.fullmatch(r"[0-9a-f]{16,64}", response_hash):
+            response_hash = ""
         return {
             "stage": str(data.get("stage", ""))[:32],
             "attempt": max(1, _nonnegative_int(data.get("attempt", 1))),
             "max_attempts": max(1, _nonnegative_int(data.get("max_attempts", 1))),
             "error_code": "model_protocol_invalid",
+            "response_chars": _nonnegative_int(data.get("response_chars", 0)),
+            "detected_format": detected_format,
+            "top_level_keys": safe_keys,
+            "response_hash": response_hash,
             "reset_stream": bool(data.get("reset_stream", True)),
         }
     if event_type == "model.heartbeat":

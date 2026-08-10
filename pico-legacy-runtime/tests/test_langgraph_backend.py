@@ -736,6 +736,33 @@ def test_v11_read_only_fails_without_current_run_evidence(tmp_path):
     assert any(event.get("event") == "required_tools_retry" for event in result.events)
 
 
+def test_v11_read_only_protocol_failure_does_not_restart_answer_executor(tmp_path):
+    from langgraph_pico import run_agent
+
+    agent, model_client, _ = _build_runtime(
+        tmp_path,
+        [
+            _v11_plan("read_only", ["read_file"]),
+            "plain model output",
+            "plain model output again",
+            "<final>must not be consumed</final>",
+        ],
+    )
+
+    result = run_agent(
+        agent,
+        "Inspect README",
+        task_mode="read_only",
+        requires_research=False,
+        enable_planning=True,
+    )
+
+    assert result.task_state.stop_reason == "retry_limit_reached"
+    assert result.run_metadata["answer_attempts"] == 2
+    assert len(model_client.outputs) == 1
+    assert not any(event.get("event") == "required_tools_retry" for event in result.events)
+
+
 def test_v11_rejected_answer_candidates_are_discarded(tmp_path):
     from langgraph_pico import run_agent
 

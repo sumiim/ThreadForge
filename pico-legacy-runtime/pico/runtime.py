@@ -877,6 +877,47 @@ class Pico:
         return "retry", Pico.retry_notice("model returned an empty response")
 
     @staticmethod
+    def diagnose_response_shape(raw):
+        """Return bounded protocol diagnostics without retaining model text."""
+        text = str(raw or "")
+        stripped = text.strip()
+        detected_format = "empty"
+        candidate = stripped
+        if stripped.startswith("```") and stripped.endswith("```"):
+            detected_format = "markdown_fence"
+            lines = stripped.splitlines()
+            if len(lines) >= 3:
+                candidate = "\n".join(lines[1:-1]).strip()
+        elif "<tool" in stripped:
+            detected_format = "xml_tool"
+        elif "<talk>" in stripped:
+            detected_format = "xml_talk"
+        elif "<final>" in stripped:
+            detected_format = "xml_final"
+        elif stripped.startswith("{"):
+            detected_format = "json_object"
+        elif stripped.startswith("["):
+            detected_format = "json_array"
+        elif stripped:
+            detected_format = "plain_text"
+
+        top_level_keys = []
+        if candidate.startswith("{") and candidate.endswith("}"):
+            try:
+                value = json.loads(candidate)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                value = None
+            if isinstance(value, dict):
+                top_level_keys = sorted(str(key)[:64] for key in value)[:20]
+        return {
+            "error_code": "model_protocol_invalid",
+            "response_chars": len(text),
+            "detected_format": detected_format,
+            "top_level_keys": top_level_keys,
+            "response_hash": hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:16],
+        }
+
+    @staticmethod
     def parse_json_tool(raw):
         """Return a normalized tool call from a JSON-only model response.
 

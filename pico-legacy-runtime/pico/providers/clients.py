@@ -159,6 +159,42 @@ def _extract_openai_text(data):
     return ""
 
 
+def _extract_openai_function_call(data):
+    """Convert one provider-native function call into the runtime protocol."""
+
+    def normalize(item):
+        if not isinstance(item, dict) or item.get("type") != "function_call":
+            return ""
+        name = str(item.get("name", "")).strip()
+        if not name:
+            return ""
+        arguments = item.get("arguments", {})
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments or "{}")
+            except json.JSONDecodeError:
+                # Preserve the invalid shape for Pico.parse() to reject via
+                # the bounded protocol-repair path without exposing its text.
+                pass
+        payload = {"name": name, "args": arguments}
+        return "<tool>" + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "</tool>"
+
+    for item in data.get("output", []):
+        action = normalize(item)
+        if action:
+            return action
+
+    choices = data.get("choices", [])
+    if choices:
+        message = choices[0].get("message", {})
+        for call in message.get("tool_calls", []) or []:
+            function = call.get("function", {}) if isinstance(call, dict) else {}
+            action = normalize({"type": "function_call", **function})
+            if action:
+                return action
+    return ""
+
+
 def _extract_openai_text_from_sse(body_text):
     last_response = None
     deltas = []
@@ -374,6 +410,7 @@ class OpenAICompatibleModelClient:
         # 当前只在明确支持 prompt cache 语义的后端上启用这条链路，
         # 避免对不支持的后端传一个“看起来统一、其实没意义”的伪参数。
         self.supports_prompt_cache = any(host in self.base_url for host in ("openai.com", "right.codes"))
+        self.supports_native_tools = True
         self.last_completion_metadata = {}
 
     def complete(
@@ -387,6 +424,7 @@ class OpenAICompatibleModelClient:
         on_retry=None,
         on_text_delta=None,
         should_cancel=None,
+        tool_definitions=None,
     ):
         """向 OpenAI-compatible `/responses` 接口发起一次模型调用。
 
@@ -423,6 +461,9 @@ class OpenAICompatibleModelClient:
         }
         if self.instructions:
             payload["instructions"] = self.instructions
+        if tool_definitions and self.supports_native_tools:
+            payload["tools"] = list(tool_definitions)
+            payload["parallel_tool_calls"] = False
         if self.reasoning_effort:
             payload["reasoning"] = {"effort": self.reasoning_effort}
         if self.temperature is not None and (
@@ -499,6 +540,10 @@ class OpenAICompatibleModelClient:
                             "prompt_cache_retention": prompt_cache_retention,
                             **_extract_usage_cache_details(response_data or {}),
                         }
+                        native_action = _extract_openai_function_call(response_data or {})
+                        if native_action:
+                            self.last_completion_metadata["native_tool_call"] = True
+                            return native_action
                         if streamed_text:
                             return streamed_text
                         raise ModelProviderError("model_response_invalid", attempts=attempt)
@@ -591,6 +636,10 @@ class OpenAICompatibleModelClient:
                     "prompt_cache_retention": prompt_cache_retention,
                     **_extract_usage_cache_details(response_data),
                 }
+            native_action = _extract_openai_function_call(response_data or {})
+            if native_action:
+                self.last_completion_metadata["native_tool_call"] = True
+                return native_action
             if text:
                 return text
             raise ModelProviderError("model_response_invalid", attempts=attempt)
@@ -609,6 +658,10 @@ class OpenAICompatibleModelClient:
             "prompt_cache_retention": prompt_cache_retention,
             **_extract_usage_cache_details(data),
         }
+        native_action = _extract_openai_function_call(data)
+        if native_action:
+            self.last_completion_metadata["native_tool_call"] = True
+            return native_action
         text = _extract_openai_text(data)
         if not text:
             raise ModelProviderError("model_response_invalid", attempts=attempt)
