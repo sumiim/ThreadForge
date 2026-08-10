@@ -184,6 +184,20 @@ def test_v11_retry_prompt_explains_the_validation_failure_and_array_contract():
 
 def test_v11_agent_turn_requires_explicit_talk_tool_or_final():
     assert Pico.parse("I am still working.")[0] == "retry"
+    assert Pico.parse('{"name":"list_files","args":{"path":"."}}') == (
+        "tool",
+        {"name": "list_files", "args": {"path": "."}},
+    )
+    assert Pico.parse('```json\n{"tool":"read_file","arguments":{"path":"README.md"}}\n```') == (
+        "tool",
+        {"name": "read_file", "args": {"path": "README.md"}},
+    )
+    assert Pico.parse(
+        '{"type":"function","function":{"name":"search","arguments":"{\\"query\\":\\"TODO\\"}"}}'
+    ) == (
+        "tool",
+        {"name": "search", "args": {"query": "TODO"}},
+    )
     assert Pico.parse("<talk>I am checking the workspace.</talk>") == (
         "talk",
         "I am checking the workspace.",

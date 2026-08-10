@@ -47,6 +47,8 @@ def test_research_role_is_read_only_isolated_and_observable(tmp_path):
     child, result = create_role_delegate(parent, spec)
 
     assert "Findings:" in result
+    assert "MUST follow the runtime response protocol" in parent.model_client.prompts[0]
+    assert "Never return unwrapped prose" in parent.model_client.prompts[0]
     assert child.allowed_tools == RESEARCH_ALLOWED_TOOLS
     assert child.allow_checkpoint is False
     assert child.allow_durable_memory_write is False

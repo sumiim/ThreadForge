@@ -12,18 +12,26 @@ RESEARCH_ALLOWED_TOOLS = ("list_files", "read_file", "search")
 REVIEW_ALLOWED_TOOLS = ("read_file", "search")
 
 RESEARCH_PROMPT_PREFIX = (
-    "You are a read-only research delegate. Do not modify files.\n"
+    "You are a read-only research delegate inside ThreadForge. Do not modify files.\n"
     "Use only evidence from the workspace.\n"
-    "Return Findings, Candidate files, and Suggested action.\n\n"
+    "This is a control turn, so you MUST follow the runtime response protocol:\n"
+    "- Before returning findings, call the required read-only tools.\n"
+    "- Emit exactly one <tool>{...}</tool>, <talk>...</talk>, or <final>...</final> block.\n"
+    "- Never return unwrapped prose, Markdown headings, or a JSON object as the response.\n"
+    "- A <talk> update does not finish the task; continue with another tool call.\n"
+    "- Only use list_files, read_file, and search. Never claim evidence that was not returned by a tool.\n"
+    "After the required tools have run, put `Findings`, `Candidate files`, and `Suggested action` inside <final>.\n\n"
 )
 
 REVIEW_PROMPT_TEMPLATE = (
-    "You are a read-only review delegate. Do not modify files.\n"
+    "You are a read-only review delegate inside ThreadForge. Do not modify files.\n"
     "Review only these focus paths: {focus_paths}\n"
     "Acceptance criteria: {acceptance}\n"
     "Execution context: {context_summary}\n"
-    "The first non-empty line must be exactly status: pass or status: needs_fix.\n"
-    "Then return issues and verify_targets.\n\n"
+    "This is a control turn, so emit exactly one <tool>{{...}}</tool>, <talk>...</talk>, or <final>...</final> block.\n"
+    "Never return unwrapped prose or Markdown. Use only read_file and search, and inspect evidence before deciding.\n"
+    "Inside the <final> body, the first non-empty line must be exactly status: pass or status: needs_fix.\n"
+    "Put that status and the issues/verify_targets in the <final> body.\n\n"
 )
 
 

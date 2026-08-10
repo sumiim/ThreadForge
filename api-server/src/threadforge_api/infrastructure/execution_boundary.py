@@ -124,6 +124,22 @@ class ExecutionBoundary:
                 {"stage": str(stage), **dict(details or {})},
             )
 
+    def model_protocol_retrying(self, task_state, stage: str, details: dict) -> None:
+        with self._gate:
+            self._check()
+            self._publisher.publish(
+                self._task_id,
+                self._run_id,
+                "model.protocol_retrying",
+                {
+                    "stage": str(stage),
+                    "attempt": int(details.get("attempt", 1)),
+                    "max_attempts": int(details.get("max_attempts", 1)),
+                    "error_code": "model_protocol_invalid",
+                    "reset_stream": True,
+                },
+            )
+
     def model_text_delta(self, task_state, stage: str, text: str) -> None:
         # Native server execution keeps protocol output private. Local Worker
         # execution applies the final-answer projector before publishing deltas.

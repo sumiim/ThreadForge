@@ -389,6 +389,16 @@ class AgentLoop:
                 consecutive_talks = 0
                 task_state.record_malformed_output_recovered()
                 task_state.set_phase(PHASE_ACT_OR_ANSWER, next_step="Retry with a valid tool call or final answer")
+                if attempts < max_attempts:
+                    getattr(agent.execution_hooks, "model_protocol_retrying", lambda *_args: None)(
+                        task_state,
+                        "execute",
+                        {
+                            "attempt": attempts,
+                            "max_attempts": max_attempts,
+                            "error_code": "model_protocol_invalid",
+                        },
+                    )
                 agent.record({"role": "assistant", "content": payload, "created_at": now()})
                 agent.run_store.write_task_state(task_state)
                 agent.emit_agent_state(task_state, "malformed_output_recovered")

@@ -585,10 +585,12 @@ export function useSessions(): UseSessions {
             return
           }
           case 'model.heartbeat': {
-            const seconds = Math.max(0, Math.floor(Number(data.elapsed_seconds ?? 0)))
+            const callSeconds = Math.max(0, Math.floor(Number(data.elapsed_seconds ?? 0)))
+            const runSeconds = Math.max(callSeconds, Math.floor(Number(data.run_elapsed_seconds ?? callSeconds)))
+            const round = Math.max(1, Math.floor(Number(data.round ?? 1)))
             setAgentProgress((current) => current ? {
               ...current,
-              nextStep: `模型正在${String(data.stage ?? '') === 'planning' ? '规划' : '推理'}（已等待 ${seconds} 秒）`,
+              nextStep: `模型正在${String(data.stage ?? '') === 'planning' ? '规划' : '推理'}（总计 ${runSeconds} 秒 · 第 ${round} 轮，本轮 ${callSeconds} 秒）`,
               reason: 'model_streaming',
             } : current)
             return
@@ -608,6 +610,18 @@ export function useSessions(): UseSessions {
               ))
             }
             appendActivity(envelope, '模型请求重试', `${stage}阶段 ${attempt + 1}/${maxAttempts}`)
+            return
+          }
+          case 'model.protocol_retrying': {
+            const attempt = Number(data.attempt ?? 1)
+            const maxAttempts = Number(data.max_attempts ?? 1)
+            const stage = String(data.stage ?? '') === 'planning' ? '规划' : '执行'
+            setAgentProgress((current) => current ? {
+              ...current,
+              nextStep: `模型${stage}输出格式不符合执行协议，正在重试（${attempt + 1}/${maxAttempts}）`,
+              reason: 'model_protocol_invalid',
+            } : current)
+            appendActivity(envelope, '模型输出协议重试', `${stage}阶段 ${attempt + 1}/${maxAttempts}`)
             return
           }
           case 'assistant.delta': {
@@ -806,6 +820,7 @@ export function useSessions(): UseSessions {
         'model.started',
         'model.completed',
         'model.retrying',
+        'model.protocol_retrying',
         'model.heartbeat',
         'assistant.delta',
         'plan.created',

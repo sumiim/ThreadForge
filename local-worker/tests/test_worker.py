@@ -881,7 +881,6 @@ def test_remote_execution_hooks_stream_only_final_answer_projection():
     hooks.before_model(None)
     hooks.model_text_delta(None, "review", "<final>private review</final>")
     assert len([item for item in events if item[0] == "assistant.delta"]) == visible_count
-
     hooks.model_retrying(
         None,
         "planning",
@@ -895,6 +894,46 @@ def test_remote_execution_hooks_stream_only_final_answer_projection():
     assert events[-1][0] == "model.retrying"
     assert events[-1][1]["stage"] == "planning"
     assert events[-1][1]["reset_stream"] is True
+
+
+def test_remote_execution_hooks_publish_protocol_retry_without_model_output():
+    events = []
+    hooks = RemoteExecutionHooks(lambda event_type, data: events.append((event_type, data)), CancellationToken())
+
+    hooks.model_protocol_retrying(None, "execute", {"attempt": 2, "max_attempts": 9})
+
+    assert events == [
+        (
+            "model.protocol_retrying",
+            {
+                "stage": "execute",
+                "attempt": 2,
+                "max_attempts": 9,
+                "error_code": "model_protocol_invalid",
+                "reset_stream": True,
+            },
+        )
+    ]
+
+
+def test_remote_execution_hooks_heartbeat_keeps_run_elapsed_and_model_round():
+    events = []
+    hooks = RemoteExecutionHooks(lambda event_type, data: events.append((event_type, data)), CancellationToken())
+
+    hooks.before_model(None)
+    hooks._last_heartbeat_at -= 2
+    hooks._model_started_at -= 2
+    hooks._run_started_at -= 5
+    hooks.model_text_delta(None, "execute", "<talk>checking</talk>")
+
+    heartbeat = next(data for event_type, data in events if event_type == "model.heartbeat")
+    assert heartbeat["round"] == 1
+    assert heartbeat["run_elapsed_seconds"] >= 5
+    assert heartbeat["elapsed_seconds"] >= 1
+
+    hooks.before_model(None)
+    assert events[-1][0] == "model.started"
+    assert events[-1][1]["round"] == 2
 
 
 def test_remote_execution_hooks_commit_only_accepted_answer_candidate():
