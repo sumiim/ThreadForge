@@ -195,6 +195,23 @@ def _extract_openai_function_call(data):
     return ""
 
 
+def _normalize_openai_native_text(text, *, native_tools_enabled):
+    """Treat a provider-native assistant message as the final agent action.
+
+    OpenAI Responses uses the absence of a function call to signal a normal
+    assistant message. The legacy ThreadForge parser still expects an explicit
+    control envelope, so normalize only native-tool requests and leave legacy
+    XML/JSON protocol responses untouched.
+    """
+
+    text = str(text or "").strip()
+    if not text or not native_tools_enabled:
+        return text
+    if any(marker in text for marker in ("<tool", "<talk>", "<final>")):
+        return text
+    return f"<final>{text}</final>"
+
+
 def _extract_openai_text_from_sse(body_text):
     last_response = None
     deltas = []
@@ -461,7 +478,8 @@ class OpenAICompatibleModelClient:
         }
         if self.instructions:
             payload["instructions"] = self.instructions
-        if tool_definitions and self.supports_native_tools:
+        native_tools_enabled = bool(tool_definitions) and self.supports_native_tools
+        if native_tools_enabled:
             payload["tools"] = list(tool_definitions)
             payload["parallel_tool_calls"] = False
         if self.reasoning_effort:
@@ -545,7 +563,13 @@ class OpenAICompatibleModelClient:
                             self.last_completion_metadata["native_tool_call"] = True
                             return native_action
                         if streamed_text:
-                            return streamed_text
+                            normalized_text = _normalize_openai_native_text(
+                                streamed_text,
+                                native_tools_enabled=native_tools_enabled,
+                            )
+                            if normalized_text != streamed_text.strip():
+                                self.last_completion_metadata["native_text_response"] = True
+                            return normalized_text
                         raise ModelProviderError("model_response_invalid", attempts=attempt)
                     else:
                         body_text = response.read().decode("utf-8")
@@ -641,7 +665,13 @@ class OpenAICompatibleModelClient:
                 self.last_completion_metadata["native_tool_call"] = True
                 return native_action
             if text:
-                return text
+                normalized_text = _normalize_openai_native_text(
+                    text,
+                    native_tools_enabled=native_tools_enabled,
+                )
+                if normalized_text != text.strip():
+                    self.last_completion_metadata["native_text_response"] = True
+                return normalized_text
             raise ModelProviderError("model_response_invalid", attempts=attempt)
 
         try:
@@ -665,7 +695,13 @@ class OpenAICompatibleModelClient:
         text = _extract_openai_text(data)
         if not text:
             raise ModelProviderError("model_response_invalid", attempts=attempt)
-        return text
+        normalized_text = _normalize_openai_native_text(
+            text,
+            native_tools_enabled=native_tools_enabled,
+        )
+        if normalized_text != text.strip():
+            self.last_completion_metadata["native_text_response"] = True
+        return normalized_text
 
 
 def _extract_anthropic_text(data):

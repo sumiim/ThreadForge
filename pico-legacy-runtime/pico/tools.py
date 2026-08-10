@@ -4,15 +4,33 @@
 如何做参数校验，以及最终如何执行，都是在这里定义的。
 """
 
+import os
+import re
 import shutil
 import subprocess
 import textwrap
+import time
 from functools import partial
+from pathlib import Path
 
 from .execution_hooks import ProcessCleanupFailed, RunCancelled
 from .shell_process import ShellProcess
 from .subprocess_utils import hidden_process_creation_flags, hidden_process_startupinfo
 from .workspace import IGNORED_PATH_NAMES
+
+SEARCH_TIMEOUT_SECONDS = 10
+SEARCH_RG_TIMEOUT_SECONDS = 5
+SEARCH_MAX_FILES = 5000
+SEARCH_MAX_FILE_BYTES = 2 * 1024 * 1024
+SEARCH_MAX_MATCHES = 200
+SEARCH_IGNORED_PATH_NAMES = IGNORED_PATH_NAMES | {
+    "node_modules",
+    "build",
+    "dist",
+    "release-desktop",
+    "coverage",
+    "target",
+}
 
 BASE_TOOL_SPECS = {
     "list_files": {
@@ -28,7 +46,7 @@ BASE_TOOL_SPECS = {
     "search": {
         "schema": {"pattern": "str", "path": "str='.'"},
         "risky": False,
-        "description": "Search the workspace with rg or a simple fallback.",
+        "description": "Search file contents with a regular expression; this does not search path names.",
     },
     "run_shell": {
         "schema": {"command": "str", "timeout": "int=20"},
@@ -230,33 +248,85 @@ def tool_search(context, args):
     if not pattern:
         raise ValueError("pattern must not be empty")
     path = context.path(args.get("path", "."))
+    deadline = time.monotonic() + SEARCH_TIMEOUT_SECONDS
 
-    if shutil.which("rg"):
+    rg_path = shutil.which("rg")
+    if rg_path:
         # 优先用 rg，因为搜索会非常频繁，搜索延迟会直接影响 agent 控制循环。
-        result = subprocess.run(
-            ["rg", "-n", "--smart-case", "--max-count", "200", pattern, str(path)],
-            cwd=context.root,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            creationflags=hidden_process_creation_flags(),
-            startupinfo=hidden_process_startupinfo(),
-        )
-        return result.stdout.strip() or result.stderr.strip() or "(no matches)"
+        try:
+            result = subprocess.run(
+                [
+                    rg_path,
+                    "-n",
+                    "--smart-case",
+                    "--max-count",
+                    str(SEARCH_MAX_MATCHES),
+                    "--max-filesize",
+                    str(SEARCH_MAX_FILE_BYTES),
+                    pattern,
+                    str(path),
+                ],
+                cwd=context.root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=SEARCH_RG_TIMEOUT_SECONDS,
+                creationflags=hidden_process_creation_flags(),
+                startupinfo=hidden_process_startupinfo(),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            # Packaged Workers may not inherit the interactive shell PATH, and
+            # an external rg process may still stall. The bounded fallback
+            # below preserves regex semantics without blocking the whole Run.
+            pass
+        else:
+            if result.returncode in {0, 1}:
+                return result.stdout.strip() or "(no matches)"
+            if result.stderr.strip():
+                return result.stderr.strip()
+
+    flags = 0 if any(character.isupper() for character in pattern) else re.IGNORECASE
+    try:
+        expression = re.compile(pattern, flags)
+    except re.error as exc:
+        raise ValueError(f"invalid search pattern: {exc}") from exc
 
     matches = []
-    files = [path] if path.is_file() else [
-        item for item in path.rglob("*")
-        if item.is_file() and not any(part in IGNORED_PATH_NAMES for part in item.relative_to(context.root).parts)
-    ]
+    scanned_files = 0
+    if path.is_file():
+        files = (path,)
+    else:
+        def iter_files():
+            for directory, names, filenames in os.walk(path):
+                names[:] = [name for name in names if name not in SEARCH_IGNORED_PATH_NAMES]
+                for filename in filenames:
+                    yield Path(directory) / filename
+
+        files = iter_files()
+
     for file_path in files:
-        for number, line in enumerate(file_path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
-            if pattern.lower() in line.lower():
+        if scanned_files >= SEARCH_MAX_FILES or time.monotonic() >= deadline:
+            break
+        scanned_files += 1
+        try:
+            if file_path.stat().st_size > SEARCH_MAX_FILE_BYTES:
+                continue
+            raw = file_path.read_bytes()
+        except OSError:
+            continue
+        if b"\x00" in raw:
+            continue
+        for number, line in enumerate(raw.decode("utf-8", errors="replace").splitlines(), start=1):
+            if expression.search(line):
                 matches.append(f"{file_path.relative_to(context.root)}:{number}:{line}")
-                if len(matches) >= 200:
+                if len(matches) >= SEARCH_MAX_MATCHES:
                     return "\n".join(matches)
-    return "\n".join(matches) or "(no matches)"
+    if matches:
+        return "\n".join(matches)
+    if scanned_files >= SEARCH_MAX_FILES or time.monotonic() >= deadline:
+        return "(no matches; fallback search reached its scan limit)"
+    return "(no matches)"
 
 
 def tool_run_shell(context, args):

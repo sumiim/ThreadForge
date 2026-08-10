@@ -2,12 +2,14 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import type { SessionTask } from '../api/types'
 import {
+  applyToolEvent,
   getFinalAnswer,
   getLatestTask,
   historyAllowsSending,
   isInternalReviewDiagnostic,
   reconcileToolCalls,
   resolveHistoryStatus,
+  terminalFailureMessage,
 } from './session-state.ts'
 
 function task(taskId: string): SessionTask {
@@ -85,5 +87,55 @@ describe('session task recovery', () => {
 
     assert.equal(tools?.[0].status, 'rejected')
     assert.equal(tools?.[0].result, '任务已取消，工具未完成')
+  })
+
+  it('records a fast tool completion even when the requested card is not committed yet', () => {
+    const tools = applyToolEvent(undefined, {
+      id: 'call-fast',
+      toolName: 'list_files',
+      status: 'completed',
+      result: '[F] README.md',
+    })
+
+    assert.deepEqual(tools, [{
+      id: 'call-fast',
+      toolName: 'list_files',
+      status: 'completed',
+      args: undefined,
+      result: '[F] README.md',
+    }])
+  })
+
+  it('preserves tool arguments while later events update its status', () => {
+    const requested = applyToolEvent(undefined, {
+      id: 'call-1',
+      toolName: 'search',
+      status: 'running',
+      args: { path: '.', pattern: 'client|api-server' },
+    })
+    const completed = applyToolEvent(requested, {
+      id: 'call-1',
+      toolName: 'search',
+      status: 'completed',
+      result: 'README.md:1:client',
+    })
+
+    assert.deepEqual(completed?.[0].args, { path: '.', pattern: 'client|api-server' })
+    assert.equal(completed?.[0].status, 'completed')
+  })
+
+  it('uses the actual stop reason instead of labeling every blocked run as a completion gate', () => {
+    assert.equal(
+      terminalFailureMessage({ status: 'blocked', stop_reason: 'retry_limit_reached' }),
+      '模型输出未通过执行协议校验，达到重试上限后停止。',
+    )
+    assert.equal(
+      terminalFailureMessage({ status: 'blocked', stop_reason: 'budget_exhausted' }),
+      '本次运行已达到时间、步骤或令牌预算，请缩小任务范围后重试。',
+    )
+    assert.equal(
+      terminalFailureMessage({ status: 'blocked', stop_reason: 'completion_gate_failed' }),
+      '运行结果未满足计划中的全部完成条件，请根据当前进度重试。',
+    )
   })
 })

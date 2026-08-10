@@ -896,6 +896,27 @@ def test_remote_execution_hooks_stream_only_final_answer_projection():
     assert events[-1][1]["reset_stream"] is True
 
 
+def test_remote_execution_hooks_stream_native_plain_text_final_candidate():
+    events = []
+    hooks = RemoteExecutionHooks(
+        lambda event_type, data: events.append((event_type, data)),
+        CancellationToken(),
+        allow_plain_text_final=True,
+    )
+
+    hooks.begin_answer_candidate(None)
+    hooks.before_model(None)
+    hooks.model_text_delta(None, "execute", "项目")
+    hooks.model_text_delta(None, "execute", "总结")
+    hooks.after_model(None, {})
+    assert not [item for item in events if item[0] == "assistant.delta"]
+
+    hooks.commit_answer_candidate(None)
+
+    visible = "".join(data["text"] for event, data in events if event == "assistant.delta")
+    assert visible == "项目总结"
+
+
 def test_remote_execution_hooks_publish_protocol_retry_without_model_output():
     events = []
     hooks = RemoteExecutionHooks(lambda event_type, data: events.append((event_type, data)), CancellationToken())

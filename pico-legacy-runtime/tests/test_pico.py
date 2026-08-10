@@ -911,6 +911,40 @@ def test_openai_compatible_client_extracts_function_call_from_event_stream():
     assert client.last_completion_metadata["native_tool_call"] is True
 
 
+def test_openai_compatible_client_treats_native_plain_text_as_final_answer():
+    class FakeResponse:
+        headers = {"Content-Type": "text/event-stream"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            body = (
+                'data: {"type":"response.output_text.delta","delta":"项目"}\n'
+                'data: {"type":"response.output_text.delta","delta":"总结"}\n'
+                'data: {"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"项目总结"}]}],"usage":{"input_tokens":12,"output_tokens":4,"total_tokens":16}}}\n'
+                "data: [DONE]\n"
+            ).encode("utf-8")
+            return iter(body.splitlines(keepends=True))
+
+    client = OpenAICompatibleModelClient(
+        model="gpt-5.5",
+        base_url="https://api.openai.com/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+
+    with patch("urllib.request.urlopen", return_value=FakeResponse()):
+        result = client.complete("hello", 42, tool_definitions=[{"type": "function"}])
+
+    assert result == "<final>项目总结</final>"
+    assert client.last_completion_metadata["native_text_response"] is True
+
+
 def test_openai_compatible_client_extracts_text_from_event_stream_deltas():
     class FakeResponse:
         headers = {"Content-Type": "text/event-stream"}
