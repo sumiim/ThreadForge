@@ -1212,7 +1212,12 @@ def research_node(state: AgentState, config: RunnableConfig) -> AgentState:
                     role="research",
                     task=state["task"] + requirement,
                     allowed_tools=READ_ONLY_TOOLS,
-                    max_steps=3,
+                    # Leave one model round after the required tools so the
+                    # delegate can package its findings in <final>. With
+                    # list_files + read_file + search, a three-step child
+                    # could exhaust its budget immediately after the last
+                    # tool and be reported as malformed.
+                    max_steps=min(12, max(4, len(missing_tools) + 1)),
                 ),
             )
             delegate_calls += 1

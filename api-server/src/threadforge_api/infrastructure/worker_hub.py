@@ -45,6 +45,7 @@ _PUBLIC_WORKER_EVENTS = {
     "model.started",
     "model.completed",
     "model.retrying",
+    "model.protocol_retrying",
     "model.heartbeat",
     "assistant.delta",
     "tool.requested",
@@ -1913,7 +1914,10 @@ def _sanitize_event_data(event_type: str, data: dict) -> dict:
             }
         }
     if event_type == "model.started":
-        return {}
+        return {
+            "round": max(1, _nonnegative_int(data.get("round", 1))),
+            "run_elapsed_seconds": _nonnegative_float(data.get("run_elapsed_seconds", 0.0)),
+        }
     if event_type == "model.retrying":
         return {
             "stage": str(data.get("stage", ""))[:32],
@@ -1924,10 +1928,20 @@ def _sanitize_event_data(event_type: str, data: dict) -> dict:
             "elapsed_seconds": _nonnegative_float(data.get("elapsed_seconds", 0.0)),
             "reset_stream": bool(data.get("reset_stream", False)),
         }
+    if event_type == "model.protocol_retrying":
+        return {
+            "stage": str(data.get("stage", ""))[:32],
+            "attempt": max(1, _nonnegative_int(data.get("attempt", 1))),
+            "max_attempts": max(1, _nonnegative_int(data.get("max_attempts", 1))),
+            "error_code": "model_protocol_invalid",
+            "reset_stream": bool(data.get("reset_stream", True)),
+        }
     if event_type == "model.heartbeat":
         return {
             "stage": str(data.get("stage", ""))[:32],
             "elapsed_seconds": _nonnegative_float(data.get("elapsed_seconds", 0.0)),
+            "run_elapsed_seconds": _nonnegative_float(data.get("run_elapsed_seconds", 0.0)),
+            "round": max(1, _nonnegative_int(data.get("round", 1))),
         }
     if event_type == "assistant.delta":
         return {"text": redact_artifact(str(data.get("text", ""))[:4000])}

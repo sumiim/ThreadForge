@@ -166,6 +166,8 @@ class RemoteExecutionHooks:
         self._token = token
         self._active_tool_call_id = ""
         self._active_tool_name = ""
+        self._run_started_at = time.monotonic()
+        self._model_round = 0
         self._model_started_at = 0.0
         self._last_heartbeat_at = 0.0
         self._stream_buffer = ""
@@ -183,12 +185,19 @@ class RemoteExecutionHooks:
 
     def before_model(self, task_state) -> None:
         self._check()
+        self._model_round += 1
         self._model_started_at = time.monotonic()
         self._last_heartbeat_at = self._model_started_at
         self._stream_buffer = ""
         self._stream_mode = "pending"
         self._redaction_buffer = ""
-        self._send("model.started", {})
+        self._send(
+            "model.started",
+            {
+                "round": self._model_round,
+                "run_elapsed_seconds": max(0.0, self._model_started_at - self._run_started_at),
+            },
+        )
 
     def after_model(self, task_state, metadata: dict) -> None:
         self._check()
@@ -272,6 +281,20 @@ class RemoteExecutionHooks:
             },
         )
 
+    def model_protocol_retrying(self, task_state, stage: str, details: dict) -> None:
+        """Publish a safe status when the model output cannot be executed."""
+        self._check()
+        self._send(
+            "model.protocol_retrying",
+            {
+                "stage": str(stage)[:32],
+                "attempt": max(1, int(details.get("attempt", 1))),
+                "max_attempts": max(1, int(details.get("max_attempts", 1))),
+                "error_code": "model_protocol_invalid",
+                "reset_stream": True,
+            },
+        )
+
     def model_text_delta(self, task_state, stage: str, text: str) -> None:
         self._check()
         now = time.monotonic()
@@ -282,6 +305,8 @@ class RemoteExecutionHooks:
                 {
                     "stage": str(stage)[:32],
                     "elapsed_seconds": max(0.0, now - self._model_started_at),
+                    "run_elapsed_seconds": max(0.0, now - self._run_started_at),
+                    "round": self._model_round,
                 },
             )
         if stage != "execute" or self._stream_mode == "blocked":

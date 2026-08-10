@@ -829,6 +829,14 @@ class Pico:
         进入平台控制流的第一道结构化关口。
         """
         raw = str(raw)
+        # A few OpenAI-compatible gateways ignore the XML examples and return
+        # the same tool decision as a JSON object (sometimes inside a
+        # Markdown code fence). Normalize that representation before applying
+        # the strict XML protocol so those gateways do not burn every agent
+        # turn as a malformed response.
+        json_tool = Pico.parse_json_tool(raw)
+        if json_tool is not None:
+            return "tool", json_tool
         # 这里支持两种工具格式：
         # 1. <tool>...</tool> 里包 JSON，适合简短调用
         # 2. XML 风格属性/子标签，适合写文件这类多行内容
@@ -867,6 +875,50 @@ class Pico:
         if raw:
             return "retry", Pico.retry_notice("model response did not declare talk, tool, or final")
         return "retry", Pico.retry_notice("model returned an empty response")
+
+    @staticmethod
+    def parse_json_tool(raw):
+        """Return a normalized tool call from a JSON-only model response.
+
+        This deliberately accepts only an object that names a tool. Ordinary
+        JSON answers must continue through the normal final-answer protocol.
+        """
+        text = str(raw or "").strip()
+        if text.startswith("```") and text.endswith("```"):
+            lines = text.splitlines()
+            if len(lines) >= 3:
+                text = "\n".join(lines[1:-1]).strip()
+        if not text.startswith("{") or not text.endswith("}"):
+            return None
+        try:
+            value = json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(value, dict):
+            return None
+        # Common wrappers used by OpenAI-compatible proxies.
+        if isinstance(value.get("tool_call"), dict):
+            value = value["tool_call"]
+        elif isinstance(value.get("tool_calls"), list) and value["tool_calls"]:
+            first = value["tool_calls"][0]
+            if isinstance(first, dict):
+                value = first.get("function", first)
+        elif isinstance(value.get("function"), dict):
+            value = value["function"]
+        name = str(value.get("name") or value.get("tool") or "").strip()
+        if not name:
+            return None
+        args = value.get("args", value.get("arguments", {}))
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return None
+        if args is None:
+            args = {}
+        if not isinstance(args, dict):
+            return None
+        return {"name": name, "args": args}
 
     @staticmethod
     def is_deferred_action_answer(answer):

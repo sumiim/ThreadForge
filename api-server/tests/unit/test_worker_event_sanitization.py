@@ -89,6 +89,25 @@ def test_streaming_events_keep_only_safe_public_fields():
         "assistant.delta",
         {"text": "visible answer", "planning_json": "must not pass"},
     )
+    protocol_retrying = _sanitize_event_data(
+        "model.protocol_retrying",
+        {
+            "stage": "execute",
+            "attempt": 2,
+            "max_attempts": 9,
+            "raw_model_output": "must not pass",
+        },
+    )
+    heartbeat = _sanitize_event_data(
+        "model.heartbeat",
+        {
+            "stage": "execute",
+            "elapsed_seconds": 3.4,
+            "run_elapsed_seconds": 12.8,
+            "round": 4,
+            "raw_model_output": "must not pass",
+        },
+    )
 
     assert retrying == {
         "stage": "planning",
@@ -100,3 +119,16 @@ def test_streaming_events_keep_only_safe_public_fields():
         "reset_stream": True,
     }
     assert delta == {"text": "visible answer"}
+    assert protocol_retrying == {
+        "stage": "execute",
+        "attempt": 2,
+        "max_attempts": 9,
+        "error_code": "model_protocol_invalid",
+        "reset_stream": True,
+    }
+    assert heartbeat == {
+        "stage": "execute",
+        "elapsed_seconds": 3.4,
+        "run_elapsed_seconds": 12.8,
+        "round": 4,
+    }

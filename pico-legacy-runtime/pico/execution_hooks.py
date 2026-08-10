@@ -49,6 +49,8 @@ class ExecutionHooks(Protocol):
 
     def model_retrying(self, task_state, stage: str, details: dict) -> None: ...
 
+    def model_protocol_retrying(self, task_state, stage: str, details: dict) -> None: ...
+
     def model_text_delta(self, task_state, stage: str, text: str) -> None: ...
 
     def begin_answer_candidate(self, task_state) -> None: ...
@@ -80,6 +82,9 @@ class NoopExecutionHooks:
         return None
 
     def model_retrying(self, task_state, stage: str, details: dict) -> None:
+        return None
+
+    def model_protocol_retrying(self, task_state, stage: str, details: dict) -> None:
         return None
 
     def model_text_delta(self, task_state, stage: str, text: str) -> None:
