@@ -160,9 +160,16 @@ class RemoteApprovalStrategy(ApprovalStrategy):
 
 
 class RemoteExecutionHooks:
-    def __init__(self, send_event: Callable[[str, dict], None], token: CancellationToken):
+    def __init__(
+        self,
+        send_event: Callable[[str, dict], None],
+        token: CancellationToken,
+        *,
+        allow_plain_text_final: bool = False,
+    ):
         self._send = send_event
         self._token = token
+        self._allow_plain_text_final = bool(allow_plain_text_final)
         self._active_tool_call_id = ""
         self._active_tool_name = ""
         self._run_started_at = time.monotonic()
@@ -200,6 +207,9 @@ class RemoteExecutionHooks:
 
     def after_model(self, task_state, metadata: dict) -> None:
         self._check()
+        if self._stream_mode == "plain_final":
+            self._emit_public_delta("", completed=True)
+            self._stream_mode = "blocked"
         usage = {
             key: value
             for key, value in (metadata or {}).items()
@@ -317,6 +327,10 @@ class RemoteExecutionHooks:
         if stage != "execute" or self._stream_mode == "blocked":
             return
 
+        if self._stream_mode == "plain_final":
+            self._emit_public_delta(str(text), completed=False)
+            return
+
         self._stream_buffer += str(text)
         if self._stream_mode == "pending":
             marker_positions = [
@@ -326,6 +340,17 @@ class RemoteExecutionHooks:
             ]
             marker_positions = [item for item in marker_positions if item[0] >= 0]
             if not marker_positions:
+                stripped = self._stream_buffer.lstrip()
+                if (
+                    self._allow_plain_text_final
+                    and stripped
+                    and not stripped.startswith("<")
+                ):
+                    self._stream_mode = "plain_final"
+                    visible = self._stream_buffer
+                    self._stream_buffer = ""
+                    self._emit_public_delta(visible, completed=False)
+                    return
                 self._stream_buffer = self._stream_buffer[-32:]
                 return
             position, mode = min(marker_positions, key=lambda item: item[0])
@@ -510,7 +535,6 @@ def run_task(
             }
         )
 
-    hooks = RemoteExecutionHooks(send_runtime_event, active.token)
     model_timeout = int(settings.get("model_timeout_seconds", 120))
     model_max_attempts = max(1, min(5, int(settings.get("model_max_attempts", 3))))
     if model_client_factory is not None:
@@ -542,6 +566,13 @@ def run_task(
             supported_reasoning_efforts=supported_efforts,
             instructions=THREADFORGE_MODEL_INSTRUCTIONS,
         )
+    hooks = RemoteExecutionHooks(
+        send_runtime_event,
+        active.token,
+        allow_plain_text_final=bool(
+            getattr(provider_model_client, "supports_native_tools", False)
+        ),
+    )
     model_client = CancellableModelClient(provider_model_client, active.token)
     router_model_client = (
         model_client

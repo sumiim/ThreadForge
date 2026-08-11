@@ -39,12 +39,14 @@ import type {
   Workspace,
 } from '../api/types'
 import {
+  applyToolEvent,
   getFinalAnswer,
   getLatestTask,
   historyAllowsSending,
   isInternalReviewDiagnostic,
   reconcileToolCalls,
   resolveHistoryStatus,
+  terminalFailureMessage,
 } from './session-state.ts'
 import type { HistoryStatus } from './session-state.ts'
 import { selectInitialNavigableSession } from '../features/sessions/session-groups'
@@ -65,28 +67,6 @@ const TERMINAL_EVENTS = new Set([
   'task.interrupted',
   'task.blocked',
 ])
-
-const modelFailureMessages: Record<string, string> = {
-  model_rate_limited: '模型服务当前请求过多，已自动重试，请稍后再试。',
-  model_timeout: '模型服务响应超时，已自动重试，请稍后再试。',
-  model_connection_error: '无法稳定连接模型服务，已自动重试，请检查网络后再试。',
-  model_server_error: '模型服务暂时不可用，已自动重试，请稍后再试。',
-  model_auth_error: '模型服务认证失败，请在 Worker 中重新配置 API 密钥。',
-  model_request_rejected: '模型服务拒绝了请求，请检查模型与推理强度配置。',
-  model_response_invalid: '模型服务返回了无法解析的响应，请稍后再试。',
-  model_provider_error: '模型服务返回错误，请检查供应商配置后再试。',
-  model_call_failed: '模型调用失败，请稍后再试。',
-}
-
-function terminalFailureMessage(data: Record<string, unknown>): string {
-  const code = String(data.error_code ?? '')
-  if (code && modelFailureMessages[code]) return modelFailureMessages[code]
-  const status = String(data.status ?? '')
-  if (status === 'cancelled') return '已停止当前任务。'
-  if (status === 'interrupted') return '运行因服务重启或连接中断而终止，请重新执行。'
-  if (status === 'blocked') return '运行未通过完成门禁，请根据当前提示调整后重试。'
-  return status === 'failed' ? 'Agent 运行失败，请稍后重试。' : ''
-}
 
 function sessionModel(
   workspaceId: string,
@@ -419,39 +399,35 @@ export function useSessions(): UseSessions {
         updateSessionMessages(sessionId, (messages) =>
           messages.map((m) => {
             if (m.id !== assistantId) return m
-            const existing = (m.toolCalls ?? []).find((t) => t.id === toolCallId)
-            if (existing) {
-              if (!args || Object.keys(args).length === 0 || existing.args) return m
-              return {
-                ...m,
-                toolCalls: (m.toolCalls ?? []).map((t) => (t.id === toolCallId ? { ...t, args } : t)),
-              }
-            }
             return {
               ...m,
-              toolCalls: [...(m.toolCalls ?? []), { id: toolCallId, toolName, args, status: 'running' }],
+              toolCalls: applyToolEvent(m.toolCalls, {
+                id: toolCallId,
+                toolName,
+                args,
+                status: 'running',
+              }),
             }
           }),
         )
       }
       const markToolByEvent = (
-        type: 'completed' | 'error',
+        status: ToolCall['status'],
         toolCallId: string,
         toolName: string,
         result?: string,
       ) => {
-        const session = sessionsRef.current.find((s) => s.id === sessionId)
-        const message = session?.messages.find((m) => m.id === assistantId)
-        if (!message) return
-        const tool = toolCallId
-          ? findTool(sessionId, assistantId, toolCallId)
-          : findLatestToolByName(sessionId, assistantId, toolName)
-        if (!tool) return
-        updateTool(sessionId, assistantId, tool.id, (t) => ({
-          ...t,
-          status: type,
-          result: result ?? t.result,
-        }))
+        updateSessionMessages(sessionId, (messages) => messages.map((message) =>
+          message.id === assistantId ? {
+            ...message,
+            toolCalls: applyToolEvent(message.toolCalls, {
+              id: toolCallId,
+              toolName,
+              status,
+              result,
+            }),
+          } : message,
+        ))
       }
 
       const appendRunIndex = (envelope: RunEventEnvelope) => {
@@ -706,11 +682,7 @@ export function useSessions(): UseSessions {
           case 'tool.started': {
             const toolCallId = String(data.tool_call_id ?? '')
             const toolName = String(data.tool_name ?? '')
-            const tool = toolCallId
-              ? findTool(sessionId, assistantId, toolCallId)
-              : findLatestToolByName(sessionId, assistantId, toolName)
-            if (!tool) return
-            updateTool(sessionId, assistantId, tool.id, (t) => ({ ...t, status: 'running' }))
+            markToolByEvent('running', toolCallId, toolName)
             appendActivity(envelope, '工具执行中', toolName)
             return
           }
@@ -859,7 +831,7 @@ export function useSessions(): UseSessions {
       es.addEventListener('message', onFrame)
       // 断开后 EventSource 自动重连，重连成功会重发 task.snapshot；无需额外处理
     },
-    [ensureApprovalCard, findLatestToolByName, findTool, finishRun, updateSession, updateSessionMessages, updateTool],
+    [ensureApprovalCard, finishRun, updateSession, updateSessionMessages, updateTool],
   )
 
   // ---- 初始加载 ---------------------------------------------------------------

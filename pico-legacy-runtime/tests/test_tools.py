@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import patch
 
 from pico.tool_context import ToolContext
 from pico.tools import (
@@ -6,6 +7,7 @@ from pico.tools import (
     provider_tool_definitions,
     tool_delegate,
     tool_read_file,
+    tool_search,
 )
 
 
@@ -84,3 +86,46 @@ def test_provider_tool_definitions_are_strict_responses_functions(tmp_path):
         "required": ["path", "start", "end"],
         "additionalProperties": False,
     }
+
+
+def test_search_fallback_preserves_regex_semantics_and_skips_ignored_directories(tmp_path):
+    (tmp_path / "README.md").write_text(
+        "The api-server communicates with the client.\n",
+        encoding="utf-8",
+    )
+    ignored = tmp_path / ".git"
+    ignored.mkdir()
+    (ignored / "private.txt").write_text("api-server\n", encoding="utf-8")
+    context = ToolContext(
+        root=tmp_path,
+        path_resolver=lambda raw_path: (tmp_path / raw_path).resolve(),
+        shell_env_provider=lambda: {"PWD": str(tmp_path)},
+        depth=0,
+        max_depth=1,
+        spawn_delegate=lambda args: "unused",
+    )
+
+    with patch("pico.tools.shutil.which", return_value=None):
+        result = tool_search(context, {"pattern": "api-server|client", "path": "."})
+
+    assert "README.md:1:The api-server communicates with the client." in result
+    assert "private.txt" not in result
+
+
+def test_search_fallback_rejects_invalid_regular_expression(tmp_path):
+    context = ToolContext(
+        root=tmp_path,
+        path_resolver=lambda raw_path: (tmp_path / raw_path).resolve(),
+        shell_env_provider=lambda: {"PWD": str(tmp_path)},
+        depth=0,
+        max_depth=1,
+        spawn_delegate=lambda args: "unused",
+    )
+
+    with patch("pico.tools.shutil.which", return_value=None):
+        try:
+            tool_search(context, {"pattern": "[", "path": "."})
+        except ValueError as exc:
+            assert "invalid search pattern" in str(exc)
+        else:
+            raise AssertionError("invalid regex must be rejected")
