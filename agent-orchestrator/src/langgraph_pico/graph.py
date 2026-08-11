@@ -1342,8 +1342,18 @@ def _read_only_answer(state, config):
     result = ""
     task_state = None
     for attempt in range(1, MAX_REQUIRED_TOOL_ATTEMPTS + 1):
-        remaining = state["step_budget"] - state["coordinator_steps_used"] - sum(
-            child.tool_steps for child in _child_task_states(agent, config)
+        # coordinator_steps_used already includes tool calls from earlier answer
+        # executors. Only reserve calls created by retries inside this invocation;
+        # subtracting every historical child here charges the same tools twice.
+        answer_tool_steps = max(
+            0,
+            sum(child.tool_steps for child in _child_task_states(agent, config))
+            - initial_child_tool_steps,
+        )
+        remaining = (
+            state["step_budget"]
+            - state["coordinator_steps_used"]
+            - answer_tool_steps
         )
         if remaining < 1:
             return _failed_state(
@@ -1371,6 +1381,13 @@ def _read_only_answer(state, config):
                 required_tools=missing_tools,
                 require_tool_evidence=require_evidence,
                 retry=attempt > 1,
+                plan=state["plan"],
+                review_feedback=(
+                    state["review_issues"] if state["replan_attempts"] else ""
+                ),
+                previous_answer=(
+                    state["execution_result"] if state["replan_attempts"] else ""
+                ),
             ),
             config,
             collect_answer_attempts=True,

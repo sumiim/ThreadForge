@@ -879,6 +879,51 @@ def test_v11_research_evidence_can_ground_answer_without_duplicate_read(tmp_path
     )
 
 
+def test_v11_read_only_replan_does_not_double_charge_previous_answer_tools(tmp_path):
+    from langgraph_pico import run_agent
+
+    first_plan = json.loads(
+        _v11_plan("read_only", ["list_files", "read_file", "search"])
+    )
+    revised_plan = json.loads(json.dumps(first_plan))
+    revised_plan["revision"] = 2
+    review_feedback = "Explain the module boundaries before summarizing the architecture."
+    agent, model_client, _ = _build_runtime(
+        tmp_path,
+        [
+            json.dumps(first_plan),
+            '<tool>{"name":"list_files","args":{"path":"."}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
+            '<tool>{"name":"search","args":{"pattern":"Placeholder","path":"."}}</tool>',
+            "<final>The first architecture summary is incomplete.</final>",
+            f"status: needs_fix\n{review_feedback}",
+            json.dumps(revised_plan),
+            "<final>The revised answer explains the module boundaries and architecture.</final>",
+            "status: pass\nThe revised answer satisfies the request.",
+        ],
+    )
+
+    result = run_agent(
+        agent,
+        "Read the project files and explain the architecture.",
+        task_mode="auto",
+        requires_research=False,
+        enable_planning=True,
+    )
+
+    assert result.task_state.stop_reason == "final_answer_returned"
+    assert result.final_answer == (
+        "The revised answer explains the module boundaries and architecture."
+    )
+    assert result.task_state.tool_steps == 0
+    assert sum(child.tool_steps for child in result.budget_task_states) == 3
+    assert review_feedback in model_client.prompts[-2]
+    assert "previous_answer" in model_client.prompts[-2]
+    assert not any(
+        event.get("event") == "plan_budget_exhausted" for event in result.events
+    )
+
+
 def test_v11_code_change_fails_without_write_evidence(tmp_path):
     from langgraph_pico import run_agent
 
