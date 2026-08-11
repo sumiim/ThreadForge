@@ -1,3 +1,3 @@
 """ThreadForge local Worker."""
 
-__version__ = "0.3.20"
+__version__ = "0.3.21"
