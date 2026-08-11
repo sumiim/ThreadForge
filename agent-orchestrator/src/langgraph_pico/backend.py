@@ -138,25 +138,34 @@ def _assign_evidence_steps(evidence_items, plan):
     return assigned
 
 
-def _complete_satisfied_plan_steps(task_state, plan, *, final_answer, intent):
+def _complete_satisfied_plan_steps(task_state, plan, *, final_answer):
     successful = [
         item
         for item in task_state.evidence
         if item.get("status") in {"ok", "partial_success"}
     ]
+    successful_tools = {
+        str(item.get("tool_name", ""))
+        for item in successful
+        if str(item.get("tool_name", ""))
+    }
+    completed_step_ids = set()
+    has_final_answer = bool(str(final_answer).strip())
     for step in plan.get("steps", []):
+        step_id = str(step.get("id", ""))
+        dependencies = {str(item) for item in step.get("dependencies", [])}
+        if not dependencies <= completed_step_ids:
+            continue
         required_tools = set(step.get("required_tools", []))
-        observed_tools = {
-            str(item.get("tool_name", ""))
-            for item in successful
-            if item.get("step_id") == step.get("id")
-        }
-        if (required_tools and required_tools <= observed_tools) or (
-            not required_tools
-            and intent == INTENT_CONVERSATION
-            and str(final_answer).strip()
-        ):
+        # required_tools names capabilities that must have produced current-run
+        # evidence; it doesn't reserve one distinct invocation per plan step.
+        # Reusing a capability across steps is especially important for final
+        # synthesis steps, which consume evidence gathered by their dependencies.
+        tools_satisfied = required_tools <= successful_tools
+        output_satisfied = not required_tools and has_final_answer
+        if (required_tools and tools_satisfied) or output_satisfied:
             task_state.complete_item(step.get("goal", ""))
+            completed_step_ids.add(step_id)
 
 
 def _materialize_focus_paths(focus_paths):
@@ -458,7 +467,6 @@ def run_agent(
                     task_state,
                     result["plan"],
                     final_answer=final_answer,
-                    intent=result["resolved_intent"],
                 )
             if result["completion_status"] == "success" and not result["terminal_reason"]:
                 if (
