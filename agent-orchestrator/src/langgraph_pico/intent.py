@@ -163,12 +163,18 @@ def build_read_only_prompt(
     required_tools=(),
     require_tool_evidence=False,
     retry=False,
+    plan=None,
+    review_feedback="",
+    previous_answer="",
 ):
     payload = json.dumps(
         {
             "task": str(task),
             "recent_context": str(context),
             "research_findings": str(research_result),
+            "plan": dict(plan or {}),
+            "review_feedback": str(review_feedback),
+            "previous_answer": str(previous_answer),
         },
         ensure_ascii=False,
     )
@@ -183,6 +189,12 @@ def build_read_only_prompt(
         requirements.append(
             "Before returning a final answer, you MUST call at least one read-only workspace tool "
             "(list_files, read_file, or search) and use its successful result as evidence."
+        )
+    if str(review_feedback).strip():
+        requirements.append(
+            "The previous candidate did not pass review. Return a revised complete answer that "
+            "addresses review_feedback and follows the revised plan; do not repeat previous_answer "
+            "unchanged."
         )
     correction = (
         "The previous attempt did not execute the required workspace tools. Retry by calling the "
