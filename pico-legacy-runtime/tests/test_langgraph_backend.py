@@ -879,6 +879,78 @@ def test_v11_research_evidence_can_ground_answer_without_duplicate_read(tmp_path
     )
 
 
+@pytest.mark.parametrize("synthesis_tools", [["read_file"], []])
+def test_v11_completion_gate_reuses_evidence_for_synthesis_step(
+    tmp_path, synthesis_tools
+):
+    from langgraph_pico import run_agent
+
+    plan = json.loads(_v11_plan("read_only", ["read_file"]))
+    plan["steps"] = [
+        {
+            "id": "inventory",
+            "goal": "Inventory the workspace",
+            "dependencies": [],
+            "required_tools": ["list_files"],
+            "required_evidence": ["workspace entries"],
+            "done_when": ["the workspace layout is known"],
+        },
+        {
+            "id": "read",
+            "goal": "Read the project overview",
+            "dependencies": ["inventory"],
+            "required_tools": ["read_file"],
+            "required_evidence": ["README contents"],
+            "done_when": ["the project overview is known"],
+        },
+        {
+            "id": "search",
+            "goal": "Search for architecture evidence",
+            "dependencies": ["read"],
+            "required_tools": ["search"],
+            "required_evidence": ["matching source references"],
+            "done_when": ["the architecture evidence is grounded"],
+        },
+        {
+            "id": "synthesize",
+            "goal": "Synthesize the final architecture answer",
+            "dependencies": ["inventory", "read", "search"],
+            "required_tools": synthesis_tools,
+            "required_evidence": ["evidence gathered by the preceding steps"],
+            "done_when": ["a grounded architecture answer is returned"],
+        },
+    ]
+    plan["budgets"]["tool_calls"] = 6
+    agent, _, _ = _build_runtime(
+        tmp_path,
+        [
+            json.dumps(plan),
+            '<tool>{"name":"list_files","args":{"path":"."}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
+            '<tool>{"name":"search","args":{"pattern":"fixture","path":"."}}</tool>',
+            "<final>The workspace contains a documented fixture architecture.</final>",
+            "status: pass\nThe answer is grounded in current-run evidence.",
+        ],
+    )
+
+    result = run_agent(
+        agent,
+        "Inspect the workspace and explain its architecture.",
+        task_mode="auto",
+        requires_research=False,
+        enable_planning=True,
+    )
+
+    assert result.task_state.stop_reason == "final_answer_returned"
+    assert result.final_answer == (
+        "The workspace contains a documented fixture architecture."
+    )
+    assert result.task_state.completed_items == result.task_state.checklist
+    assert sum(
+        item.get("tool_name") == "read_file" for item in result.task_state.evidence
+    ) == 1
+
+
 def test_v11_read_only_replan_does_not_double_charge_previous_answer_tools(tmp_path):
     from langgraph_pico import run_agent
 
