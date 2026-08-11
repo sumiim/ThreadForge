@@ -70,7 +70,6 @@ def build_plan_prompt(
             "available_tools": sorted(str(item) for item in available_tools),
             "maximum_budgets": dict(budgets),
             "minimum_budgets": dict(minimum_budgets or PLAN_MINIMUM_BUDGETS),
-            "expected_revision": 1,
             "expected_revision": int(expected_revision),
             "previous_plan": dict(previous_plan or {}),
             "replan_reason": str(replan_reason),
@@ -94,7 +93,9 @@ def build_plan_prompt(
         "dependencies, required_tools, and required_evidence. Dependencies must be acyclic. Use only "
         "available tools. Budgets are integer limits. Runtime minimum_budgets are authoritative; "
         "never return a lower value. tool_calls may be 0 when no tool is needed, while every other "
-        "budget must be at least 1. "
+        "budget must be at least 1. required_tools names capabilities that must produce evidence, "
+        "not an exact number of calls; repeating the same tool in multiple steps does not reserve "
+        "another tool call. "
         "The task field is the only current user request. recent_context is reference material only: "
         "use it solely to resolve an explicit reference in task, and never continue, inspect, or act on "
         "an older request when task does not ask for it. Greetings, acknowledgements, thanks, and general "
@@ -156,6 +157,8 @@ def build_routed_planning_prompt(
         "done_when. acceptance, dependencies, required_tools, required_evidence, and done_when "
         "must be JSON arrays of non-empty strings. Dependencies must be acyclic. Use only "
         "available tools. Budgets are integer limits and must not be lower than minimum_budgets. "
+        "required_tools names capabilities that must produce evidence, not an exact number of calls; "
+        "repeating the same tool in multiple steps does not reserve another tool call. "
         "A request about workspace files, directories, logs, project architecture, or any fact "
         "that needs verification must use mode plan. Any request that changes files or runs a "
         "potentially mutating shell command must use intent code_change.\n"
@@ -232,9 +235,24 @@ def parse_and_validate_plan(
         **dict(minimum_budgets or {}),
     }
     budgets = _validate_budgets(value["budgets"], maximum_budgets, minimum_budgets)
-    required_tool_calls = sum(len(step["required_tools"]) for step in steps)
-    required_tool_floor = int(minimum_budgets["tool_calls"]) + required_tool_calls
-    required_round_floor = int(minimum_budgets["model_rounds"]) + required_tool_calls
+    # ``required_tools`` is an evidence/capability contract, not an exact call
+    # schedule. One successful tool kind can satisfy the global execution gate
+    # even when several plan steps mention it. Summing every occurrence rejects
+    # normal multi-step read-only plans, and adding already consumed calls again
+    # makes replanning fail before execution can resume. Runtime usage remains
+    # independently bounded and can extend a soft plan budget to the hard limit.
+    required_tool_kinds = {
+        name for step in steps for name in step["required_tools"]
+    }
+    required_tool_count = len(required_tool_kinds)
+    required_tool_floor = max(
+        int(minimum_budgets["tool_calls"]),
+        required_tool_count,
+    )
+    required_round_floor = max(
+        int(minimum_budgets["model_rounds"]),
+        MIN_PLAN_MODEL_ROUNDS + required_tool_count,
+    )
     if required_tool_floor > int(maximum_budgets["tool_calls"]):
         raise PlanValidationError("plan_budget_exceeded", "required tools exceed tool-call budget")
     if required_round_floor > int(maximum_budgets["model_rounds"]):

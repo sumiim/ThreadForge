@@ -10,7 +10,6 @@ from langgraph_pico.planning import (
 
 from pico import Pico
 
-
 MAXIMUM_BUDGETS = {
     "model_rounds": 64,
     "tool_calls": 25,
@@ -121,6 +120,55 @@ def test_v11_plan_rejects_cycles_and_excessive_budgets():
         "output_tokens": 2_000,
         "tool_calls": 3,
     }
+
+
+def test_v11_plan_counts_distinct_required_tools_instead_of_step_occurrences():
+    repeated = _plan()
+    repeated["steps"] = [
+        {
+            **repeated["steps"][0],
+            "id": step_id,
+            "dependencies": [] if index == 0 else [f"step_{index}"],
+            "required_tools": ["list_files", "read_file", "search"],
+        }
+        for index, step_id in enumerate(("step_1", "step_2", "step_3"))
+    ]
+    repeated["budgets"].update({"model_rounds": 3, "tool_calls": 3})
+    maximum = {**MAXIMUM_BUDGETS, "tool_calls": 3}
+
+    parsed = parse_and_validate_plan(
+        json.dumps(repeated),
+        available_tools={"list_files", "read_file", "search"},
+        maximum_budgets=maximum,
+    )
+
+    assert parsed["budgets"]["tool_calls"] == 3
+    assert parsed["budgets"]["model_rounds"] == 6
+
+    over_hard_limit = json.loads(json.dumps(repeated))
+    over_hard_limit["budgets"]["tool_calls"] = 2
+    with pytest.raises(PlanValidationError, match="required tools exceed tool-call budget"):
+        parse_and_validate_plan(
+            json.dumps(over_hard_limit),
+            available_tools={"list_files", "read_file", "search"},
+            maximum_budgets={**MAXIMUM_BUDGETS, "tool_calls": 2},
+        )
+
+
+def test_v11_replan_does_not_charge_consumed_tool_budget_twice():
+    repeated = _plan()
+    repeated["steps"][0]["required_tools"] = ["list_files", "read_file", "search"]
+    repeated["budgets"]["tool_calls"] = 3
+    maximum = {**MAXIMUM_BUDGETS, "tool_calls": 6}
+
+    parsed = parse_and_validate_plan(
+        json.dumps(repeated),
+        available_tools={"list_files", "read_file", "search"},
+        maximum_budgets=maximum,
+        minimum_budgets={"tool_calls": 4},
+    )
+
+    assert parsed["budgets"]["tool_calls"] == 4
 
 
 def test_v11_plan_normalizes_scalar_step_contract_and_allows_zero_tool_budget():
