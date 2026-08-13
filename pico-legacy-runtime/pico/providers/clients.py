@@ -58,6 +58,32 @@ def _retry_delay(attempt, retry_after=""):
     return min(0.5 * (2 ** max(0, int(attempt) - 1)), 4.0)
 
 
+def _invalid_response_metadata(body_text, attempt):
+    """Safe, bounded diagnostics for an unusable provider response.
+
+    Only records the shape of the response (length + top-level JSON keys),
+    never the raw model text, so nothing sensitive leaks into trace/report.
+    """
+    text = "" if body_text is None else str(body_text)
+    metadata = {
+        "provider_error_code": "model_response_invalid",
+        "provider_error_retryable": True,
+        "provider_request_attempts": int(attempt),
+        "response_chars": len(text),
+    }
+    stripped = text.strip()
+    if stripped:
+        try:
+            value = json.loads(stripped)
+        except (TypeError, ValueError):
+            value = None
+        if isinstance(value, dict):
+            metadata["response_top_level_keys"] = sorted(
+                str(key)[:64] for key in value
+            )[:20]
+    return metadata
+
+
 class FakeModelClient:
     def __init__(self, outputs):
         self.outputs = list(outputs)
@@ -570,11 +596,105 @@ class OpenAICompatibleModelClient:
                             if normalized_text != streamed_text.strip():
                                 self.last_completion_metadata["native_text_response"] = True
                             return normalized_text
-                        raise ModelProviderError("model_response_invalid", attempts=attempt)
-                    else:
-                        body_text = response.read().decode("utf-8")
-                        response_data = {}
-                break
+                        # 流式响应既没有文本也没有原生工具调用：网关返回了空/不可解析的响应。
+                        self.last_completion_metadata.update(
+                            _invalid_response_metadata("", attempt)
+                        )
+                        raise ModelProviderError(
+                            "model_response_invalid", retryable=True, attempts=attempt
+                        )
+
+                    body_text = response.read().decode("utf-8")
+                    # 有些兼容后端返回普通 JSON，有些返回 SSE（content-type 未标注）。
+                    # 这里两种都接住，并尽量统一抽取文本和 usage/cache 元数据。
+                    if body_text.lstrip().startswith("data:"):
+                        text, response_data = _extract_openai_response_from_sse(body_text)
+                        if isinstance(response_data, dict) and response_data:
+                            self.last_completion_metadata = {
+                                "requested_reasoning_effort": self.reasoning_effort,
+                                "effective_reasoning_effort": self.reasoning_effort,
+                                "prompt_cache_supported": self.supports_prompt_cache,
+                                "prompt_cache_key": prompt_cache_key,
+                                "prompt_cache_retention": prompt_cache_retention,
+                                **_extract_usage_cache_details(response_data),
+                            }
+                        native_action = _extract_openai_function_call(response_data or {})
+                        if native_action:
+                            self.last_completion_metadata["native_tool_call"] = True
+                            return native_action
+                        if text:
+                            normalized_text = _normalize_openai_native_text(
+                                text,
+                                native_tools_enabled=native_tools_enabled,
+                            )
+                            if normalized_text != text.strip():
+                                self.last_completion_metadata["native_text_response"] = True
+                            return normalized_text
+                        self.last_completion_metadata.update(
+                            _invalid_response_metadata(body_text, attempt)
+                        )
+                        raise ModelProviderError(
+                            "model_response_invalid", retryable=True, attempts=attempt
+                        )
+
+                    try:
+                        data = json.loads(body_text)
+                    except json.JSONDecodeError as exc:
+                        self.last_completion_metadata.update(
+                            _invalid_response_metadata(body_text, attempt)
+                        )
+                        raise ModelProviderError(
+                            "model_response_invalid", retryable=True, attempts=attempt
+                        ) from exc
+                    if data.get("error"):
+                        raise ModelProviderError("model_provider_error", attempts=attempt)
+                    self.last_completion_metadata = {
+                        "requested_reasoning_effort": self.reasoning_effort,
+                        "effective_reasoning_effort": self.reasoning_effort,
+                        "prompt_cache_supported": self.supports_prompt_cache,
+                        "prompt_cache_key": prompt_cache_key,
+                        "prompt_cache_retention": prompt_cache_retention,
+                        **_extract_usage_cache_details(data),
+                    }
+                    native_action = _extract_openai_function_call(data)
+                    if native_action:
+                        self.last_completion_metadata["native_tool_call"] = True
+                        return native_action
+                    text = _extract_openai_text(data)
+                    if not text:
+                        self.last_completion_metadata.update(
+                            _invalid_response_metadata(body_text, attempt)
+                        )
+                        raise ModelProviderError(
+                            "model_response_invalid", retryable=True, attempts=attempt
+                        )
+                    normalized_text = _normalize_openai_native_text(
+                        text,
+                        native_tools_enabled=native_tools_enabled,
+                    )
+                    if normalized_text != text.strip():
+                        self.last_completion_metadata["native_text_response"] = True
+                    return normalized_text
+            except ModelProviderError as exc:
+                delay = _retry_delay(attempt)
+                if exc.retryable and attempt < self.max_attempts:
+                    if deadline_monotonic is not None and time.monotonic() + delay >= deadline_monotonic:
+                        exc.attempts = attempt
+                        self.last_completion_metadata = {
+                            "provider_error_code": exc.code,
+                            "provider_error_retryable": exc.retryable,
+                            "provider_request_attempts": attempt,
+                        }
+                        raise exc
+                    notify_retry(attempt, exc, delay)
+                    time.sleep(delay)
+                    continue
+                self.last_completion_metadata = {
+                    "provider_error_code": exc.code,
+                    "provider_error_retryable": exc.retryable,
+                    "provider_request_attempts": exc.attempts,
+                }
+                raise exc
             except urllib.error.HTTPError as exc:
                 provider_error = _provider_http_error(exc.code, attempt)
                 delay = _retry_delay(
@@ -645,63 +765,13 @@ class OpenAICompatibleModelClient:
                 }
                 raise provider_error from exc
 
-        # 有些兼容后端返回普通 JSON，有些返回 SSE。
-        # 这里两种都接住，并尽量统一抽取文本和 usage/cache 元数据。
-        if content_type.startswith("text/event-stream") or body_text.lstrip().startswith("data:"):
-            text, response_data = _extract_openai_response_from_sse(body_text)
-            if isinstance(response_data, dict) and response_data:
-                # 这些元数据会一路传回 runtime，进入 trace 和 report，
-                # 用来观察 prompt cache 是否真的命中。
-                self.last_completion_metadata = {
-                    "requested_reasoning_effort": self.reasoning_effort,
-                    "effective_reasoning_effort": self.reasoning_effort,
-                    "prompt_cache_supported": self.supports_prompt_cache,
-                    "prompt_cache_key": prompt_cache_key,
-                    "prompt_cache_retention": prompt_cache_retention,
-                    **_extract_usage_cache_details(response_data),
-                }
-            native_action = _extract_openai_function_call(response_data or {})
-            if native_action:
-                self.last_completion_metadata["native_tool_call"] = True
-                return native_action
-            if text:
-                normalized_text = _normalize_openai_native_text(
-                    text,
-                    native_tools_enabled=native_tools_enabled,
-                )
-                if normalized_text != text.strip():
-                    self.last_completion_metadata["native_text_response"] = True
-                return normalized_text
-            raise ModelProviderError("model_response_invalid", attempts=attempt)
-
-        try:
-            data = json.loads(body_text)
-        except json.JSONDecodeError as exc:
-            raise ModelProviderError("model_response_invalid", attempts=attempt) from exc
-        if data.get("error"):
-            raise ModelProviderError("model_provider_error", attempts=attempt)
-        self.last_completion_metadata = {
-            "requested_reasoning_effort": self.reasoning_effort,
-            "effective_reasoning_effort": self.reasoning_effort,
-            "prompt_cache_supported": self.supports_prompt_cache,
-            "prompt_cache_key": prompt_cache_key,
-            "prompt_cache_retention": prompt_cache_retention,
-            **_extract_usage_cache_details(data),
-        }
-        native_action = _extract_openai_function_call(data)
-        if native_action:
-            self.last_completion_metadata["native_tool_call"] = True
-            return native_action
-        text = _extract_openai_text(data)
-        if not text:
-            raise ModelProviderError("model_response_invalid", attempts=attempt)
-        normalized_text = _normalize_openai_native_text(
-            text,
-            native_tools_enabled=native_tools_enabled,
+        # 防御性兜底：正常情况下循环内必然 return 或 raise（成功、不可重试错误、
+        # 或 deadline 提前中止）。仅当 max_attempts 配置异常时才可能走到这里。
+        raise ModelProviderError(
+            "model_response_invalid",
+            retryable=True,
+            attempts=self.max_attempts,
         )
-        if normalized_text != text.strip():
-            self.last_completion_metadata["native_text_response"] = True
-        return normalized_text
 
 
 def _extract_anthropic_text(data):
