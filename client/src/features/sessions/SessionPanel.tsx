@@ -469,6 +469,11 @@ function InlineName({
     try {
       await onSave(normalized)
       setEditing(false)
+    } catch {
+      // 保存失败（乐观锁冲突/网络错误）：恢复原名称并退出编辑；
+      // 错误原因已由 renameDevice/renameWorkspace/renameSession 层 notify.error 统一提示。
+      setDraft(value)
+      setEditing(false)
     } finally {
       setSaving(false)
     }

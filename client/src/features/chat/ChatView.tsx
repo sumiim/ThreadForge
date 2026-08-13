@@ -6,7 +6,7 @@ import type { HistoryStatus } from '../../hooks/session-state'
 import ApprovalNotice from './ApprovalNotice'
 import MessageList from './MessageList'
 import Composer from './Composer'
-import RunMinimap from './RunMinimap'
+import RunTimeline from './RunTimeline'
 
 interface ChatViewProps {
   session: Session
@@ -82,7 +82,7 @@ export default function ChatView({ session, historyStatus, running, stopping, ag
         </div>
       ) : null}
       <div className="flex min-h-0 flex-1">
-      <RunMinimap
+      <RunTimeline
         runs={session.runs ?? []}
         activeRunId={session.activeRunId ?? session.lastRunId}
         onSelectRun={onSelectRun}
