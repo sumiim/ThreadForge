@@ -2,7 +2,7 @@ from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
 from pico.agent_loop import AgentLoop
 
 
-def build_agent(tmp_path, outputs):
+def build_agent(tmp_path, outputs, **kwargs):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
@@ -11,6 +11,7 @@ def build_agent(tmp_path, outputs):
         workspace=workspace,
         session_store=store,
         approval_policy="auto",
+        **kwargs,
     )
 
 
@@ -29,6 +30,45 @@ def test_agent_loop_runs_same_control_flow_as_pico_ask(tmp_path):
     assert answer == "Done."
     assert agent.current_task_state.status == "completed"
     assert agent.run_store.report_path(agent.current_task_state.run_id).exists()
+
+
+def test_agent_loop_allows_final_only_round_after_tool_budget(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"list_files","args":{"path":"."}}</tool>',
+            "<final>The workspace contains README.md.</final>",
+        ],
+        max_steps=1,
+    )
+
+    answer = agent.ask("Inspect the workspace")
+
+    assert answer == "The workspace contains README.md."
+    assert agent.current_task_state.tool_steps == 1
+    assert agent.current_task_state.attempts == 2
+    assert "The tool-call budget is exhausted" in agent.model_client.prompts[-1]
+
+
+def test_agent_loop_rejects_tool_during_final_only_round(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"list_files","args":{"path":"."}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
+            "<final>must not be consumed</final>",
+        ],
+        max_steps=1,
+    )
+
+    answer = agent.ask("Inspect the workspace")
+
+    assert answer == "Stopped after reaching the step limit without a final answer."
+    assert agent.current_task_state.tool_steps == 1
+    assert agent.current_task_state.read_files == 0
+    assert len(agent.model_client.outputs) == 1
+    trace = agent.run_store.trace_path(agent.current_task_state).read_text(encoding="utf-8")
+    assert '"event": "finalization_protocol_rejected"' in trace
 
 
 def test_pico_ask_delegates_to_agent_loop(tmp_path):

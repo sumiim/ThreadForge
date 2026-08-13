@@ -1667,7 +1667,10 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
         "review_started",
         {"attempt": state["fix_attempts"] + 1, "focus_paths": list(state["review_focus_paths"])},
     )
-    if state["step_budget"] - state["coordinator_steps_used"] < 1:
+    if (
+        state["resolved_intent"] == INTENT_CODE_CHANGE
+        and state["step_budget"] - state["coordinator_steps_used"] < 1
+    ):
         next_state = _failed_state(
             state,
             "budget_exhausted",
