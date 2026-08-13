@@ -463,6 +463,9 @@ export function useSessions(): UseSessions {
           step_count: envelope.data.step_count == null ? undefined : Number(envelope.data.step_count),
           status: envelope.data.status ? String(envelope.data.status) : undefined,
           run_id: envelope.run_id,
+          parent_event_id: envelope.data.parent_event_id ? String(envelope.data.parent_event_id) : undefined,
+          started_at: envelope.data.started_at ? String(envelope.data.started_at) : undefined,
+          ended_at: envelope.data.ended_at ? String(envelope.data.ended_at) : undefined,
         }
         updateSession(sessionId, (session) => {
           const current = session.runIndex ?? []
@@ -505,6 +508,10 @@ export function useSessions(): UseSessions {
         updateSessionMessages(sessionId, (messages) => messages.map((message) =>
           message.id === assistantId ? (() => {
             const activity = message.activity ?? []
+            // 幂等：同一 event_id 只记录一次；model.protocol_retrying 走替换语义，不受此去重影响。
+            if (envelope.type !== 'model.protocol_retrying' && activity.some((item) => item.id === envelope.event_id)) {
+              return message
+            }
             const next = {
               id: envelope.event_id,
               type: envelope.type,

@@ -118,6 +118,36 @@ function Metric({ label, value, tone = 'stone' }: { label: string; value: string
   )
 }
 
+interface CausalEdge {
+  from: string
+  to: string
+  reason: string
+}
+
+const NODE_LABEL: Record<string, string> = {
+  prepare_plan: '规划',
+  intent_router: '意图路由',
+  research_delegate: '调研',
+  answer: '回答',
+  execute_change: '执行修改',
+  review_delegate: '审查',
+  replan: '重规划',
+  finalize: '收尾',
+}
+
+// 因果链：从 trace 的 route_selected 事件提取执行流转（from_node -> to_node）。
+function computeCausalGraph(trace: TraceLine[]): CausalEdge[] {
+  const edges: CausalEdge[] = []
+  for (const line of trace) {
+    if (line.event !== 'route_selected') continue
+    const from = String(line.payload.from_node ?? '')
+    const to = String(line.payload.to_node ?? '')
+    if (!from || !to) continue
+    edges.push({ from, to, reason: String(line.payload.reason ?? '') })
+  }
+  return edges
+}
+
 // 运行结果：task_state / trace / report，来自 GET /api/v1/runs/{run_id}/artifacts
 export default function RunArtifactsDrawer({ open, session, onClose, activeRunId }: RunArtifactsDrawerProps) {
   const defaultRunId = activeRunId ?? session?.activeRunId ?? session?.lastRunId
@@ -169,6 +199,7 @@ export default function RunArtifactsDrawer({ open, session, onClose, activeRunId
 
   const hasAny = current && (current.taskState || current.trace.length > 0 || current.report)
   const diagnostic = current ? computeDiagnostic(current.trace) : null
+  const causal = current ? computeCausalGraph(current.trace) : []
 
   return (
     <Drawer title="运行结果" open={open} onClose={onClose} size={520}>
@@ -250,6 +281,25 @@ export default function RunArtifactsDrawer({ open, session, onClose, activeRunId
                     </div>
                   ) : (
                     <Empty description="无 trace 制品" />
+                  ),
+              },
+              {
+                key: 'causal',
+                label: '因果',
+                children:
+                  causal.length > 0 ? (
+                    <div className="space-y-0">
+                      {causal.map((edge, index) => (
+                        <div key={index} className="flex flex-wrap items-center gap-1.5 py-1">
+                          <span className="rounded bg-blue-50 px-1.5 py-0.5 font-mono text-[10px] text-blue-700">{NODE_LABEL[edge.from] ?? edge.from}</span>
+                          <span className="text-stone-300">→</span>
+                          <span className="rounded bg-stone-100 px-1.5 py-0.5 font-mono text-[10px] text-stone-700">{NODE_LABEL[edge.to] ?? edge.to}</span>
+                          {edge.reason ? <span className="font-mono text-[10px] text-stone-400">{edge.reason}</span> : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <Empty description="无路由事件（可能为直接回答）" />
                   ),
               },
               {

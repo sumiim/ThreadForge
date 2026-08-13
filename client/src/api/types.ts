@@ -288,6 +288,11 @@ export interface RunIndexItem {
   step_count?: number
   status?: string
   run_id?: string
+  /** 统一事件契约：父事件 id（如所属模型轮） */
+  parent_event_id?: string
+  /** 统一事件契约：区间起止（真实耗时） */
+  started_at?: string
+  ended_at?: string
 }
 
 export interface SessionRun {

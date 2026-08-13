@@ -54,6 +54,50 @@ class PublicEventSink(EventSink):
                         "security_event_type": payload.get("security_event_type", ""),
                     },
                 )
+        public_type = {
+            "plan_created": "plan.created",
+            "plan_skipped": "plan.skipped",
+            "review_started": "review.started",
+            "review_completed": "review.completed",
+        }.get(event_type)
+        if public_type:
+            with self._gate:
+                if self._gate.closed or self._token.is_cancelled():
+                    return payload
+                steps = []
+                raw_steps = payload.get("steps", [])
+                if isinstance(raw_steps, list):
+                    for raw in raw_steps[:20]:
+                        if not isinstance(raw, dict):
+                            continue
+                        dependencies = raw.get("dependencies", [])
+                        done_when = raw.get("done_when", [])
+                        steps.append(
+                            {
+                                "id": str(raw.get("id", ""))[:64],
+                                "goal": str(raw.get("goal", ""))[:300],
+                                "dependencies": [str(item)[:64] for item in dependencies[:20]] if isinstance(dependencies, list) else [],
+                                "done_when": [str(item)[:300] for item in done_when[:20]] if isinstance(done_when, list) else [],
+                            }
+                        )
+                self._publisher.publish(
+                    self._task_id,
+                    self._run_id,
+                    public_type,
+                    {
+                        "plan_id": str(payload.get("plan_id", ""))[:64],
+                        "revision": max(0, int(payload.get("revision", 0))),
+                        "intent": str(payload.get("intent", ""))[:32],
+                        "summary": str(payload.get("summary", ""))[:500],
+                        "risk_level": str(payload.get("risk_level", ""))[:16],
+                        "step_count": max(0, int(payload.get("step_count", 0))),
+                        "steps": steps,
+                        "reason": str(payload.get("reason", ""))[:100],
+                        "status": str(payload.get("status", ""))[:32],
+                        "attempt": max(0, int(payload.get("attempt", 0))),
+                        "issue_count": max(0, int(payload.get("issue_count", 0))),
+                    },
+                )
         # model.started/model.completed/tool.* are published by ExecutionBoundary;
         # task lifecycle by TaskRunner. Nothing else leaks legacy names.
         return payload

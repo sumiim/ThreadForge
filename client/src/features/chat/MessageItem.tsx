@@ -45,7 +45,7 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
             </summary>
             <div className="mt-2 space-y-1.5 border-l border-stone-200 pl-2">
               {message.activity.map((activity) => (
-                <div key={activity.id}>
+                <div key={activity.id} id={`run-event-${activity.id}`} className="scroll-mt-4">
                   <div className="font-medium text-stone-600">{activity.label}</div>
                   {activity.detail ? <div className="mt-0.5 whitespace-pre-wrap text-stone-400">{activity.detail}</div> : null}
                 </div>

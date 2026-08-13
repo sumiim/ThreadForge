@@ -59,6 +59,8 @@ interface RunTimelineProps {
   runs: SessionRun[]
   activeRunId?: string
   onSelectRun?: (runId: string) => void
+  /** 用户输入（会话内 user 消息），渲染在 Input 泳道 */
+  inputs?: { id: string; content: string; createdAt: string }[]
 }
 
 interface TimelineItem extends RunIndexItem {
@@ -83,7 +85,7 @@ function barClassName(item: TimelineItem, active: boolean): string {
   return active ? 'bg-blue-600' : 'bg-stone-400'
 }
 
-export default function RunTimeline({ runs, activeRunId, onSelectRun }: RunTimelineProps) {
+export default function RunTimeline({ runs, activeRunId, onSelectRun, inputs = [] }: RunTimelineProps) {
   const [expanded, setExpanded] = useState(() => {
     try {
       return localStorage.getItem('threadforge-timeline-expanded') === '1'
@@ -127,27 +129,40 @@ export default function RunTimeline({ runs, activeRunId, onSelectRun }: RunTimel
   const activeRun = runs.find((run) => run.runId === activeRunId) ?? runs[runs.length - 1]
   const runItems = items.filter((item) => item.run.runId === activeRun.runId)
 
-  // 纵轴投影：返回每个事件的 top 百分比（0-100）。
-  const tops = useMemo(() => {
-    const map = new Map<string, number>()
+  // 纵轴投影：返回每个事件的 top/height 百分比（0-100）。
+  // Duration 尺度按 started_at/ended_at 计算真实区间；无区间的事件退化为固定高度标记。
+  const positions = useMemo(() => {
+    const map = new Map<string, { top: number; height: number }>()
     if (runItems.length === 0) return map
+    const toTime = (iso?: string) => {
+      if (!iso) return Number.NaN
+      const t = new Date(iso).getTime()
+      return Number.isNaN(t) ? Number.NaN : t
+    }
+    const MIN_HEIGHT = 1.2
     if (scale === 'duration') {
-      const stamps = runItems
-        .map((item) => new Date(item.timestamp).getTime())
+      const starts = runItems
+        .map((item) => toTime(item.started_at) || toTime(item.timestamp))
         .filter((t) => !Number.isNaN(t))
-      const start = stamps.length > 0 ? Math.min(...stamps) : 0
-      const end = stamps.length > 0 ? Math.max(...stamps) : start + 1
+      const ends = runItems
+        .map((item) => toTime(item.ended_at) || toTime(item.started_at) || toTime(item.timestamp))
+        .filter((t) => !Number.isNaN(t))
+      const start = starts.length > 0 ? Math.min(...starts) : 0
+      const end = ends.length > 0 ? Math.max(...ends) : start + 1
       const span = Math.max(1, end - start)
       for (const item of runItems) {
-        const t = new Date(item.timestamp).getTime()
-        map.set(item.event_id, Number.isNaN(t) ? 0 : ((t - start) / span) * 100)
+        const s = toTime(item.started_at) || toTime(item.timestamp)
+        const e = toTime(item.ended_at) || s
+        const top = Number.isNaN(s) ? 0 : ((s - start) / span) * 100
+        const height = Number.isNaN(e) || e <= s ? MIN_HEIGHT : Math.max(MIN_HEIGHT, ((e - s) / span) * 100)
+        map.set(item.event_id, { top, height })
       }
     } else {
       const ordered = scale === 'calls'
         ? runItems.filter((item) => item.lane === 'tools' || item.lane === 'model')
         : runItems
       const n = Math.max(1, ordered.length)
-      ordered.forEach((item, index) => map.set(item.event_id, (index / n) * 100))
+      ordered.forEach((item, index) => map.set(item.event_id, { top: (index / n) * 100, height: Math.max(1.5, 100 / n) }))
     }
     return map
   }, [runItems, scale])
@@ -171,6 +186,9 @@ export default function RunTimeline({ runs, activeRunId, onSelectRun }: RunTimel
       ? document.getElementById(`tool-call-${item.tool_call_id}`)
       : document.getElementById(`run-event-${item.event_id}`)
     if (target) {
+      // 若锚点位于折叠的 <details> 内，先展开再滚动，保证跳转精确可达。
+      const details = target.closest('details')
+      if (details && !details.open) details.open = true
       target.scrollIntoView({ behavior: 'smooth', block: 'center' })
       return
     }
@@ -200,6 +218,7 @@ export default function RunTimeline({ runs, activeRunId, onSelectRun }: RunTimel
   }
 
   const failedCount = runItems.filter((item) => item.failed).length
+  const activeIndex = runItems.findIndex((item) => item.event_id === activeKey)
 
   // 折叠态：窄轨 + 展开按钮 + 淡色刻度 + 失败标记
   if (!expanded) {
@@ -214,6 +233,11 @@ export default function RunTimeline({ runs, activeRunId, onSelectRun }: RunTimel
         >
           <RightOutlined className="text-[9px]" />
         </button>
+        {runItems.length > 0 ? (
+          <span className="mb-1 shrink-0 font-mono text-[8px] leading-none text-stone-400" aria-label={`当前第 ${activeIndex + 1} 个事件，共 ${runItems.length} 个`}>
+            {activeIndex + 1}/{runItems.length}
+          </span>
+        ) : null}
         <div className="relative min-h-0 flex-1 w-full" onClick={scrollTrackToRatio}>
           {runItems.map((item) => (
             <button
@@ -222,7 +246,7 @@ export default function RunTimeline({ runs, activeRunId, onSelectRun }: RunTimel
               title={`${item.label}${item.tool_name ? ` · ${item.tool_name}` : ''}${item.failed ? ' · 失败' : ''}`}
               aria-label={`${item.label}${item.failed ? '（失败）' : ''}`}
               onClick={() => jump(item)}
-              style={{ top: `${tops.get(item.event_id) ?? 0}%` }}
+              style={{ top: `${positions.get(item.event_id)?.top ?? 0}%` }}
               className={`absolute left-1/2 h-2 w-2.5 -translate-x-1/2 rounded-[2px] transition-all hover:w-3.5 ${barClassName(item, activeKey === item.event_id)}`}
             />
           ))}
@@ -274,6 +298,21 @@ export default function RunTimeline({ runs, activeRunId, onSelectRun }: RunTimel
       </div>
 
       <div className="flex min-h-0 flex-1" onClick={scrollTrackToRatio}>
+        {inputs.length > 0 ? (
+          <div className="flex min-h-0 w-14 shrink-0 flex-col">
+            <div className="shrink-0 border-b border-stone-100 py-0.5 text-center text-[10px] text-stone-400">输入</div>
+            <div className="relative min-h-0 flex-1 border-r border-stone-50">
+              {inputs.map((input, index) => (
+                <div
+                  key={input.id}
+                  title={input.content}
+                  className="absolute left-1/2 w-3/4 -translate-x-1/2 rounded-[2px] bg-stone-300"
+                  style={{ top: `${index * 6}%`, height: '3%' }}
+                />
+              ))}
+            </div>
+          </div>
+        ) : null}
         {laneColumns.map(({ lane, list }) => (
           <div key={lane} className="flex min-h-0 flex-1 flex-col">
             <div className="shrink-0 border-b border-stone-100 py-0.5 text-center text-[10px] text-stone-400">
@@ -288,8 +327,8 @@ export default function RunTimeline({ runs, activeRunId, onSelectRun }: RunTimel
                   aria-label={`${item.label}${item.failed ? '（失败）' : ''}`}
                   aria-current={activeKey === item.event_id ? 'true' : undefined}
                   onClick={() => jump(item)}
-                  style={{ top: `${tops.get(item.event_id) ?? 0}%` }}
-                  className={`absolute left-1/2 h-3 w-3/4 -translate-x-1/2 rounded-[2px] transition-opacity hover:opacity-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600 ${barClassName(item, activeKey === item.event_id)} ${activeKey === item.event_id ? 'opacity-100' : 'opacity-70'}`}
+                  style={{ top: `${positions.get(item.event_id)?.top ?? 0}%`, height: `${positions.get(item.event_id)?.height ?? 3}%` }}
+                  className={`absolute left-1/2 w-3/4 -translate-x-1/2 rounded-[2px] transition-opacity hover:opacity-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600 ${barClassName(item, activeKey === item.event_id)} ${activeKey === item.event_id ? 'opacity-100' : 'opacity-70'}`}
                 />
               ))}
             </div>

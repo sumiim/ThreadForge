@@ -278,6 +278,7 @@ def run_agent(
     )
     if isinstance(step_budget, bool):
         raise ValueError("step_budget must be a positive integer")
+    step_budget_explicit = step_budget is not None
     step_budget = int(agent.max_steps if step_budget is None else step_budget)
     if step_budget < 1:
         raise ValueError("step_budget must be positive")
@@ -358,6 +359,7 @@ def run_agent(
             "continuation_context": _continuation_context(agent, task_input),
             "completion_status": "pending",
             "step_budget": step_budget,
+            "step_budget_explicit": step_budget_explicit,
             "coordinator_steps_used": 0,
             "delegate_failures": 0,
             "requires_research": requires_research,

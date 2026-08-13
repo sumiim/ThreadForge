@@ -11,6 +11,7 @@ import time
 import urllib.error
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from langgraph_pico import run_agent
@@ -39,6 +40,12 @@ from pico.task_state import (
     STOP_REASON_USER_CANCELLED,
 )
 from pico.workspace import WorkspaceContext
+
+
+def _utc_now():
+    """Wall-clock ISO-8601 UTC timestamp for event contract fields."""
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
 
 ALLOWED_TOOLS = (
     "delegate",
@@ -174,7 +181,10 @@ class RemoteExecutionHooks:
         self._active_tool_name = ""
         self._run_started_at = time.monotonic()
         self._model_round = 0
+        self._model_round_id = ""
         self._model_started_at = 0.0
+        self._model_started_wall = ""
+        self._tool_started_wall = ""
         self._last_heartbeat_at = 0.0
         self._stream_buffer = ""
         self._stream_mode = "pending"
@@ -192,7 +202,9 @@ class RemoteExecutionHooks:
     def before_model(self, task_state) -> None:
         self._check()
         self._model_round += 1
+        self._model_round_id = f"model_round_{self._model_round}"
         self._model_started_at = time.monotonic()
+        self._model_started_wall = _utc_now()
         self._last_heartbeat_at = self._model_started_at
         self._stream_buffer = ""
         self._stream_mode = "pending"
@@ -202,6 +214,8 @@ class RemoteExecutionHooks:
             {
                 "round": self._model_round,
                 "run_elapsed_seconds": max(0.0, self._model_started_at - self._run_started_at),
+                "round_id": self._model_round_id,
+                "started_at": self._model_started_wall,
             },
         )
 
@@ -215,7 +229,15 @@ class RemoteExecutionHooks:
             for key, value in (metadata or {}).items()
             if key in {"input_tokens", "output_tokens", "total_tokens", "cached_tokens"}
         }
-        self._send("model.completed", {"usage": usage})
+        self._send(
+            "model.completed",
+            {
+                "usage": usage,
+                "round_id": self._model_round_id,
+                "started_at": self._model_started_wall,
+                "ended_at": _utc_now(),
+            },
+        )
 
     def tool_requested(self, task_state, tool_call: dict) -> None:
         self._check()
@@ -236,9 +258,15 @@ class RemoteExecutionHooks:
         self._check()
         self._active_tool_call_id = str(tool_call.get("id", ""))
         self._active_tool_name = str(tool_call.get("name", ""))
+        self._tool_started_wall = _utc_now()
         self._send(
             "tool.started",
-            {"tool_call_id": self._active_tool_call_id, "tool_name": self._active_tool_name},
+            {
+                "tool_call_id": self._active_tool_call_id,
+                "tool_name": self._active_tool_name,
+                "parent_event_id": self._model_round_id,
+                "started_at": self._tool_started_wall,
+            },
         )
 
     def after_tool(self, task_state, result) -> None:
@@ -255,6 +283,9 @@ class RemoteExecutionHooks:
             "tool_status": status,
             "tool_error_code": metadata.get("tool_error_code", ""),
             "affected_paths": metadata.get("affected_paths", []),
+            "parent_event_id": self._model_round_id,
+            "started_at": self._tool_started_wall,
+            "ended_at": _utc_now(),
         }
         if result_preview:
             payload["result_preview"] = result_preview
