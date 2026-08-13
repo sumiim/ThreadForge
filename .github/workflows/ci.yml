@@ -30,6 +30,64 @@ jobs:
       - name: Require a version bump for shipped Worker changes
         run: python scripts/check-worker-version.py
 
+  orchestration:
+    name: Orchestration gate (LangGraph V1.1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pico-legacy-runtime/pyproject.toml
+            agent-orchestrator/pyproject.toml
+
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ./pico-legacy-runtime
+          python -m pip install -e ./agent-orchestrator
+          python -m pip install pytest
+
+      - name: Run LangGraph orchestration suite
+        working-directory: pico-legacy-runtime
+        run: python -m pytest -q tests/test_langgraph_backend.py tests/test_langgraph_intent.py tests/test_langgraph_planning_v11.py
+
+  security:
+    name: Security gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pico-legacy-runtime/pyproject.toml
+            agent-orchestrator/pyproject.toml
+
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ./pico-legacy-runtime
+          python -m pip install -e ./agent-orchestrator
+          python -m pip install pytest
+
+      - name: Run security and safety invariants
+        working-directory: pico-legacy-runtime
+        run: python -m pytest -q tests/test_security.py tests/test_safety_invariants.py
+
   legacy-runtime:
     name: Legacy runtime (${{ matrix.os }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
