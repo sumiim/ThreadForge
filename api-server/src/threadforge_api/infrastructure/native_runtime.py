@@ -14,9 +14,12 @@ from pico.task_state import (
     STOP_REASON_RUNTIME_ERROR,
 )
 
+from langgraph_pico import run_agent
+
 from .public_event_sink import PublicEventSink
 
 WEB_V1_ALLOWED_TOOLS = (
+    "delegate",
     "list_files",
     "read_file",
     "search",
@@ -95,7 +98,13 @@ class NativeRuntimeAdapter:
         )
         started = time.monotonic()
         try:
-            self._pico.ask(user_message, task_id=self._task_id, run_id=self._run_id)
+            run_agent(
+                self._pico,
+                user_message,
+                task_mode="auto",
+                task_id=self._task_id,
+                run_id=self._run_id,
+            )
         except Exception as exc:
             if self._pico.current_task_state is not None and self._pico.current_task_state.status == STATUS_RUNNING:
                 error_type, stop_reason = _classify_public_error(exc)

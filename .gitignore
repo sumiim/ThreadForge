@@ -21,6 +21,7 @@ dist/
 node_modules/
 .pnpm-store/
 coverage/
+client/dev-*.log
 
 # Runtime artifacts
 .pico/

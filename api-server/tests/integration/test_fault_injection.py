@@ -19,7 +19,7 @@ from threadforge_api.infrastructure.recovery_journal import RecoveryJournal
 from threadforge_api.infrastructure.run_gate import RunGate
 from threadforge_api.main import create_app
 
-from ..conftest import wait_for_status, wait_for_terminal
+from ..conftest import langgraph_review, langgraph_router, wait_for_status, wait_for_terminal
 
 
 def test_unrecoverable_task_persistence_failure_degrades_service(client, session_id):
@@ -41,7 +41,10 @@ def test_unrecoverable_task_persistence_failure_degrades_service(client, session
 
 
 def test_approval_second_write_failure_rolls_back(client, session_id, model_outputs):
-    model_outputs[:] = ['<tool>{"name":"write_file","args":{"path":"x.txt","content":"x"}}</tool>']
+    model_outputs[:] = [
+        langgraph_router("code_change"),
+        '<tool>{"name":"write_file","args":{"path":"x.txt","content":"x"}}</tool>',
+    ]
     created = client.post("/api/v1/tasks", json={"session_id": session_id, "input": "write"}).json()
     waiting = wait_for_status(client, created["task_id"], "waiting_for_approval")
     approval_id = waiting["pending_approval"]["approval_id"]
@@ -102,7 +105,7 @@ def test_startup_repairs_terminal_task_run_mismatch(settings, model_factory, mod
     app = create_app(settings, model_client_factory=model_factory)
     with TestClient(app) as test_client:
         session = test_client.post("/api/v1/sessions", json={"workspace_id": "w1"}).json()
-        model_outputs[:] = ["<final>done</final>"]
+        model_outputs[:] = [langgraph_router("read_only"), "<final>done</final>", langgraph_review("read_only")]
         created = test_client.post(
             "/api/v1/tasks",
             json={"session_id": session["session_id"], "input": "run"},
@@ -136,7 +139,7 @@ def test_startup_preserves_completed_run_when_task_write_was_lost(settings, mode
     app = create_app(settings, model_client_factory=model_factory)
     with TestClient(app) as test_client:
         session = test_client.post("/api/v1/sessions", json={"workspace_id": "w1"}).json()
-        model_outputs[:] = ["<final>completed before crash</final>"]
+        model_outputs[:] = [langgraph_router("read_only"), "<final>completed before crash</final>", langgraph_review("read_only")]
         created = test_client.post(
             "/api/v1/tasks",
             json={"session_id": session["session_id"], "input": "run"},
@@ -249,7 +252,8 @@ def test_cancel_wins_approval_expiry_race(client, session_id, model_outputs):
 
     container.approval_gate._wait = cancel_while_expiring
     model_outputs[:] = [
-        '<tool>{"name":"write_file","args":{"path":"x.txt","content":"x"}}</tool>'
+        langgraph_router("code_change"),
+        '<tool>{"name":"write_file","args":{"path":"x.txt","content":"x"}}</tool>',
     ]
     created = client.post(
         "/api/v1/tasks",
@@ -266,7 +270,8 @@ def test_cancel_wins_approval_expiry_race(client, session_id, model_outputs):
 
 def test_repeated_cancel_retries_shell_cleanup(client, session_id, model_outputs):
     model_outputs[:] = [
-        '<tool>{"name":"write_file","args":{"path":"x.txt","content":"x"}}</tool>'
+        langgraph_router("code_change"),
+        '<tool>{"name":"write_file","args":{"path":"x.txt","content":"x"}}</tool>',
     ]
     created = client.post(
         "/api/v1/tasks",
@@ -291,7 +296,8 @@ def test_repeated_cancel_retries_shell_cleanup(client, session_id, model_outputs
 
 def test_shell_cleanup_failure_degrades_api_and_fails_task(client, session_id, model_outputs):
     model_outputs[:] = [
-        '<tool>{"name":"write_file","args":{"path":"x.txt","content":"x"}}</tool>'
+        langgraph_router("code_change"),
+        '<tool>{"name":"write_file","args":{"path":"x.txt","content":"x"}}</tool>',
     ]
     created = client.post(
         "/api/v1/tasks",
@@ -319,7 +325,8 @@ def test_approval_wait_failure_does_not_leave_pending_record(client, session_id,
 
     client.app.state.container.approval_gate._wait = fail_wait
     model_outputs[:] = [
-        '<tool>{"name":"write_file","args":{"path":"x.txt","content":"x"}}</tool>'
+        langgraph_router("code_change"),
+        '<tool>{"name":"write_file","args":{"path":"x.txt","content":"x"}}</tool>',
     ]
     created = client.post(
         "/api/v1/tasks",
@@ -425,7 +432,9 @@ def _shell_long():
 def test_durable_memory_not_written_in_web_path(client, session_id, model_outputs, workspace_env):
     """Web Run must not create .pico/memory/ in the workspace."""
     model_outputs[:] = [
-        "<final>Project convention: Use constrained tools.\nDecision: Keep things simple.\n</final>"
+        langgraph_router("read_only"),
+        "<final>Project convention: Use constrained tools.\nDecision: Keep things simple.\n</final>",
+        langgraph_review("read_only"),
     ]
     task = client.post(
         "/api/v1/tasks",
@@ -442,7 +451,7 @@ def test_artifact_content_is_redacted(client, session_id, model_outputs):
 
     secret = "ak_test_secret_in_env_only"
     with patch.dict("os.environ", {"OPENAI_API_KEY": secret}):
-        model_outputs[:] = [f"<final>my api key is {secret}</final>"]
+        model_outputs[:] = [langgraph_router("read_only"), f"<final>my api key is {secret}</final>", langgraph_review("read_only")]
         task = client.post("/api/v1/tasks", json={"session_id": session_id, "input": "what is my api key"}).json()
         terminal = wait_for_terminal(client, task["task_id"])
         run_id = terminal["run_id"]
@@ -466,7 +475,7 @@ def test_task_input_bounds_422(client, session_id):
 
 def test_sse_terminal_reconnect_closes_immediately(client, session_id, model_outputs):
     """Reconnecting to a terminal task must send snapshot and close, no indefinite heartbeat."""
-    model_outputs[:] = ["<final>done</final>"]
+    model_outputs[:] = [langgraph_router("read_only"), "<final>done</final>", langgraph_review("read_only")]
     task = client.post("/api/v1/tasks", json={"session_id": session_id, "input": "x"}).json()
     tid = task["task_id"]
     wait_for_terminal(client, tid)
@@ -485,7 +494,8 @@ def test_sse_terminal_reconnect_closes_immediately(client, session_id, model_out
 def test_active_slot_released_after_cancelled(client, session_id, model_outputs):
     """After a task is cancelled, a new task can be created immediately."""
     model_outputs[:] = [
-        '<tool>{"name":"run_shell","args":{"command":"%s","timeout":30}}</tool>' % _shell_long()
+        langgraph_router("code_change"),
+        '<tool>{"name":"run_shell","args":{"command":"%s","timeout":30}}</tool>' % _shell_long(),
     ]
     first = client.post("/api/v1/tasks", json={"session_id": session_id, "input": "first"}).json()
     tid1 = first["task_id"]
