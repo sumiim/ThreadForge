@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 import urllib.error
 
+from langgraph_pico import run_agent
 from pico import Pico
 from pico.event_sink import CompositeSink, EventCollector, JsonlSink
 from pico.run_lifecycle import finalize_failed_run
@@ -13,8 +14,6 @@ from pico.task_state import (
     STOP_REASON_MODEL_ERROR,
     STOP_REASON_RUNTIME_ERROR,
 )
-
-from langgraph_pico import run_agent
 
 from .public_event_sink import PublicEventSink
 

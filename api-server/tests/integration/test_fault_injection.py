@@ -19,7 +19,12 @@ from threadforge_api.infrastructure.recovery_journal import RecoveryJournal
 from threadforge_api.infrastructure.run_gate import RunGate
 from threadforge_api.main import create_app
 
-from ..conftest import langgraph_review, langgraph_router, wait_for_status, wait_for_terminal
+from ..conftest import (
+    langgraph_review,
+    langgraph_router,
+    wait_for_status,
+    wait_for_terminal,
+)
 
 
 def test_unrecoverable_task_persistence_failure_degrades_service(client, session_id):

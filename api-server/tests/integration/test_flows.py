@@ -6,7 +6,12 @@ import sys
 import time
 import urllib.error
 
-from ..conftest import langgraph_review, langgraph_router, wait_for_status, wait_for_terminal
+from ..conftest import (
+    langgraph_review,
+    langgraph_router,
+    wait_for_status,
+    wait_for_terminal,
+)
 
 
 class _UnauthorizedModelClient:

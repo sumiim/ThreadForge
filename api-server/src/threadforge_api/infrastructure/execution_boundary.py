@@ -7,8 +7,8 @@ from typing import Any
 from pico.execution_hooks import RunCancelled
 from pico.security import public_tool_args_preview, public_tool_result_preview
 
-from .run_gate import RunGate
 from ..domain.entities import utc_now
+from .run_gate import RunGate
 
 
 class ExecutionBoundary:
