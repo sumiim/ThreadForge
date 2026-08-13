@@ -148,12 +148,14 @@ jobs:
           cache: pip
           cache-dependency-path: |
             pico-legacy-runtime/pyproject.toml
+            agent-orchestrator/pyproject.toml
             api-server/pyproject.toml
 
       - name: Install packages
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ./pico-legacy-runtime
+          python -m pip install -e ./agent-orchestrator
           python -m pip install -e "./api-server[dev]"
 
       - name: Lint

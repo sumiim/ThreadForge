@@ -124,10 +124,14 @@ export default function RunTimeline({ runs, activeRunId, onSelectRun, inputs = [
     return () => container.removeEventListener('scroll', update)
   }, [items])
 
-  if (runs.length === 0) return null
-
-  const activeRun = runs.find((run) => run.runId === activeRunId) ?? runs[runs.length - 1]
-  const runItems = items.filter((item) => item.run.runId === activeRun.runId)
+  const activeRun = useMemo(
+    () => runs.find((run) => run.runId === activeRunId) ?? runs[runs.length - 1],
+    [activeRunId, runs],
+  )
+  const runItems = useMemo(
+    () => (activeRun ? items.filter((item) => item.run.runId === activeRun.runId) : []),
+    [activeRun, items],
+  )
 
   // 纵轴投影：返回每个事件的 top/height 百分比（0-100）。
   // Duration 尺度按 started_at/ended_at 计算真实区间；无区间的事件退化为固定高度标记。
@@ -166,6 +170,8 @@ export default function RunTimeline({ runs, activeRunId, onSelectRun, inputs = [
     }
     return map
   }, [runItems, scale])
+
+  if (!activeRun) return null
 
   const toggleExpanded = () => {
     setExpanded((current) => {
