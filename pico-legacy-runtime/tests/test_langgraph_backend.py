@@ -951,6 +951,42 @@ def test_v11_completion_gate_reuses_evidence_for_synthesis_step(
     ) == 1
 
 
+def test_v11_read_only_reviews_after_using_full_tool_budget(tmp_path):
+    from langgraph_pico import run_agent
+
+    plan = json.loads(_v11_plan("read_only", ["list_files", "read_file", "search"]))
+    plan["budgets"]["tool_calls"] = 6
+    agent, _, _ = _build_runtime(
+        tmp_path,
+        [
+            json.dumps(plan),
+            '<tool>{"name":"list_files","args":{"path":"."}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":1}}</tool>',
+            '<tool>{"name":"search","args":{"pattern":"fixture","path":"."}}</tool>',
+            '<tool>{"name":"list_files","args":{"path":".pico"}}</tool>',
+            '<tool>{"name":"search","args":{"pattern":"README","path":"."}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":2}}</tool>',
+            "<final>The full tool budget produced enough evidence for an answer.</final>",
+            "status: pass\nThe answer is grounded in all current-run evidence.",
+        ],
+    )
+
+    result = run_agent(
+        agent,
+        "Inspect the workspace using the available evidence budget.",
+        task_mode="auto",
+        requires_research=False,
+        enable_planning=True,
+    )
+
+    assert result.task_state.stop_reason == "final_answer_returned"
+    assert result.final_answer == (
+        "The full tool budget produced enough evidence for an answer."
+    )
+    assert result.task_state.review_status == "pass"
+    assert sum(child.tool_steps for child in result.budget_task_states) == 6
+
+
 def test_v11_read_only_replan_does_not_double_charge_previous_answer_tools(tmp_path):
     from langgraph_pico import run_agent
 

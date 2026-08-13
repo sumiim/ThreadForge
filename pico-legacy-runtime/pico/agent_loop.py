@@ -129,6 +129,7 @@ class AgentLoop:
         protocol_repairs = 0
         protocol_feedback = ""
         protocol_failed = False
+        finalization_attempted = False
         tool_definitions = provider_tool_definitions(agent.tools)
         max_attempts = min(
             max(agent.max_steps * 3, agent.max_steps + 4),
@@ -138,9 +139,14 @@ class AgentLoop:
         # 边界 1：进入控制循环前。
         token.raise_if_cancelled()
 
-        while tool_steps < agent.max_steps and attempts < max_attempts:
+        while attempts < max_attempts and (
+            tool_steps < agent.max_steps or not finalization_attempted
+        ):
             # 边界 2：每轮开始、构建 prompt 前。
             token.raise_if_cancelled()
+            finalization_only = tool_steps >= agent.max_steps
+            if finalization_only:
+                finalization_attempted = True
             attempts += 1
             task_state.record_attempt()
             task_state.set_phase(PHASE_ACT_OR_ANSWER, next_step="Choose a tool or prepare a final answer")
@@ -156,6 +162,14 @@ class AgentLoop:
                     "This feedback is control-plane input, not an assistant message."
                 )
                 prompt_metadata["runtime_protocol_feedback"] = True
+                prompt_metadata["prompt_chars"] = len(prompt)
+            if finalization_only:
+                prompt += (
+                    "\n\nRuntime control feedback:\n"
+                    "The tool-call budget is exhausted. Do not call another tool. "
+                    "Use the evidence already collected and return a grounded final answer now."
+                )
+                prompt_metadata["runtime_finalization_only"] = True
                 prompt_metadata["prompt_chars"] = len(prompt)
             agent.emit_progress(f"step {attempts}: prompt ready ({prompt_metadata.get('prompt_chars', len(prompt))} chars)")
             agent.emit_trace(
@@ -212,6 +226,7 @@ class AgentLoop:
                 {
                     "attempts": task_state.attempts,
                     "tool_steps": task_state.tool_steps,
+                    "finalization_only": finalization_only,
                     "prompt_cache_key": prompt_metadata.get("prompt_cache_key"),
                 },
             )
@@ -237,7 +252,7 @@ class AgentLoop:
                 on_text_delta=lambda delta: getattr(
                     hooks, "model_text_delta", lambda *_args: None
                 )(task_state, "execute", delta),
-                tool_definitions=tool_definitions,
+                tool_definitions=() if finalization_only else tool_definitions,
             )
             completion_metadata = dict(getattr(agent.model_client, "last_completion_metadata", {}) or {})
             task_state.record_model_usage(completion_metadata)
@@ -270,6 +285,20 @@ class AgentLoop:
                     **response_diagnostics,
                 },
             )
+
+            if finalization_only and kind != "final":
+                task_state.record_malformed_output_recovered()
+                agent.emit_trace(
+                    task_state,
+                    "finalization_protocol_rejected",
+                    {
+                        "kind": kind,
+                        "error_code": "tool_budget_exhausted",
+                        "tool_steps": tool_steps,
+                        "max_tool_steps": agent.max_steps,
+                    },
+                )
+                break
 
             if kind == "talk":
                 if consecutive_talks >= MAX_CONSECUTIVE_TALKS:
