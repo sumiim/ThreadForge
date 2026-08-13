@@ -1883,6 +1883,12 @@ def _append_run_index(task, event: dict, data: dict):
         "timestamp": str(event.get("timestamp", ""))[:40],
         "label": labels.get(event_type, event_type)[:64],
     }
+    if data.get("parent_event_id"):
+        item["parent_event_id"] = str(data.get("parent_event_id", ""))[:64]
+    if data.get("started_at"):
+        item["started_at"] = str(data.get("started_at", ""))[:40]
+    if data.get("ended_at"):
+        item["ended_at"] = str(data.get("ended_at", ""))[:40]
     if event_type.startswith("tool."):
         item["tool_name"] = str(data.get("tool_name", ""))[:100]
         item["tool_call_id"] = str(data.get("tool_call_id", ""))[:200]
@@ -1911,12 +1917,17 @@ def _sanitize_event_data(event_type: str, data: dict) -> dict:
                 if key in {"input_tokens", "output_tokens", "total_tokens", "cached_tokens"}
                 and isinstance(value, int)
                 and value >= 0
-            }
+            },
+            "round_id": str(data.get("round_id", ""))[:64],
+            "started_at": str(data.get("started_at", ""))[:64],
+            "ended_at": str(data.get("ended_at", ""))[:64],
         }
     if event_type == "model.started":
         return {
             "round": max(1, _nonnegative_int(data.get("round", 1))),
             "run_elapsed_seconds": _nonnegative_float(data.get("run_elapsed_seconds", 0.0)),
+            "round_id": str(data.get("round_id", ""))[:64],
+            "started_at": str(data.get("started_at", ""))[:64],
         }
     if event_type == "model.retrying":
         return {
@@ -2045,9 +2056,13 @@ def _sanitize_event_data(event_type: str, data: dict) -> dict:
         "tool_call_id": str(data.get("tool_call_id", ""))[:200],
         "tool_name": str(data.get("tool_name", ""))[:100],
     }
+    if event_type in {"tool.started", "tool.completed", "tool.failed"}:
+        safe["parent_event_id"] = str(data.get("parent_event_id", ""))[:64]
+        safe["started_at"] = str(data.get("started_at", ""))[:64]
     if event_type in {"tool.completed", "tool.failed"}:
         safe["tool_status"] = str(data.get("tool_status", ""))[:50]
         safe["tool_error_code"] = str(data.get("tool_error_code", ""))[:100]
+        safe["ended_at"] = str(data.get("ended_at", ""))[:64]
         paths = data.get("affected_paths", [])
         safe["affected_paths"] = [
             path

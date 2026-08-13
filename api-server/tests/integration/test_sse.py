@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import threading
 
-from ..conftest import wait_for_terminal
+from ..conftest import langgraph_review, langgraph_router, wait_for_terminal
 
 
 def _collect_sse(client, url):
@@ -28,7 +28,7 @@ def _collect_sse(client, url):
 
 
 def test_sse_snapshot_first_then_lifecycle(client, session_id, model_outputs):
-    model_outputs[:] = ["<final>streamed answer</final>"]
+    model_outputs[:] = [langgraph_router("read_only"), "<final>streamed answer</final>", langgraph_review("read_only")]
     task = client.post("/api/v1/tasks", json={"session_id": session_id, "input": "x"}).json()
     tid = task["task_id"]
     events, thread = _collect_sse(client, f"/api/v1/tasks/{tid}/events")
@@ -47,7 +47,7 @@ def test_sse_snapshot_first_then_lifecycle(client, session_id, model_outputs):
 
 
 def test_sse_terminal_ends_stream(client, session_id, model_outputs):
-    model_outputs[:] = ["<final>end</final>"]
+    model_outputs[:] = [langgraph_router("read_only"), "<final>end</final>", langgraph_review("read_only")]
     task = client.post("/api/v1/tasks", json={"session_id": session_id, "input": "x"}).json()
     tid = task["task_id"]
     events, thread = _collect_sse(client, f"/api/v1/tasks/{tid}/events")
@@ -57,7 +57,7 @@ def test_sse_terminal_ends_stream(client, session_id, model_outputs):
 
 
 def test_session_refresh_shows_messages_after_run(client, session_id, model_outputs):
-    model_outputs[:] = ["<final>persisted answer</final>"]
+    model_outputs[:] = [langgraph_router("read_only"), "<final>persisted answer</final>", langgraph_review("read_only")]
     task = client.post("/api/v1/tasks", json={"session_id": session_id, "input": "remember me"}).json()
     wait_for_terminal(client, task["task_id"])
     detail = client.get(f"/api/v1/sessions/{session_id}?message_limit=100").json()

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type MouseEvent } from 'react'
 import type { RunIndexItem, SessionRun } from '../../api/types'
 
 interface RunMinimapProps {
@@ -56,12 +56,29 @@ export default function RunMinimap({ runs, activeRunId, onSelectRun }: RunMinima
     container.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
+  const scrollToRatio = (ratio: number) => {
+    const container = document.getElementById('run-scroll-container')
+    if (!container) return
+    const maximum = Math.max(1, container.scrollHeight - container.clientHeight)
+    container.scrollTo({ top: ratio * maximum, behavior: 'smooth' })
+  }
+
+  const handleTrackClick = (event: MouseEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement).closest('button')) return
+    const rect = event.currentTarget.getBoundingClientRect()
+    const ratio = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height))
+    scrollToRatio(ratio)
+  }
+
   return (
     <nav
       aria-label="运行快速索引"
       className="flex w-4 shrink-0 flex-col items-center overflow-hidden border-r border-stone-100 bg-white/70 py-3"
     >
-      <div className="flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto py-1">
+      <div
+        className="flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto py-1"
+        onClick={handleTrackClick}
+      >
         {runs.map((run) => (
           <div key={run.runId} className="flex w-full flex-col items-center gap-1 py-0.5" title={`Run ${run.runId}`}>
             {run.items.map((item) => {
@@ -73,11 +90,16 @@ export default function RunMinimap({ runs, activeRunId, onSelectRun }: RunMinima
                 <button
                   key={item.event_id}
                   type="button"
-                  title={`${item.label}${item.tool_name ? ` · ${item.tool_name}` : ''}`}
-                  aria-label={item.label}
+                  title={`${item.label}${item.tool_name ? ` · ${item.tool_name}` : ''}${failed ? ' · 失败' : ''}`}
+                  aria-label={`${item.label}${failed ? '（失败）' : ''}`}
+                  aria-current={active ? 'true' : undefined}
                   onClick={() => jump(run.runId, item)}
-                  className={`h-1 w-2.5 shrink-0 rounded-full transition-all hover:w-3.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600 ${
-                    failed ? 'bg-red-300 hover:bg-red-500' : active ? 'bg-blue-500' : 'bg-stone-300 hover:bg-blue-400'
+                  className={`h-1 w-2.5 shrink-0 transition-all hover:w-3.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600 ${
+                    failed
+                      ? 'rounded-[2px] bg-red-300 ring-1 ring-red-400 hover:bg-red-500'
+                      : active
+                        ? 'rounded-full bg-blue-500'
+                        : 'rounded-full bg-stone-300 hover:bg-blue-400'
                   }`}
                 />
               )

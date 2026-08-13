@@ -36,9 +36,17 @@ def settings(workspace_env):
     )
 
 
+def langgraph_router(intent: str, *, requires_research: bool = False) -> str:
+    return '{"intent": "%s", "requires_research": %s}' % (intent, "true" if requires_research else "false")
+
+
+def langgraph_review(intent: str) -> str:
+    return "status: pass" if intent != "code_change" else "<final>status: pass</final>"
+
+
 @pytest.fixture
 def model_outputs():
-    return ["<final>ok</final>"]
+    return [langgraph_router("read_only"), "<final>ok</final>", langgraph_review("read_only")]
 
 
 @pytest.fixture

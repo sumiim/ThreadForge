@@ -7,6 +7,7 @@ from typing import Any
 from pico.execution_hooks import RunCancelled
 from pico.security import public_tool_args_preview, public_tool_result_preview
 
+from ..domain.entities import utc_now
 from .run_gate import RunGate
 
 
@@ -22,6 +23,10 @@ class ExecutionBoundary:
         self._token = token
         self._active_tool_call_id = ""
         self._active_tool_name = ""
+        self._model_round = 0
+        self._model_round_id = ""
+        self._model_started_wall = ""
+        self._tool_started_wall = ""
 
     @property
     def gate(self) -> RunGate:
@@ -34,13 +39,35 @@ class ExecutionBoundary:
     def before_model(self, task_state) -> None:
         with self._gate:
             self._check()
-            self._publisher.publish(self._task_id, self._run_id, "model.started", {})
+            self._model_round += 1
+            self._model_round_id = f"model_round_{self._model_round}"
+            self._model_started_wall = utc_now()
+            self._publisher.publish(
+                self._task_id,
+                self._run_id,
+                "model.started",
+                {
+                    "round": self._model_round,
+                    "round_id": self._model_round_id,
+                    "started_at": self._model_started_wall,
+                },
+            )
 
     def after_model(self, task_state, metadata: dict) -> None:
         with self._gate:
             self._check()
             summary = {key: value for key, value in (metadata or {}).items() if key in {"input_tokens", "output_tokens", "total_tokens", "cached_tokens"}}
-            self._publisher.publish(self._task_id, self._run_id, "model.completed", {"usage": summary})
+            self._publisher.publish(
+                self._task_id,
+                self._run_id,
+                "model.completed",
+                {
+                    "usage": summary,
+                    "round_id": self._model_round_id,
+                    "started_at": self._model_started_wall,
+                    "ended_at": utc_now(),
+                },
+            )
 
     def tool_requested(self, task_state, tool_call: dict) -> None:
         with self._gate:
@@ -65,11 +92,17 @@ class ExecutionBoundary:
             self._check()
             self._active_tool_call_id = str(tool_call.get("id", ""))
             self._active_tool_name = str(tool_call.get("name", ""))
+            self._tool_started_wall = utc_now()
             self._publisher.publish(
                 self._task_id,
                 self._run_id,
                 "tool.started",
-                {"tool_call_id": tool_call.get("id", ""), "tool_name": tool_call.get("name", "")},
+                {
+                    "tool_call_id": tool_call.get("id", ""),
+                    "tool_name": tool_call.get("name", ""),
+                    "parent_event_id": self._model_round_id,
+                    "started_at": self._tool_started_wall,
+                },
             )
 
     def after_tool(self, task_state, result: Any) -> None:
@@ -89,6 +122,9 @@ class ExecutionBoundary:
             "tool_status": tool_status,
             "tool_error_code": metadata.get("tool_error_code", ""),
             "affected_paths": metadata.get("affected_paths", []),
+            "parent_event_id": self._model_round_id,
+            "started_at": self._tool_started_wall,
+            "ended_at": utc_now(),
         }
         if result_preview:
             payload["result_preview"] = result_preview

@@ -11,7 +11,7 @@ from threadforge_api.config import Settings
 from threadforge_api.domain.identity import Actor
 from threadforge_api.main import create_app
 
-from ..conftest import wait_for_terminal
+from ..conftest import langgraph_review, langgraph_router, wait_for_terminal
 
 
 def test_live_and_ready(client):
@@ -117,7 +117,7 @@ def test_first_request_becomes_stable_automatic_session_title(client, model_outp
     assert created["has_started"] is False
     assert created["display_name_source"] == "auto"
 
-    model_outputs[:] = ["<final>first</final>", "<final>second</final>"]
+    model_outputs[:] = [langgraph_router("read_only"), "<final>first</final>", langgraph_review("read_only")]
     first = client.post(
         "/api/v1/tasks",
         json={"session_id": created["session_id"], "input": "  修复\n Worker 自动更新  "},
@@ -143,7 +143,7 @@ def test_first_request_preserves_user_session_title(client, model_outputs):
         "/api/v1/sessions",
         json={"workspace_id": "w1", "title": "手动标题"},
     ).json()
-    model_outputs[:] = ["<final>done</final>"]
+    model_outputs[:] = [langgraph_router("read_only"), "<final>done</final>", langgraph_review("read_only")]
     task = client.post(
         "/api/v1/tasks",
         json={"session_id": created["session_id"], "input": "首条请求"},
@@ -196,7 +196,7 @@ def test_startup_claims_legacy_session(settings, model_factory):
 
 
 def test_foreign_actor_cannot_access_owned_objects(client, app, session_id, model_outputs):
-    model_outputs[:] = ["<final>private answer</final>"]
+    model_outputs[:] = [langgraph_router("read_only"), "<final>private answer</final>", langgraph_review("read_only")]
     created = client.post("/api/v1/tasks", json={"session_id": session_id, "input": "private"}).json()
     terminal = wait_for_terminal(client, created["task_id"])
     foreign = Actor("22222222-2222-4222-8222-222222222222")
@@ -212,7 +212,7 @@ def test_foreign_actor_cannot_access_owned_objects(client, app, session_id, mode
 
 
 def test_session_detail_contains_task_summaries(client, session_id, model_outputs):
-    model_outputs[:] = ["<final>summary answer</final>"]
+    model_outputs[:] = [langgraph_router("read_only"), "<final>summary answer</final>", langgraph_review("read_only")]
     created = client.post("/api/v1/tasks", json={"session_id": session_id, "input": "summarize me"}).json()
     wait_for_terminal(client, created["task_id"])
     detail = client.get(f"/api/v1/sessions/{session_id}").json()
@@ -224,7 +224,7 @@ def test_session_detail_contains_task_summaries(client, session_id, model_output
 def test_session_delete_removes_history_tasks_and_run_artifacts(
     client, session_id, model_outputs, workspace_env
 ):
-    model_outputs[:] = ["<final>delete me</final>"]
+    model_outputs[:] = [langgraph_router("read_only"), "<final>delete me</final>", langgraph_review("read_only")]
     created = client.post(
         "/api/v1/tasks", json={"session_id": session_id, "input": "temporary"}
     ).json()
@@ -311,7 +311,7 @@ def test_artifacts_404_for_unknown_run(client):
 
 
 def test_artifact_content_endpoints(client, session_id, model_outputs):
-    model_outputs[:] = ["<final>artifact answer</final>"]
+    model_outputs[:] = [langgraph_router("read_only"), "<final>artifact answer</final>", langgraph_review("read_only")]
     task = client.post("/api/v1/tasks", json={"session_id": session_id, "input": "x"}).json()
     wait_for_terminal(client, task["task_id"])
     run_id = client.get(f"/api/v1/tasks/{task['task_id']}").json()["run_id"]
@@ -330,7 +330,7 @@ def test_artifact_content_endpoints(client, session_id, model_outputs):
 
 
 def test_trace_artifact_skips_incomplete_tail(client, session_id, model_outputs, workspace_env):
-    model_outputs[:] = ["<final>done</final>"]
+    model_outputs[:] = [langgraph_router("read_only"), "<final>done</final>", langgraph_review("read_only")]
     task = client.post(
         "/api/v1/tasks",
         json={"session_id": session_id, "input": "x"},

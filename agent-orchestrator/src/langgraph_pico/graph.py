@@ -55,6 +55,24 @@ MAX_REPLAN_ATTEMPTS = 2
 MAX_REQUIRED_TOOL_ATTEMPTS = 2
 PLANNING_DEADLINE_SECONDS = 75.0
 READ_ONLY_TOOLS = ("list_files", "read_file", "search")
+INTENT_STEP_BUDGETS = {
+    INTENT_CONVERSATION: 2,
+    INTENT_READ_ONLY: 8,
+    INTENT_CODE_CHANGE: 16,
+}
+
+
+def _intent_step_budget(state, intent):
+    """Raise the default step budget to the intent minimum; respect explicit budgets.
+
+    The default step budget (6) is too small for the Research -> Execute ->
+    Review flow; code_change needs room for the bounded fix loop. An explicitly
+    provided step_budget (even a small one) is always respected.
+    """
+    if state.get("step_budget_explicit", False):
+        return int(state["step_budget"])
+    floor = int(INTENT_STEP_BUDGETS.get(intent, 0))
+    return max(int(state["step_budget"]), floor)
 COMPLETION_METADATA_KEYS = (
     "input_tokens",
     "output_tokens",
@@ -90,6 +108,7 @@ class AgentState(TypedDict):
     continuation_context: str
     completion_status: str
     step_budget: int
+    step_budget_explicit: bool
     coordinator_steps_used: int
     requires_research: bool | None
     research_result: str
@@ -788,6 +807,7 @@ def _apply_initial_plan(
         "intent_source": source,
         "intent_attempts": intent_attempts,
         "requires_research": requires_research,
+        "step_budget": _intent_step_budget(state, plan["intent"]),
         "plan": plan,
         "plan_attempts": attempt,
         "plan_error": "",
@@ -1117,6 +1137,7 @@ def intent_router_node(state: AgentState, config: RunnableConfig) -> AgentState:
         "intent_source": decision.source,
         "intent_attempts": decision.attempts,
         "requires_research": resolved_research,
+        "step_budget": _intent_step_budget(state, decision.intent),
     }
     metadata_collector.update(
         {

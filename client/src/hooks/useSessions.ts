@@ -435,11 +435,15 @@ export function useSessions(): UseSessions {
           'plan.created': '计划已创建',
           'plan.skipped': '直接回答',
           'assistant.commentary': '过程更新',
+          'model.started': '模型请求',
+          'model.completed': '模型完成',
           'review.started': '开始审查',
           'review.completed': '审查完成',
           'tool.started': '工具开始',
           'tool.completed': '工具完成',
           'tool.failed': '工具失败',
+          'approval.required': '等待审批',
+          'approval.resolved': '审批完成',
           'task.cancel_requested': '正在停止',
           'task.completed': '运行完成',
           'task.cancelled': '运行已取消',
@@ -459,6 +463,9 @@ export function useSessions(): UseSessions {
           step_count: envelope.data.step_count == null ? undefined : Number(envelope.data.step_count),
           status: envelope.data.status ? String(envelope.data.status) : undefined,
           run_id: envelope.run_id,
+          parent_event_id: envelope.data.parent_event_id ? String(envelope.data.parent_event_id) : undefined,
+          started_at: envelope.data.started_at ? String(envelope.data.started_at) : undefined,
+          ended_at: envelope.data.ended_at ? String(envelope.data.ended_at) : undefined,
         }
         updateSession(sessionId, (session) => {
           const current = session.runIndex ?? []
@@ -501,6 +508,10 @@ export function useSessions(): UseSessions {
         updateSessionMessages(sessionId, (messages) => messages.map((message) =>
           message.id === assistantId ? (() => {
             const activity = message.activity ?? []
+            // 幂等：同一 event_id 只记录一次；model.protocol_retrying 走替换语义，不受此去重影响。
+            if (envelope.type !== 'model.protocol_retrying' && activity.some((item) => item.id === envelope.event_id)) {
+              return message
+            }
             const next = {
               id: envelope.event_id,
               type: envelope.type,

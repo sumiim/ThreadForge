@@ -6,7 +6,12 @@ import sys
 import time
 import urllib.error
 
-from ..conftest import wait_for_status, wait_for_terminal
+from ..conftest import (
+    langgraph_review,
+    langgraph_router,
+    wait_for_status,
+    wait_for_terminal,
+)
 
 
 class _UnauthorizedModelClient:
@@ -33,7 +38,7 @@ def _shell_long_command():
 
 
 def test_read_only_task_completes_and_artifacts_queryable(client, session_id, model_outputs):
-    model_outputs[:] = ["<final>plain answer</final>"]
+    model_outputs[:] = [langgraph_router("read_only"), "<final>plain answer</final>", langgraph_review("read_only")]
     task = client.post("/api/v1/tasks", json={"session_id": session_id, "input": "x"}).json()
     assert task["status"] in {"queued", "running"}
     terminal = wait_for_terminal(client, task["task_id"])
@@ -58,14 +63,16 @@ def test_model_http_error_is_actionable_without_exposing_provider_body(client, s
 
     assert terminal["status"] == "failed"
     assert terminal["stop_reason"] == "model_error"
-    assert terminal["final_answer"] == "agent run failed: model_http_401"
+    assert terminal["final_answer"] == "模型调用失败，请稍后再试。"
     assert "secret provider response" not in str(terminal)
 
 
 def test_approve_flow_executes_exactly_the_requested_tool(client, session_id, model_outputs, workspace_env):
     model_outputs[:] = [
+        langgraph_router("code_change"),
         '<tool>{"name":"write_file","args":{"path":"out.txt","content":"hi"}}</tool>',
         "<final>written</final>",
+        langgraph_review("code_change"),
     ]
     task = client.post("/api/v1/tasks", json={"session_id": session_id, "input": "write file"}).json()
     tid = task["task_id"]
@@ -89,8 +96,10 @@ def test_reject_flow_leaves_file_unchanged(client, session_id, model_outputs, wo
     target = workspace_env["wsdir"] / "data.txt"
     target.write_text("keep me", encoding="utf-8")
     model_outputs[:] = [
+        langgraph_router("code_change"),
         '<tool>{"name":"patch_file","args":{"path":"data.txt","old_text":"keep me","new_text":"changed"}}</tool>',
         "<final>rejected then done</final>",
+        langgraph_review("code_change"),
     ]
     task = client.post("/api/v1/tasks", json={"session_id": session_id, "input": "patch"}).json()
     tid = task["task_id"]
@@ -100,13 +109,14 @@ def test_reject_flow_leaves_file_unchanged(client, session_id, model_outputs, wo
     assert resp.status_code == 200
 
     terminal = wait_for_terminal(client, tid)
-    assert terminal["status"] == "completed"
+    assert terminal["status"] == "blocked"
     assert target.read_text(encoding="utf-8") == "keep me"
 
 
 def test_active_task_conflict_returns_409(client, session_id, model_outputs):
     model_outputs[:] = [
-        '<tool>{"name":"run_shell","args":{"command":"%s","timeout":30}}</tool>' % _shell_long_command()
+        langgraph_router("code_change"),
+        '<tool>{"name":"run_shell","args":{"command":"%s","timeout":30}}</tool>' % _shell_long_command(),
     ]
     first = client.post("/api/v1/tasks", json={"session_id": session_id, "input": "first"}).json()
     wait_for_status(client, first["task_id"], "waiting_for_approval")
@@ -126,7 +136,8 @@ def test_active_task_conflict_returns_409(client, session_id, model_outputs):
 
 def test_cancel_during_shell_terminates_and_reaches_cancelled(client, session_id, model_outputs):
     model_outputs[:] = [
-        '<tool>{"name":"run_shell","args":{"command":"%s","timeout":30}}</tool>' % _shell_long_command()
+        langgraph_router("code_change"),
+        '<tool>{"name":"run_shell","args":{"command":"%s","timeout":30}}</tool>' % _shell_long_command(),
     ]
     task = client.post("/api/v1/tasks", json={"session_id": session_id, "input": "long"}).json()
     tid = task["task_id"]
@@ -144,8 +155,10 @@ def test_cancel_during_shell_terminates_and_reaches_cancelled(client, session_id
 
 def test_approval_rejection_has_audit(client, session_id, model_outputs):
     model_outputs[:] = [
+        langgraph_router("code_change"),
         '<tool>{"name":"write_file","args":{"path":"a.txt","content":"x"}}</tool>',
         "<final>end</final>",
+        langgraph_review("code_change"),
     ]
     task = client.post("/api/v1/tasks", json={"session_id": session_id, "input": "x"}).json()
     tid = task["task_id"]
@@ -153,7 +166,8 @@ def test_approval_rejection_has_audit(client, session_id, model_outputs):
     approval = waiting["pending_approval"]
     client.post(f"/api/v1/tasks/{tid}/approvals/{approval['approval_id']}", json={"decision": "rejected"})
     terminal = wait_for_terminal(client, tid)
-    assert terminal["status"] == "completed"
-    run_id = terminal["run_id"]
-    trace = client.get(f"/api/v1/runs/{run_id}/artifacts/trace").text
-    assert "approval" in trace or "rejected" in trace
+    assert terminal["status"] == "blocked"
+    approval_record = client.app.state.container.approval_repo.get(approval["approval_id"])
+    assert approval_record.decision == "rejected"
+    trace = client.get(f"/api/v1/runs/{terminal['run_id']}/artifacts/trace").text
+    assert "no_changes_to_review" in trace
