@@ -16,6 +16,7 @@ import {
   getWorkspaceSelection,
   listDevices,
   requestWorkspaceSelection,
+  updateWorker,
 } from '../../api/client'
 import type { Device, Workspace, WorkspaceSelectionRequest, WorkerReleaseManifest } from '../../api/types'
 import { workerIsReady, workerNeedsUpdate } from '../devices/worker-version'
@@ -81,6 +82,20 @@ export default function NewSessionModal({
   const [selecting, setSelecting] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const [refreshingWorkspaces, setRefreshingWorkspaces] = useState(false)
+  const [updatingDeviceId, setUpdatingDeviceId] = useState('')
+
+  const manuallyUpdate = async (device: Device) => {
+    try {
+      setError('')
+      setUpdatingDeviceId(device.device_id)
+      await updateWorker(device.device_id)
+    } catch (cause) {
+      setError(friendlyMessage(cause))
+    } finally {
+      setUpdatingDeviceId('')
+    }
+  }
+
   const operationVersion = useRef(0)
   // An existing but offline Worker still has valid workspace choices. Keep
   // those entries visible so the user can see which device needs reconnecting;
@@ -358,6 +373,20 @@ export default function NewSessionModal({
           description="旧版 Worker 不会调用目录选择器，请下载并运行最新安装程序；更新后会保留现有配对和工作区。"
         />
       ) : null}
+      {outdatedDevices
+        .filter((device) => device.online && (device.capabilities ?? []).includes('auto_update'))
+        .map((device) => (
+          <Button
+            key={device.device_id}
+            size="small"
+            icon={<ReloadOutlined />}
+            loading={updatingDeviceId === device.device_id}
+            disabled={activeUpdate !== undefined}
+            onClick={() => void manuallyUpdate(device)}
+          >
+            手动更新 {device.name}
+          </Button>
+        ))}
       {activeUpdate ? (
         <Alert
           type="info"

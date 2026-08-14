@@ -20,6 +20,7 @@ import {
   requestWorkspaceSelection,
   revokeDevice,
   uninstallWorker,
+  updateWorker,
 } from '../../api/client'
 import type { Device, WorkerReleaseManifest } from '../../api/types'
 import { getWorkerDeviceActionState } from './worker-actions'
@@ -50,6 +51,7 @@ export default function WorkerDevices() {
   const [modelSaving, setModelSaving] = useState(false)
   const [revokingDeviceId, setRevokingDeviceId] = useState('')
   const [uninstallingDeviceId, setUninstallingDeviceId] = useState('')
+  const [updatingDeviceId, setUpdatingDeviceId] = useState('')
   const [statusClock, setStatusClock] = useState(0)
   const [modelForm] = Form.useForm<{ base_url: string; api_key: string; model: string }>()
   const [modal, modalContextHolder] = Modal.useModal()
@@ -153,6 +155,21 @@ export default function WorkerDevices() {
       setError(friendlyMessage(cause))
     } finally {
       setUninstallingDeviceId('')
+    }
+  }
+
+  const manuallyUpdate = async (device: Device) => {
+    try {
+      setError('')
+      setUpdatingDeviceId(device.device_id)
+      await updateWorker(device.device_id)
+      setNotice(`已请求 ${device.name} 检查并更新到最新版本`)
+      await delay(2_000)
+      await refresh()
+    } catch (cause) {
+      setError(friendlyMessage(cause))
+    } finally {
+      setUpdatingDeviceId('')
     }
   }
 
@@ -381,6 +398,19 @@ export default function WorkerDevices() {
                       onClick={() => void selectWorkspace(device.device_id)}
                     >
                       添加本地目录
+                    </Button>
+                  ) : null}
+                  {device.online && (device.capabilities ?? []).includes('auto_update') ? (
+                    <Button
+                      size="small"
+                      icon={<ReloadOutlined />}
+                      loading={updatingDeviceId === device.device_id}
+                      disabled={['checking', 'downloading', 'retrying', 'installing'].includes(
+                        device.update_status?.status ?? '',
+                      )}
+                      onClick={() => void manuallyUpdate(device)}
+                    >
+                      手动更新
                     </Button>
                   ) : null}
                   {device.online && (!canSelectWorkspace || !device.compatible) ? (

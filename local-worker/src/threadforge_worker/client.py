@@ -29,7 +29,7 @@ from .config import (
     WorkspacePathError,
 )
 from .runtime import ActiveRun, CancellationToken, RemoteApprovalStrategy, run_task
-from .updater import load_update_status
+from .updater import apply_update, load_update_status
 
 _SESSION_ID = re.compile(r"^ses_[a-f0-9]{32}$")
 _RUN_ID = re.compile(r"^run_[a-f0-9]{32}$")
@@ -268,6 +268,8 @@ class WorkerClient:
             self._delete_entity(message)
         elif message_type == "worker.uninstall":
             self._uninstall_worker(message)
+        elif message_type == "worker.update":
+            self._request_update(message)
         elif message_type == "hello.ack":
             self._ready_event.set()
             self._start_session_sync()
@@ -286,6 +288,7 @@ class WorkerClient:
             "model.configuration.ack",
             "entity.delete.ack",
             "worker.uninstall.ack",
+            "worker.update.ack",
             "approval.registered",
             "update.status.ack",
         }:
@@ -589,6 +592,38 @@ class WorkerClient:
                 raise ValueError("invalid run artifact path")
             if run_dir.exists():
                 shutil.rmtree(run_dir, ignore_errors=False)
+
+    def _request_update(self, message: dict) -> None:
+        request_id = str(message.get("request_id", ""))
+        response = {
+            "type": "worker.update.completed",
+            "request_id": request_id,
+        }
+        if not request_id:
+            response.update(status="failed", error="update_unavailable")
+        elif not self.begin_update():
+            response.update(status="failed", error="worker_busy")
+        else:
+            response["status"] = "started"
+            self._send(response)
+            threading.Thread(
+                target=self._run_manual_update,
+                name=f"worker-update-{request_id}",
+                daemon=True,
+            ).start()
+            return
+        self._send(response)
+
+    def _run_manual_update(self) -> None:
+        try:
+            updated = apply_update(self.store, self.report_update_status)
+            if updated:
+                # The installer replaces the binaries after this process exits.
+                self.stop()
+        except Exception as exc:
+            LOGGER.warning("Manual Worker update failed: %s", exc)
+        finally:
+            self.end_update()
 
     def _uninstall_worker(self, message: dict) -> None:
         request_id = str(message.get("request_id", ""))
