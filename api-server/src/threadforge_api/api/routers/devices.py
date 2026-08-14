@@ -260,6 +260,18 @@ async def uninstall_worker(
     return await worker_hub.uninstall_worker(device_id=device_id, owner_id=actor.owner_id)
 
 
+@router.post(
+    "/api/v1/devices/{device_id}/update",
+    dependencies=[Depends(require_csrf)],
+)
+async def update_worker(
+    device_id: str,
+    actor: Actor = Depends(get_actor),
+    worker_hub: WorkerHub = Depends(get_worker_hub),
+) -> dict:
+    return await worker_hub.update_worker(device_id=device_id, owner_id=actor.owner_id)
+
+
 @router.delete("/api/v1/devices/{device_id}", dependencies=[Depends(require_csrf)])
 def revoke_device(
     device_id: str,

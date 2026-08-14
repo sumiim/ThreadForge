@@ -143,6 +143,7 @@ class WorkerHub:
         self._rename_requests: dict[str, PendingWorkerRequest] = {}
         self._delete_requests: dict[str, PendingWorkerRequest] = {}
         self._uninstall_requests: dict[str, PendingWorkerRequest] = {}
+        self._update_requests: dict[str, PendingWorkerRequest] = {}
         self._terminal_answers: dict[str, tuple[float, str]] = {}
         self._agent_progress: dict[str, tuple[float, dict]] = {}
         self._lock = threading.RLock()
@@ -546,6 +547,32 @@ class WorkerHub:
             )
         return {"status": "uninstalling", "device_id": device_id}
 
+    async def update_worker(self, *, device_id: str, owner_id: str) -> dict:
+        self._devices.get_for_owner(device_id, owner_id)
+        request_id = "update_" + uuid.uuid4().hex
+        future = self._register_pending_request(
+            self._update_requests,
+            request_id=request_id,
+            device_id=device_id,
+            owner_id=owner_id,
+            capability="auto_update",
+            subject_id=device_id,
+        )
+        try:
+            self._send(device_id, {"type": "worker.update", "request_id": request_id})
+            result = await asyncio.wait_for(future, timeout=10)
+        except asyncio.TimeoutError as exc:
+            raise WorkerOfflineError("Worker update request timed out") from exc
+        finally:
+            with self._lock:
+                self._update_requests.pop(request_id, None)
+        if result.get("status") not in {"started", "current"}:
+            raise WorkerCommandFailedError(
+                "Worker update was rejected",
+                {"reason": result.get("error", "update_failed")},
+            )
+        return {"status": result.get("status"), "device_id": device_id}
+
     def _register_pending_request(
         self,
         requests: dict[str, PendingWorkerRequest],
@@ -584,6 +611,7 @@ class WorkerHub:
             self._rename_requests,
             self._delete_requests,
             self._uninstall_requests,
+            self._update_requests,
         ):
             expired = [
                 request_id
@@ -839,6 +867,8 @@ class WorkerHub:
             self._handle_delete_completed(connection, message)
         elif message_type == "worker.uninstall.completed":
             self._handle_uninstall_completed(connection, message)
+        elif message_type == "worker.update.completed":
+            self._handle_update_completed(connection, message)
         elif message_type == "update.status":
             self._handle_update_status(connection, message)
         elif message_type == "heartbeat":
@@ -1272,6 +1302,33 @@ class WorkerHub:
             {"type": "worker.uninstall.ack", "request_id": request_id},
         )
 
+    def _handle_update_completed(self, connection: WorkerConnection, message: dict) -> None:
+        request_id = str(message.get("request_id", ""))
+        with self._lock:
+            request = self._update_requests.get(request_id)
+            if (
+                request is None
+                or request.device_id != connection.device.device_id
+                or request.owner_id != connection.device.owner_id
+            ):
+                raise WorkerProtocolError("update request is not pending")
+        status = str(message.get("status", ""))
+        if status == "started":
+            result = {"status": "started"}
+        elif status == "failed":
+            result = {
+                "status": "failed",
+                "error": _safe_error_code(message.get("error"), "update_failed"),
+            }
+        else:
+            raise WorkerProtocolError("invalid update result")
+        if not request.future.done():
+            request.future.set_result(result)
+        self._send(
+            connection.device.device_id,
+            {"type": "worker.update.ack", "request_id": request_id},
+        )
+
     def _update_workspace_presence(
         self, connection: WorkerConnection, raw_workspaces
     ) -> list[WorkerWorkspace]:
@@ -1320,6 +1377,7 @@ class WorkerHub:
             self._rename_requests,
             self._delete_requests,
             self._uninstall_requests,
+            self._update_requests,
         ):
             for request in requests.values():
                 if request.device_id == device_id and not request.future.done():

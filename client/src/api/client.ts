@@ -192,6 +192,10 @@ export function uninstallWorker(deviceId: string): Promise<{ status: string; dev
   return request(`/api/v1/devices/${encodeURIComponent(deviceId)}/uninstall`, { method: 'POST' })
 }
 
+export function updateWorker(deviceId: string): Promise<{ status: string; device_id: string }> {
+  return request(`/api/v1/devices/${encodeURIComponent(deviceId)}/update`, { method: 'POST' })
+}
+
 export function requestWorkspaceSelection(deviceId: string): Promise<WorkspaceSelectionRequest> {
   return request(`/api/v1/devices/${encodeURIComponent(deviceId)}/workspace-selection-requests`, {
     method: 'POST',
