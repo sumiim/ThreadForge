@@ -1681,30 +1681,47 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
         task_state.record_attempt()
         _write_graph_task_state(agent)
         evidence_prompt = ""
+        stale = []
         if state["resolved_intent"] == INTENT_READ_ONLY:
+            read_only_evidence = _read_only_review_evidence(agent, config)
+            stale = [
+                item
+                for item in read_only_evidence
+                if item.get("freshness") not in {"", "current_run"}
+            ]
             evidence_prompt = (
                 "\nREAD_ONLY_EVIDENCE="
-                + json.dumps(_read_only_review_evidence(agent, config), ensure_ascii=False)
+                + json.dumps(read_only_evidence, ensure_ascii=False)
                 + "\nFor a read-only task, return status: needs_fix unless this current-run evidence "
                 "is sufficient for the candidate answer."
             )
-        raw = _complete_graph_model(
-            agent,
-            agent.model_client,
-            (
-                "Review this candidate answer against the request and acceptance criteria. "
-                "Do not expose hidden reasoning. The first non-empty line must be exactly "
-                "status: pass or status: needs_fix, followed by a concise issue summary.\n"
-                f"REQUEST={state['task']}\n"
-                f"ACCEPTANCE={state['acceptance']}\n"
-                f"INTENT={state['resolved_intent']}\n"
-                f"CANDIDATE={state['execution_result']}"
-                + evidence_prompt
-            ),
-            agent.max_new_tokens,
-            stage="review",
-        )
-        review = normalize_review_result(raw)
+        if stale:
+            # Deterministic freshness rule (§7): stale evidence cannot support
+            # the answer, so force needs_fix without a model call.
+            review = {
+                "status": "needs_fix",
+                "text": "Deterministic rule: stale evidence cannot support the answer; re-read required.",
+                "issue_codes": ["stale_evidence"],
+                "recovered": False,
+            }
+        else:
+            raw = _complete_graph_model(
+                agent,
+                agent.model_client,
+                (
+                    "Review this candidate answer against the request and acceptance criteria. "
+                    "Do not expose hidden reasoning. The first non-empty line must be exactly "
+                    "status: pass or status: needs_fix, followed by a concise issue summary.\n"
+                    f"REQUEST={state['task']}\n"
+                    f"ACCEPTANCE={state['acceptance']}\n"
+                    f"INTENT={state['resolved_intent']}\n"
+                    f"CANDIDATE={state['execution_result']}"
+                    + evidence_prompt
+                ),
+                agent.max_new_tokens,
+                stage="review",
+            )
+            review = normalize_review_result(raw)
         updated = {
             **state,
             "review_status": review["status"],

@@ -239,3 +239,103 @@ export function eventLabel(type: string): string {
   }
   return labels[type] ?? type
 }
+
+/** 事件区间真实耗时（悬停摘要）；无起止时间或非正区间返回空串。 */
+export function durationLabel(item: Pick<RunIndexItem, 'started_at' | 'ended_at'>): string {
+  const start = item.started_at ? new Date(item.started_at).getTime() : Number.NaN
+  const end = item.ended_at ? new Date(item.ended_at).getTime() : Number.NaN
+  if (Number.isNaN(start) || Number.isNaN(end) || end <= start) return ''
+  const ms = end - start
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
+  return `${Math.round(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`
+}
+
+/** Run 状态的中文标签，供轨迹条头部复用。 */
+export function runStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    running: '运行中',
+    completed: '已完成',
+    failed: '失败',
+    cancelled: '已取消',
+    interrupted: '已中断',
+    blocked: '受阻',
+    queued: '排队中',
+    needs_fix: '待修复',
+  }
+  return labels[status] ?? status
+}
+
+export interface TimelineGroup {
+  key: string
+  lane: Lane
+  type: string
+  toolNames: string[]
+  count: number
+  start: number
+  end: number
+  failed: boolean
+  running: boolean
+  /** 代表性事件，用于点击跳转。 */
+  sample: TimelineEvent
+}
+
+const MAX_CONSECUTIVE_TOOLS = 24
+
+/**
+ * 把时间轴事件折叠成可视化分组：连续的工具事件合并成一个区段（保留调用数量），
+ * 分组过多时再按序聚合为桶，避免长 Run 渲染数百个 DOM 节点（§8.1 虚拟化/区段聚合）。
+ */
+export function groupTimelineItems(entries: TimelineEvent[], maxBuckets = 160): TimelineGroup[] {
+  const collapsed: TimelineGroup[] = []
+  for (const entry of entries) {
+    const lane = laneOf(entry.type)
+    const time = eventTimeOf(entry)
+    const prev = collapsed[collapsed.length - 1]
+    if (prev && prev.lane === 'execute' && lane === 'execute' && prev.count < MAX_CONSECUTIVE_TOOLS) {
+      prev.count += 1
+      prev.end = Math.max(prev.end, time)
+      prev.failed = prev.failed || isFailed(entry)
+      prev.running = prev.running || isRunning(entry)
+      if (entry.tool_name && !prev.toolNames.includes(entry.tool_name)) {
+        prev.toolNames.push(entry.tool_name)
+      }
+    } else {
+      collapsed.push({
+        key: entry.event_id,
+        lane,
+        type: entry.type,
+        toolNames: entry.tool_name ? [entry.tool_name] : [],
+        count: 1,
+        start: time,
+        end: time,
+        failed: isFailed(entry),
+        running: isRunning(entry),
+        sample: entry,
+      })
+    }
+  }
+
+  if (collapsed.length <= maxBuckets) return collapsed
+
+  const buckets: TimelineGroup[] = []
+  const per = Math.ceil(collapsed.length / maxBuckets)
+  for (let i = 0; i < collapsed.length; i += per) {
+    const chunk = collapsed.slice(i, i + per)
+    const first = chunk[0]!
+    const last = chunk[chunk.length - 1]!
+    buckets.push({
+      key: first.key,
+      lane: first.lane,
+      type: 'bucket',
+      toolNames: [...new Set(chunk.flatMap((group) => group.toolNames))].slice(0, 6),
+      count: chunk.reduce((sum, group) => sum + group.count, 0),
+      start: first.start,
+      end: last.end,
+      failed: chunk.some((group) => group.failed),
+      running: chunk.some((group) => group.running),
+      sample: first.sample,
+    })
+  }
+  return buckets
+}
