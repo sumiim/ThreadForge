@@ -43,6 +43,11 @@ export const themeConfig: ThemeConfig = {
       activeBg: '#ffffff',
       activeShadow: 'none',
     },
+    Collapse: {
+      // 会话树三级(设备/工作区/会话)紧凑排布:header 上下 2px、左右 8px
+      headerPadding: '2px 8px',
+      contentPadding: '0',
+    },
   },
 }
 
@@ -82,6 +87,10 @@ export const darkThemeConfig: ThemeConfig = {
       hoverBg: '#1c1a18',
       activeBg: '#1c1a18',
       activeShadow: 'none',
+    },
+    Collapse: {
+      headerPadding: '2px 8px',
+      contentPadding: '0',
     },
   },
 }

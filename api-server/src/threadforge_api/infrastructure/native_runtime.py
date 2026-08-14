@@ -8,6 +8,7 @@ import urllib.error
 from langgraph_pico import run_agent
 from pico import Pico
 from pico.event_sink import CompositeSink, EventCollector, JsonlSink
+from pico.providers.clients import ModelProviderError
 from pico.run_lifecycle import finalize_failed_run
 from pico.task_state import (
     STATUS_COMPLETED,
@@ -199,10 +200,26 @@ class NativeRuntimeAdapter:
         return True
 
 
+_MODEL_PROVIDER_ERROR_CODES = frozenset(
+    {
+        "model_rate_limited",
+        "model_timeout",
+        "model_server_error",
+        "model_auth_error",
+        "model_request_rejected",
+        "model_connection_error",
+        "model_response_invalid",
+        "model_provider_error",
+    }
+)
+
+
 def _classify_public_error(exc: Exception) -> tuple[str, str]:
     """Expose actionable provider failures without persisting response bodies."""
     current: BaseException | None = exc
     while current is not None:
+        if isinstance(current, ModelProviderError) and current.code in _MODEL_PROVIDER_ERROR_CODES:
+            return current.code, STOP_REASON_MODEL_ERROR
         if isinstance(current, urllib.error.HTTPError):
             return f"model_http_{current.code}", STOP_REASON_MODEL_ERROR
         if isinstance(current, (urllib.error.URLError, ConnectionError, TimeoutError)):

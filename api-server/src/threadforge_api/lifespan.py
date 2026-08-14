@@ -9,7 +9,11 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from pico.providers.clients import OpenAICompatibleModelClient
+from pico.providers.clients import (
+    AnthropicCompatibleModelClient,
+    OpenAICompatibleModelClient,
+    OpenAICompletionsModelClient,
+)
 from pico.security import redact_artifact
 from pico.session_store import SessionStore
 
@@ -212,12 +216,31 @@ class AppContainer:
             self.device_store.get(path.stem)
 
     def _default_model_client_factory(self):
+        settings = self.settings
+        if settings.model_provider == "anthropic":
+            return AnthropicCompatibleModelClient(
+                model=settings.pico_anthropic_model,
+                base_url=settings.pico_anthropic_api_base,
+                api_key=settings.pico_anthropic_api_key,
+                temperature=settings.model_temperature,
+                timeout=settings.model_timeout_seconds,
+                max_attempts=1,
+            )
+        if settings.model_provider == "chat_completions":
+            return OpenAICompletionsModelClient(
+                model=settings.pico_chat_completions_model,
+                base_url=settings.pico_chat_completions_api_base,
+                api_key=settings.pico_chat_completions_api_key,
+                temperature=settings.model_temperature,
+                timeout=settings.model_timeout_seconds,
+                max_attempts=1,
+            )
         return OpenAICompatibleModelClient(
-            model=self.settings.pico_openai_model,
-            base_url=self.settings.pico_openai_api_base,
-            api_key=self.settings.pico_openai_api_key,
-            temperature=self.settings.model_temperature,
-            timeout=self.settings.model_timeout_seconds,
+            model=settings.pico_openai_model,
+            base_url=settings.pico_openai_api_base,
+            api_key=settings.pico_openai_api_key,
+            temperature=settings.model_temperature,
+            timeout=settings.model_timeout_seconds,
             max_attempts=1,
         )
 

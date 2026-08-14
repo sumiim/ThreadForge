@@ -26,8 +26,9 @@ _MCP_SERVERS = (
 def get_runtime_config(settings=Depends(get_settings)) -> dict:
     multi_user = settings.identity_mode == "github_oauth"
     return {
-        "model": "" if multi_user else settings.pico_openai_model,
+        "model": "" if multi_user else settings.provider_model(),
         "model_configured": False if multi_user else settings.model_configured(),
+        "model_provider": settings.model_provider,
         "execution_environment": (
             ExecutionEnvironment.LOCAL_WORKER.value
             if multi_user

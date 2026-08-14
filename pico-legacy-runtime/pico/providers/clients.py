@@ -221,6 +221,23 @@ def _extract_openai_function_call(data):
     return ""
 
 
+def _strip_single_code_fence(text):
+    """Remove one surrounding markdown code fence when the whole text is fenced.
+
+    Some providers (e.g. SiliconFlow DeepSeek-V3.2) intermittently wrap JSON
+    output in ```json ... ``` fences. The orchestrator's strict JSON parsers
+    reject fenced payloads by contract, so the provider adapter normalizes
+    the whole-text single-fence shape here; anything else passes through.
+    """
+    raw = str(text or "").strip()
+    if raw.startswith("```") and raw.endswith("```") and len(raw) > 6:
+        body = raw[3:].lstrip("\r\n")
+        if body.startswith(("json", "JSON")):
+            body = body[4:].lstrip()
+        raw = body.rsplit("```", 1)[0].strip()
+    return raw
+
+
 def _normalize_openai_native_text(text, *, native_tools_enabled):
     """Treat a provider-native assistant message as the final agent action.
 
@@ -230,6 +247,7 @@ def _normalize_openai_native_text(text, *, native_tools_enabled):
     XML/JSON protocol responses untouched.
     """
 
+    text = _strip_single_code_fence(text)
     text = str(text or "").strip()
     if not text or not native_tools_enabled:
         return text
@@ -783,14 +801,336 @@ def _extract_anthropic_text(data):
     return ""
 
 
+def _run_provider_request(
+    request,
+    *,
+    consume,
+    max_attempts,
+    timeout,
+    deadline_monotonic=None,
+    should_cancel=None,
+    on_retry=None,
+):
+    """Anthropic / chat-completions 客户端共用的重试骨架。
+
+    从 OpenAI 客户端的重试循环中抽取：deadline 计算、取消检查、Retry-After
+    延迟、HTTP/网络错误映射与重试。`consume(response, attempt) -> dict` 由
+    调用方传入，负责读 body / 解析 SSE；骨架不写任何 client 状态，错误
+    metadata 由调用方在 except ModelProviderError 处统一写三键。
+    """
+
+    def check_cancelled():
+        if should_cancel is not None:
+            should_cancel()
+
+    def remaining_timeout(attempt):
+        check_cancelled()
+        if deadline_monotonic is None:
+            return timeout
+        remaining = float(deadline_monotonic) - time.monotonic()
+        if remaining <= 0:
+            raise ModelProviderError("model_timeout", retryable=True, attempts=attempt)
+        return min(float(timeout), remaining)
+
+    def notify_retry(attempt, error, delay):
+        if on_retry is not None:
+            on_retry(
+                {
+                    "attempt": int(attempt),
+                    "max_attempts": int(max_attempts),
+                    "error_code": str(getattr(error, "code", "model_connection_error")),
+                    "retry_delay_seconds": float(delay),
+                }
+            )
+
+    for attempt in range(1, max_attempts + 1):
+        check_cancelled()
+        try:
+            with urllib.request.urlopen(request, timeout=remaining_timeout(attempt)) as response:
+                return consume(response, attempt)
+        except ModelProviderError as exc:
+            delay = _retry_delay(attempt)
+            if exc.retryable and attempt < max_attempts:
+                if deadline_monotonic is not None and time.monotonic() + delay >= deadline_monotonic:
+                    exc.attempts = attempt
+                    raise exc
+                notify_retry(attempt, exc, delay)
+                time.sleep(delay)
+                continue
+            raise exc
+        except urllib.error.HTTPError as exc:
+            provider_error = _provider_http_error(exc.code, attempt)
+            delay = _retry_delay(
+                attempt,
+                (getattr(exc, "headers", None) or {}).get("Retry-After", ""),
+            )
+            if provider_error.retryable and attempt < max_attempts:
+                if deadline_monotonic is not None and time.monotonic() + delay >= deadline_monotonic:
+                    provider_error.attempts = attempt
+                    raise provider_error from exc
+                notify_retry(attempt, provider_error, delay)
+                time.sleep(delay)
+                continue
+            raise provider_error from exc
+        except (
+            urllib.error.URLError,
+            IncompleteRead,
+            RemoteDisconnected,
+            TimeoutError,
+            socket.timeout,
+            ConnectionError,
+        ) as exc:
+            delay = _retry_delay(attempt)
+            reason = getattr(exc, "reason", exc)
+            connection_code = (
+                "model_timeout"
+                if isinstance(reason, (TimeoutError, socket.timeout))
+                else "model_connection_error"
+            )
+            connection_error = ModelProviderError(
+                connection_code,
+                retryable=True,
+                attempts=attempt,
+            )
+            if attempt < max_attempts:
+                if deadline_monotonic is not None and time.monotonic() + delay >= deadline_monotonic:
+                    raise ModelProviderError(
+                        "model_timeout", retryable=True, attempts=attempt
+                    ) from exc
+                notify_retry(attempt, connection_error, delay)
+                time.sleep(delay)
+                continue
+            raise connection_error from exc
+
+    # 防御性兜底：正常情况下循环内必然 return 或 raise（成功、不可重试错误、
+    # 或 deadline 提前中止）。仅当 max_attempts 配置异常时才可能走到这里。
+    raise ModelProviderError(
+        "model_response_invalid",
+        retryable=True,
+        attempts=max_attempts,
+    )
+
+
+def _serialize_tool_call(name, arguments):
+    """把原生工具调用序列化成运行时的 <tool>{...}</tool> 文本协议。"""
+    payload = {"name": name, "args": arguments}
+    return "<tool>" + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "</tool>"
+
+
+def _parse_tool_arguments(raw):
+    """解析流式累积的工具参数 JSON；失败保留原字符串由运行时拒绝。"""
+    if isinstance(raw, dict):
+        return raw
+    raw = str(raw or "").strip()
+    try:
+        return json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return raw
+
+
+def _normalize_anthropic_usage(usage):
+    """把 Anthropic 的 cache_read_input_tokens 映射进统一 usage 形状。"""
+    usage = dict(usage or {})
+    cached_tokens = usage.get("cache_read_input_tokens") or 0
+    if cached_tokens:
+        details = dict(usage.get("input_tokens_details") or {})
+        details["cached_tokens"] = cached_tokens
+        usage["input_tokens_details"] = details
+    return usage
+
+
+def _normalize_completions_base_url(base_url):
+    base = str(base_url).rstrip("/")
+    if base.endswith("/chat/completions"):
+        return base
+    if base.endswith("/v1"):
+        return base + "/chat/completions"
+    return base + "/v1/chat/completions"
+
+
+def _consume_anthropic_stream(lines, *, on_text_delta=None, should_cancel=None, attempts_used=1):
+    """消费 Anthropic Messages SSE 流，产出运行时形状 {"text", "tool", "usage"}。
+
+    覆盖的 Anthropic 事件（参考 pi-main 的 anthropic-messages.ts 适配点）：
+    message_start（usage 初值）、content_block_start（tool_use 建槽）、
+    content_block_delta（text_delta / input_json_delta 逐片累积）、
+    message_delta（output_tokens 终值）、message_stop（结束）。
+    """
+    text_parts = []
+    tool_slots = {}  # index -> {"name": str, "arguments": str}
+    usage = {}
+    for raw_line in lines:
+        if should_cancel is not None:
+            should_cancel()
+        if isinstance(raw_line, bytes):
+            line = raw_line.decode("utf-8", errors="replace")
+        else:
+            line = str(raw_line)
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].strip()
+        if not payload:
+            continue
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        event_type = event.get("type")
+        if event_type == "error":
+            raise ModelProviderError("model_provider_error", attempts=attempts_used)
+        if event_type == "message_start":
+            message = event.get("message") or {}
+            usage = dict(message.get("usage") or {})
+            continue
+        if event_type == "content_block_start":
+            block = event.get("content_block") or {}
+            if block.get("type") == "tool_use":
+                index = int(event.get("index") or 0)
+                tool_slots[index] = {"name": str(block.get("name") or ""), "arguments": ""}
+            continue
+        if event_type == "content_block_delta":
+            delta = event.get("delta") or {}
+            delta_type = delta.get("type")
+            if delta_type == "text_delta":
+                text = delta.get("text")
+                if text:
+                    text_parts.append(text)
+                    if on_text_delta is not None:
+                        on_text_delta(text)
+            elif delta_type == "input_json_delta":
+                index = int(event.get("index") or 0)
+                slot = tool_slots.get(index)
+                if slot is not None:
+                    slot["arguments"] += str(delta.get("partial_json") or "")
+            continue
+        if event_type == "message_delta":
+            message_usage = event.get("usage")
+            if isinstance(message_usage, dict) and message_usage:
+                usage = dict(usage)
+                usage.update(message_usage)
+            continue
+        if event_type == "message_stop":
+            break
+    tool = None
+    if tool_slots:
+        index = min(tool_slots)
+        slot = tool_slots[index]
+        if slot["name"]:
+            tool = {"name": slot["name"], "arguments": _parse_tool_arguments(slot["arguments"])}
+    return {"text": "".join(text_parts), "tool": tool, "usage": usage}
+
+
+def _extract_anthropic_response(data):
+    """非流式 Anthropic JSON 兜底：(text, tool_or_None, usage)。"""
+    text_parts = []
+    tool = None
+    for item in data.get("content") or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "text":
+            text = item.get("text")
+            if text:
+                text_parts.append(text)
+        elif item.get("type") == "tool_use" and tool is None:
+            name = str(item.get("name") or "")
+            if name:
+                tool = {"name": name, "arguments": item.get("input")}
+    return "".join(text_parts), tool, data.get("usage")
+
+
+def _consume_completions_stream(lines, *, on_text_delta=None, should_cancel=None, attempts_used=1):
+    """消费 chat/completions SSE 流，产出运行时形状 {"text", "tool", "usage"}。
+
+    对齐网关 translate_stream 的翻译点：delta.content 增量、delta.tool_calls
+    按 index 累积 arguments 分片；兼容最终 chunk 把完整 tool_calls 放在
+    choice.message 的情况；usage 取流中最后一个非空 chunk。
+    """
+    text_parts = []
+    tool_slots = {}  # index -> {"name": str, "arguments": str}
+    usage = None
+    for raw_line in lines:
+        if should_cancel is not None:
+            should_cancel()
+        if isinstance(raw_line, bytes):
+            line = raw_line.decode("utf-8", errors="replace")
+        else:
+            line = str(raw_line)
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            chunk = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if chunk.get("error"):
+            raise ModelProviderError("model_provider_error", attempts=attempts_used)
+        if chunk.get("usage"):
+            usage = chunk["usage"]
+        choices = chunk.get("choices") or []
+        if not choices:
+            continue
+        choice = choices[0]
+        delta = choice.get("delta") or {}
+        content = delta.get("content")
+        if content:
+            text_parts.append(content)
+            if on_text_delta is not None:
+                on_text_delta(content)
+        # 有的后端把完整 tool_calls 放在最终 chunk 的 message 里而不是 delta 里。
+        raw_calls = delta.get("tool_calls") or (choice.get("message") or {}).get("tool_calls") or []
+        for tc in raw_calls:
+            if not isinstance(tc, dict):
+                continue
+            index = int(tc.get("index") or 0)
+            slot = tool_slots.setdefault(index, {"name": "", "arguments": ""})
+            fn = tc.get("function") or {}
+            if fn.get("name"):
+                slot["name"] = fn["name"]
+            if fn.get("arguments"):
+                slot["arguments"] += fn["arguments"]
+    tool = None
+    if tool_slots:
+        index = min(tool_slots)
+        slot = tool_slots[index]
+        if slot["name"]:
+            tool = {"name": slot["name"], "arguments": _parse_tool_arguments(slot["arguments"])}
+    return {"text": "".join(text_parts), "tool": tool, "usage": usage}
+
+
 class AnthropicCompatibleModelClient:
-    def __init__(self, model, base_url, api_key, temperature, timeout):
+    """Anthropic Messages API 原生适配（流式 + 工具调用 + usage）。
+
+    与 OpenAI 客户端一样，把原生 function call 序列化成 <tool>{...}</tool>
+    文本协议返回，纯文本按 _normalize_openai_native_text 包 <final>；运行时
+    不需要感知 Anthropic 的协议细节。
+    """
+
+    def __init__(
+        self,
+        model,
+        base_url,
+        api_key,
+        temperature,
+        timeout,
+        max_attempts=3,
+        *,
+        instructions=None,
+    ):
         self.model = model
         self.base_url = _normalize_versioned_base_url(base_url)
         self.api_key = api_key
         self.temperature = temperature
         self.timeout = timeout
+        if not isinstance(max_attempts, int) or max_attempts < 1:
+            raise ValueError("max_attempts must be a positive integer")
+        self.max_attempts = max_attempts
+        self.instructions = str(instructions or "").strip()
         self.supports_prompt_cache = False
+        self.supports_native_tools = True
         self.last_completion_metadata = {}
 
     def complete(
@@ -799,11 +1139,19 @@ class AnthropicCompatibleModelClient:
         max_new_tokens,
         prompt_cache_key=None,
         prompt_cache_retention=None,
-        **kwargs,
+        *,
+        deadline_monotonic=None,
+        on_retry=None,
+        on_text_delta=None,
+        should_cancel=None,
+        tool_definitions=None,
     ):
-        # 为了保持统一接口，runtime 仍然会传缓存参数进来；
-        # 这里只是显式丢弃，因为当前 Anthropic-compatible 路径没有接缓存复用。
-        del prompt_cache_key, prompt_cache_retention, kwargs
+        """向 Anthropic-compatible `/messages` 接口发起一次流式模型调用。
+
+        请求与流式事件在 _consume_anthropic_stream 里翻译回运行时协议；
+        重试骨架复用 _run_provider_request；错误统一抛 ModelProviderError
+        并写 provider_error_* 三键 metadata。
+        """
         self.last_completion_metadata = {}
         payload = {
             "model": self.model,
@@ -819,54 +1167,272 @@ class AnthropicCompatibleModelClient:
                 }
             ],
             "max_tokens": max_new_tokens,
-            "stream": False,
+            "stream": True,
         }
+        if self.instructions:
+            payload["system"] = [{"type": "text", "text": self.instructions}]
+        native_tools_enabled = bool(tool_definitions) and self.supports_native_tools
+        if native_tools_enabled:
+            # OpenAI function schema -> Anthropic tools（丢 strict，description 兜底空串）。
+            payload["tools"] = [
+                {
+                    "name": tool["name"],
+                    "description": tool.get("description") or "",
+                    "input_schema": tool.get("parameters") or {},
+                }
+                for tool in tool_definitions
+                if isinstance(tool, dict) and tool.get("type") == "function" and tool.get("name")
+            ]
         if self.temperature is not None:
             payload["temperature"] = self.temperature
 
         headers = {
             "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            "User-Agent": OPENAI_COMPATIBLE_USER_AGENT,
             "x-api-key": self.api_key,
             "anthropic-version": "2023-06-01",
         }
-
         request = urllib.request.Request(
             self.base_url + "/messages",
             data=json.dumps(payload).encode("utf-8"),
             headers=headers,
             method="POST",
         )
-        attempts = 3
-        for attempt in range(attempts):
-            try:
-                with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                    body_text = response.read().decode("utf-8")
-                break
-            except urllib.error.HTTPError as exc:
-                body = exc.read().decode("utf-8", errors="replace")
-                if exc.code >= 500 and attempt < attempts - 1:
-                    time.sleep(0.5 * (attempt + 1))
-                    continue
-                raise RuntimeError(f"Anthropic-compatible request failed with HTTP {exc.code}: {body}") from exc
-            except (urllib.error.URLError, RemoteDisconnected) as exc:
-                if attempt < attempts - 1:
-                    time.sleep(0.5 * (attempt + 1))
-                    continue
-                raise RuntimeError(
-                    "Could not reach the Anthropic-compatible backend.\n"
-                    f"Base URL: {self.base_url}\n"
-                    f"Model: {self.model}"
-                ) from exc
+
+        def consume(response, attempt):
+            response_headers = getattr(response, "headers", {}) or {}
+            content_type = response_headers.get("Content-Type", "")
+            if content_type.startswith("text/event-stream"):
+                result = _consume_anthropic_stream(
+                    response,
+                    on_text_delta=on_text_delta,
+                    should_cancel=should_cancel,
+                    attempts_used=attempt,
+                )
+            else:
+                body_text = response.read().decode("utf-8")
+                # 有些兼容后端未标注 content-type 但返回 SSE。
+                if body_text.lstrip().startswith("data:"):
+                    result = _consume_anthropic_stream(
+                        body_text.splitlines(),
+                        on_text_delta=on_text_delta,
+                        should_cancel=should_cancel,
+                        attempts_used=attempt,
+                    )
+                else:
+                    try:
+                        data = json.loads(body_text)
+                    except json.JSONDecodeError as exc:
+                        raise ModelProviderError(
+                            "model_response_invalid", retryable=True, attempts=attempt
+                        ) from exc
+                    if data.get("error"):
+                        raise ModelProviderError("model_provider_error", attempts=attempt)
+                    text, tool, usage = _extract_anthropic_response(data)
+                    result = {"text": text, "tool": tool, "usage": usage}
+            if not result.get("tool") and not (result.get("text") or "").strip():
+                raise ModelProviderError("model_response_invalid", retryable=True, attempts=attempt)
+            return result
 
         try:
-            data = json.loads(body_text)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(
-                "Anthropic-compatible error: backend returned non-JSON content that could not be parsed"
-            ) from exc
-        if data.get("error"):
-            raise RuntimeError(f"Anthropic-compatible error: {data['error']}")
-        text = _extract_anthropic_text(data)
-        if text:
-            return text
-        raise RuntimeError("Anthropic-compatible error: could not extract text from response")
+            result = _run_provider_request(
+                request,
+                consume=consume,
+                max_attempts=self.max_attempts,
+                timeout=self.timeout,
+                deadline_monotonic=deadline_monotonic,
+                should_cancel=should_cancel,
+                on_retry=on_retry,
+            )
+        except ModelProviderError as exc:
+            self.last_completion_metadata = {
+                "provider_error_code": exc.code,
+                "provider_error_retryable": exc.retryable,
+                "provider_request_attempts": exc.attempts,
+            }
+            raise
+
+        self.last_completion_metadata = {
+            "prompt_cache_supported": self.supports_prompt_cache,
+            "prompt_cache_key": prompt_cache_key,
+            "prompt_cache_retention": prompt_cache_retention,
+            **_extract_usage_cache_details({"usage": _normalize_anthropic_usage(result.get("usage") or {})}),
+        }
+        tool = result.get("tool")
+        if tool and tool.get("name"):
+            self.last_completion_metadata["native_tool_call"] = True
+            return _serialize_tool_call(tool["name"], tool["arguments"])
+        text = (result.get("text") or "").strip()
+        normalized_text = _normalize_openai_native_text(
+            text,
+            native_tools_enabled=native_tools_enabled,
+        )
+        if normalized_text != text:
+            self.last_completion_metadata["native_text_response"] = True
+        return normalized_text
+
+
+class OpenAICompletionsModelClient:
+    """OpenAI chat/completions 协议原生适配（流式 + 工具调用 + usage）。
+
+    面向 SiliconFlow 等只提供 /chat/completions 的平台；与 Anthropic 客户端
+    共享 _run_provider_request 重试骨架与 <tool>/<final> 文本协议序列化。
+    """
+
+    def __init__(self, model, base_url, api_key, temperature, timeout, max_attempts=3):
+        self.model = model
+        self.base_url = _normalize_completions_base_url(base_url)
+        self.api_key = api_key
+        self.temperature = temperature
+        self.timeout = timeout
+        if not isinstance(max_attempts, int) or max_attempts < 1:
+            raise ValueError("max_attempts must be a positive integer")
+        self.max_attempts = max_attempts
+        self.supports_prompt_cache = False
+        self.supports_native_tools = True
+        self.last_completion_metadata = {}
+
+    def complete(
+        self,
+        prompt,
+        max_new_tokens,
+        prompt_cache_key=None,
+        prompt_cache_retention=None,
+        *,
+        deadline_monotonic=None,
+        on_retry=None,
+        on_text_delta=None,
+        should_cancel=None,
+        tool_definitions=None,
+    ):
+        """向 chat/completions 接口发起一次流式模型调用。
+
+        流式事件在 _consume_completions_stream 里翻译回运行时协议；JSON
+        兜底复用 _extract_openai_text / _extract_openai_function_call。
+        """
+        self.last_completion_metadata = {}
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_new_tokens,
+            "stream": True,
+        }
+        native_tools_enabled = bool(tool_definitions) and self.supports_native_tools
+        if native_tools_enabled:
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool["name"],
+                        "description": tool.get("description"),
+                        "parameters": tool.get("parameters"),
+                    },
+                }
+                for tool in tool_definitions
+                if isinstance(tool, dict) and tool.get("type") == "function" and tool.get("name")
+            ]
+            payload["parallel_tool_calls"] = False
+        if self.temperature is not None:
+            payload["temperature"] = self.temperature
+
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            "User-Agent": OPENAI_COMPATIBLE_USER_AGENT,
+        }
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        request = urllib.request.Request(
+            # _normalize_completions_base_url 已保证 base_url 带 /chat/completions。
+            self.base_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+
+        def consume(response, attempt):
+            response_headers = getattr(response, "headers", {}) or {}
+            content_type = response_headers.get("Content-Type", "")
+            if content_type.startswith("text/event-stream"):
+                result = _consume_completions_stream(
+                    response,
+                    on_text_delta=on_text_delta,
+                    should_cancel=should_cancel,
+                    attempts_used=attempt,
+                )
+            else:
+                body_text = response.read().decode("utf-8")
+                if body_text.lstrip().startswith("data:"):
+                    result = _consume_completions_stream(
+                        body_text.splitlines(),
+                        on_text_delta=on_text_delta,
+                        should_cancel=should_cancel,
+                        attempts_used=attempt,
+                    )
+                else:
+                    try:
+                        data = json.loads(body_text)
+                    except json.JSONDecodeError as exc:
+                        raise ModelProviderError(
+                            "model_response_invalid", retryable=True, attempts=attempt
+                        ) from exc
+                    if data.get("error"):
+                        raise ModelProviderError("model_provider_error", attempts=attempt)
+                    native_action = _extract_openai_function_call(data)
+                    text = _extract_openai_text(data)
+                    result = {
+                        "text": text,
+                        "tool": None,
+                        "usage": data.get("usage"),
+                        "native": native_action,
+                    }
+            if (
+                not result.get("native")
+                and not result.get("tool")
+                and not (result.get("text") or "").strip()
+            ):
+                raise ModelProviderError("model_response_invalid", retryable=True, attempts=attempt)
+            return result
+
+        try:
+            result = _run_provider_request(
+                request,
+                consume=consume,
+                max_attempts=self.max_attempts,
+                timeout=self.timeout,
+                deadline_monotonic=deadline_monotonic,
+                should_cancel=should_cancel,
+                on_retry=on_retry,
+            )
+        except ModelProviderError as exc:
+            self.last_completion_metadata = {
+                "provider_error_code": exc.code,
+                "provider_error_retryable": exc.retryable,
+                "provider_request_attempts": exc.attempts,
+            }
+            raise
+
+        self.last_completion_metadata = {
+            "prompt_cache_supported": self.supports_prompt_cache,
+            "prompt_cache_key": prompt_cache_key,
+            "prompt_cache_retention": prompt_cache_retention,
+            **_extract_usage_cache_details({"usage": result.get("usage") or {}}),
+        }
+        native_action = result.get("native")
+        if native_action:
+            self.last_completion_metadata["native_tool_call"] = True
+            return native_action
+        tool = result.get("tool")
+        if tool and tool.get("name"):
+            self.last_completion_metadata["native_tool_call"] = True
+            return _serialize_tool_call(tool["name"], tool["arguments"])
+        text = (result.get("text") or "").strip()
+        normalized_text = _normalize_openai_native_text(
+            text,
+            native_tools_enabled=native_tools_enabled,
+        )
+        if normalized_text != text:
+            self.last_completion_metadata["native_text_response"] = True
+        return normalized_text

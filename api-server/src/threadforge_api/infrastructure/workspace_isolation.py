@@ -32,7 +32,16 @@ from .workspace_catalog import WorkspaceEntry, WorkspaceNotFoundError
 # isolated working tree cannot corrupt the repository's object store or locks.
 # Everything else (including vendored dependencies) is copied so tool commands
 # keep working; this is the correctness-first P1 trade-off.
-_ISOLATION_EXCLUDED = {".git", ".pico", "__pycache__", ".pytest_cache", ".ruff_cache"}
+_ISOLATION_EXCLUDED = {
+    ".git",
+    ".pico",
+    "__pycache__",
+    ".pytest_cache",
+    ".ruff_cache",
+    # node_modules is huge (369MB here) and re-installable via pnpm install.
+    # Tasks that need dependencies must run pnpm/npm install inside the snapshot.
+    "node_modules",
+}
 
 LEASE_TTL_SECONDS = 3600
 
