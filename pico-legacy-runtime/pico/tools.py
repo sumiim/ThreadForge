@@ -339,15 +339,28 @@ def tool_run_shell(context, args):
     # 受管 Shell：取消/超时时终止整个进程树；stdout/stderr 有界保留。
     # 这里传入的是过滤后的环境变量，而不是直接继承整个父 shell 环境，
     # 目的是减少敏感信息被意外带进命令执行环境的风险。
-    shell = ShellProcess(
-        command,
-        cwd=context.root,
-        env=context.shell_env(),
-        timeout=timeout,
-        output_max_bytes=context.shell_output_max_bytes,
-        cancellation_token=context.cancellation_token,
-        cleanup_grace_seconds=context.shell_cleanup_grace_seconds,
-    )
+    # 当调用方注入了 shell_factory(如 Docker 沙箱)时，用它替代宿主机 Shell；
+    # 沙箱后端自身 fail-closed，绝不允许静默回退到宿主机无限制执行。
+    if context.shell_factory is not None:
+        shell = context.shell_factory(
+            command,
+            cwd=context.root,
+            env=context.shell_env(),
+            timeout=timeout,
+            output_max_bytes=context.shell_output_max_bytes,
+            cancellation_token=context.cancellation_token,
+            cleanup_grace_seconds=context.shell_cleanup_grace_seconds,
+        )
+    else:
+        shell = ShellProcess(
+            command,
+            cwd=context.root,
+            env=context.shell_env(),
+            timeout=timeout,
+            output_max_bytes=context.shell_output_max_bytes,
+            cancellation_token=context.cancellation_token,
+            cleanup_grace_seconds=context.shell_cleanup_grace_seconds,
+        )
     context.register_shell(shell)
     try:
         result = shell.run()

@@ -13,6 +13,7 @@ dependencies = [
   "pywin32>=306; sys_platform == 'win32'",
   "websockets>=14,<17",
   "cryptography>=43,<46",
+  "threadforge-sandbox>=0.1.0",
 ]
 
 [project.optional-dependencies]

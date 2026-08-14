@@ -25,7 +25,6 @@ from .infrastructure.auth import AuthManager, OAuthClient
 from .infrastructure.device_store import DeviceStore, PairingCodeStore
 from .infrastructure.event_broker import EventBroker
 from .infrastructure.event_publisher import EventPublisher
-from .infrastructure.json_repositories import JsonApprovalRepository, JsonTaskRepository
 from .infrastructure.jsonutil import secure_directory
 from .infrastructure.owner_store import resolve_instance_owner
 from .infrastructure.recovery_journal import RecoveryJournal
@@ -36,10 +35,19 @@ from .infrastructure.run_reconciliation import (
     terminal_task_from_run,
 )
 from .infrastructure.run_store_reader import RunStoreReader
+from .infrastructure.sqlite_repositories import (
+    ControlPlaneMigrator,
+    SqliteApprovalRepository,
+    SqliteLeaseRepository,
+    SqliteRunRepository,
+    SqliteTaskRepository,
+)
+from .infrastructure.sqlite_store import SqliteStore
 from .infrastructure.task_runner import TaskRunner
 from .infrastructure.worker_hub import WorkerHub
 from .infrastructure.worker_releases import WorkerReleaseService
 from .infrastructure.workspace_catalog import WorkspaceCatalog
+from .infrastructure.workspace_isolation import WorkspaceIsolation
 
 
 class AppContainer:
@@ -61,8 +69,15 @@ class AppContainer:
             else None
         )
         self.session_store = SessionStore(settings.data_dir / "sessions")
-        self.task_repo = JsonTaskRepository(settings.data_dir / "tasks")
-        self.approval_repo = JsonApprovalRepository(settings.data_dir / "approvals")
+        self.control_store = SqliteStore(settings.data_dir / "control.sqlite3")
+        self.task_repo = SqliteTaskRepository(self.control_store, json_root=settings.data_dir / "tasks")
+        self.approval_repo = SqliteApprovalRepository(self.control_store, json_root=settings.data_dir / "approvals")
+        self.run_repo = SqliteRunRepository(self.control_store)
+        self.lease_repo = SqliteLeaseRepository(self.control_store)
+        self.migrator = ControlPlaneMigrator(self.task_repo, self.approval_repo)
+        self.isolation = WorkspaceIsolation(
+            settings.data_dir, self.lease_repo, self.workspace_catalog
+        )
         self.device_store = DeviceStore(settings.data_dir / "devices")
         self.pairing_store = PairingCodeStore(settings.worker_pairing_ttl_seconds)
         self.worker_release_service = WorkerReleaseService(
@@ -74,7 +89,7 @@ class AppContainer:
         self.run_store_reader = RunStoreReader(settings.data_dir, settings.artifact_max_bytes)
         self._loop = asyncio.get_running_loop()
         self.broker = EventBroker(self._loop, queue_size=settings.sse_queue_size)
-        self.publisher = EventPublisher(self.broker)
+        self.publisher = EventPublisher(self.broker, store=self.control_store)
         self.worker_hub = WorkerHub(
             loop=self._loop,
             settings=settings,
@@ -104,6 +119,7 @@ class AppContainer:
             broker=self.broker,
             publisher=self.publisher,
             model_client_factory=model_client_factory or self._default_model_client_factory,
+            isolation=self.isolation,
         )
         self.approval_gate.set_degraded_callback(self.runner.mark_degraded)
         self.session_service = SessionService(
@@ -174,16 +190,24 @@ class AppContainer:
             canonical_owner_id(session["owner_id"])
 
     def _validate_control_repositories(self) -> None:
-        for path in self.task_repo.root.glob("*.json"):
-            task = self.task_repo.get(path.stem)
+        # JSON compatibility mirror is the cross-check source: corruption must
+        # fail readiness even though SQLite is the authoritative query store.
+        if self.task_repo.mirror is not None:
+            for record_id in self.task_repo.mirror.ids():
+                self.task_repo.mirror.read(record_id)
+        if self.approval_repo.mirror is not None:
+            for record_id in self.approval_repo.mirror.ids():
+                self.approval_repo.mirror.read(record_id)
+        for task_id in self.task_repo.list_stable():
+            task = self.task_repo.get(task_id)
             if (
                 task.execution_environment != "local_worker"
                 and task.status.terminal
                 and not run_artifacts_match(self.settings.data_dir, task)
             ):
                 raise ValueError(f"terminal Task artifacts are inconsistent: {task.task_id}")
-        for path in self.approval_repo.root.glob("*.json"):
-            self.approval_repo.get(path.stem)
+        for approval_id in self.approval_repo.list_stable():
+            self.approval_repo.get(approval_id)
         for path in self.device_store.root.glob("dev_*.json"):
             self.device_store.get(path.stem)
 
@@ -210,6 +234,14 @@ class AppContainer:
         try:
             self.workspace_catalog.validate_all()
             self._validate_sessions()
+        except Exception:
+            ok = False
+        try:
+            self.migrator.import_json(owner_id=self.owner_id)
+        except Exception:
+            ok = False
+        try:
+            self.isolation.recover_expired()
         except Exception:
             ok = False
         for task_id in self.task_repo.list_stable():

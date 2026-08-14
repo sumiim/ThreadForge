@@ -17,10 +17,27 @@ _TERMINAL_TYPES = {
     "task.blocked",
 }
 
+# Conversation text that must never be persisted to the central control plane:
+# local Worker sessions own their message bodies, so the durable event replay
+# only keeps the envelope + index/summary, never the answer body itself.
+_PERSISTENCE_SCRUB_KEYS = {"final_answer", "text", "input"}
+
+
+def _scrubbed_for_persistence(event: dict) -> dict:
+    """Return a copy of ``event`` safe to write to durable storage."""
+    scrubbed = dict(event)
+    data = scrubbed.get("data")
+    if isinstance(data, dict):
+        cleaned = {key: value for key, value in data.items() if key not in _PERSISTENCE_SCRUB_KEYS}
+        scrubbed["data"] = cleaned
+        scrubbed["attributes"] = cleaned
+    return scrubbed
+
 
 class EventPublisher:
-    def __init__(self, broker: EventBroker):
+    def __init__(self, broker: EventBroker, store=None):
         self._broker = broker
+        self._store = store
         self._sequences: dict[str, itertools.count] = {}
         self._lock = threading.Lock()
 
@@ -66,4 +83,11 @@ class EventPublisher:
             data=dict(data or {}),
         )
         self._broker.publish(task_id, event.to_dict())
+        if self._store is not None:
+            # Best-effort durable replay: the in-memory broker remains the P0
+            # SSE source of truth; a failure to persist must not break delivery.
+            try:
+                self._store.insert_event(_scrubbed_for_persistence(event.to_dict()))
+            except Exception:
+                pass
         return event

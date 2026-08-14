@@ -54,6 +54,10 @@ _PUBLIC_WORKER_EVENTS = {
     "tool.completed",
     "tool.failed",
     "policy.violation",
+    "sandbox.started",
+    "sandbox.completed",
+    "sandbox.failed",
+    "sandbox.cleaned",
     "agent.state",
     "plan.created",
     "plan.skipped",
@@ -713,6 +717,27 @@ class WorkerHub:
                             "shell_cleanup_grace_seconds": self._settings.shell_cleanup_grace_seconds,
                             "model_id": task.model_id,
                             "reasoning_effort": task.reasoning_effort,
+                            "sandbox_enabled": bool(
+                                getattr(self._settings, "sandbox_enabled", False)
+                            ),
+                            "sandbox_image": str(
+                                getattr(self._settings, "sandbox_image", "threadforge-sandbox:latest")
+                            ),
+                            "sandbox_user": str(
+                                getattr(self._settings, "sandbox_user", "65534:65534")
+                            ),
+                            "sandbox_cpu_limit": float(
+                                getattr(self._settings, "sandbox_cpu_limit", 1.0)
+                            ),
+                            "sandbox_memory_limit": str(
+                                getattr(self._settings, "sandbox_memory_limit", "512m")
+                            ),
+                            "sandbox_pids_limit": int(
+                                getattr(self._settings, "sandbox_pids_limit", 64)
+                            ),
+                            "sandbox_network": str(
+                                getattr(self._settings, "sandbox_network", "none")
+                            ),
                         },
                     },
                 },
@@ -2151,6 +2176,17 @@ def _sanitize_event_data(event_type: str, data: dict) -> dict:
             safe["args_preview"] = args_preview
     if event_type == "policy.violation":
         safe["policy_code"] = str(data.get("policy_code", ""))[:100]
+    if event_type.startswith("sandbox."):
+        return redact_artifact(
+            {
+                "container": str(data.get("container", ""))[:64],
+                "image": str(data.get("image", ""))[:200],
+                "reason": str(data.get("reason", ""))[:100],
+                "exit_code": _nonnegative_int(data.get("exit_code", -1))
+                if isinstance(data.get("exit_code"), int)
+                else -1,
+            }
+        )
     return redact_artifact(safe)
 
 

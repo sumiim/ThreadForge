@@ -16,6 +16,7 @@ class ToolContext:
     cancellation_token: object | None = None
     shell_output_max_bytes: int = 1048576
     shell_cleanup_grace_seconds: float = 5.0
+    shell_factory: Callable | None = None
     _active_shell: object = field(default=None, init=False, repr=False)
 
     def path(self, raw_path):

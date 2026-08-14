@@ -76,6 +76,7 @@ class TaskRunner:
         publisher: EventPublisher,
         model_client_factory,
         on_degraded=None,
+        isolation=None,
     ):
         self._settings = settings
         self._workspace_catalog = workspace_catalog
@@ -86,6 +87,7 @@ class TaskRunner:
         self._publisher = publisher
         self._model_client_factory = model_client_factory
         self._on_degraded = on_degraded
+        self._isolation = isolation
         self._degraded = False
         self._shutting_down = False
         self.active_lock = threading.RLock()
@@ -237,16 +239,19 @@ class TaskRunner:
                 task_id=request.task_id,
                 run_id=request.run_id,
                 max_steps=request.max_steps,
+                isolation=self._isolation,
             )
             run.adapter = adapter
-        except Exception:
+        except Exception as exc:
             # Runner init failure — but don't mask cancellation.
             if run.token.is_cancelled():
                 task_state_status = TaskStatus.CANCELLED
                 terminal_stop_reason = "user_cancelled"
             else:
                 task_state_status = TaskStatus.FAILED
-                terminal_stop_reason = "task_runner_unavailable"
+                terminal_stop_reason = (
+                    "sandbox_unavailable" if _is_sandbox_error(exc) else "task_runner_unavailable"
+                )
             terminal_write_ok = False
             try:
                 self._persist_terminal(request, run, task_state_status, terminal_stop_reason, "")
@@ -490,6 +495,15 @@ class TaskRunner:
                 self._release_active(task_id)
             except Exception:
                 self.mark_degraded()
+
+
+def _is_sandbox_error(exc: Exception) -> bool:
+    try:
+        from threadforge_sandbox import SandboxError
+
+        return isinstance(exc, SandboxError)
+    except Exception:
+        return False
 
 
 def _set_status(task, status: TaskStatus):
