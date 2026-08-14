@@ -221,6 +221,23 @@ def _extract_openai_function_call(data):
     return ""
 
 
+def _strip_single_code_fence(text):
+    """Remove one surrounding markdown code fence when the whole text is fenced.
+
+    Some providers (e.g. SiliconFlow DeepSeek-V3.2) intermittently wrap JSON
+    output in ```json ... ``` fences. The orchestrator's strict JSON parsers
+    reject fenced payloads by contract, so the provider adapter normalizes
+    the whole-text single-fence shape here; anything else passes through.
+    """
+    raw = str(text or "").strip()
+    if raw.startswith("```") and raw.endswith("```") and len(raw) > 6:
+        body = raw[3:].lstrip("\r\n")
+        if body.startswith(("json", "JSON")):
+            body = body[4:].lstrip()
+        raw = body.rsplit("```", 1)[0].strip()
+    return raw
+
+
 def _normalize_openai_native_text(text, *, native_tools_enabled):
     """Treat a provider-native assistant message as the final agent action.
 
@@ -230,6 +247,7 @@ def _normalize_openai_native_text(text, *, native_tools_enabled):
     XML/JSON protocol responses untouched.
     """
 
+    text = _strip_single_code_fence(text)
     text = str(text or "").strip()
     if not text or not native_tools_enabled:
         return text
