@@ -207,16 +207,7 @@ class WorkerClient:
                     "model_configured": bool(os.environ.get("PICO_OPENAI_API_KEY", "").strip()),
                     "orchestration_backend": "langgraph-v1.1",
                     "update_status": load_update_status(self.store),
-                    "model_capabilities": {
-                        "provider": "openai-compatible",
-                        "models": [
-                            {
-                                "id": os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4"),
-                                "display_name": os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4"),
-                                "reasoning_efforts": list(_runtime_reasoning_efforts()),
-                            }
-                        ],
-                    },
+                    "model_capabilities": _model_capabilities(),
                     "capabilities": [
                         "local_history",
                         "model_configuration",
@@ -444,16 +435,7 @@ class WorkerClient:
                 "request_id": request_id,
                 "status": "completed",
                 "model": os.environ.get("PICO_OPENAI_MODEL", ""),
-                "model_capabilities": {
-                    "provider": "openai-compatible",
-                    "models": [
-                        {
-                            "id": os.environ.get("PICO_OPENAI_MODEL", ""),
-                            "display_name": os.environ.get("PICO_OPENAI_MODEL", ""),
-                            "reasoning_efforts": list(_runtime_reasoning_efforts()),
-                        }
-                    ],
-                },
+                "model_capabilities": _model_capabilities(),
             }
         except Exception:
             response = {
@@ -881,3 +863,34 @@ def _runtime_reasoning_efforts() -> tuple[str, ...]:
     from .runtime import _supported_reasoning_efforts
 
     return _supported_reasoning_efforts()
+
+
+def _model_capabilities() -> dict:
+    """Worker-level model capability report for the OpenAI-compatible path.
+
+    ``max_output_tokens`` mirrors the runtime's default output budget
+    (``runtime.py`` ``max_new_tokens`` default 512) rather than a probed
+    provider limit — provider-limit probing is a V1.2 (2.2) concern.
+    ``usage_fields`` are the completion-metadata fields the client reports.
+    """
+    model = os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4")
+    efforts = list(_runtime_reasoning_efforts())
+    return {
+        "provider": "openai-compatible",
+        "models": [
+            {
+                "id": model,
+                "display_name": model,
+                "reasoning_efforts": efforts,
+                "max_output_tokens": 512,
+                "usage_fields": [
+                    "input_tokens",
+                    "output_tokens",
+                    "total_tokens",
+                    "cached_tokens",
+                    "cache_hit",
+                ],
+                "supports_temperature": "none" in efforts,
+            }
+        ],
+    }
