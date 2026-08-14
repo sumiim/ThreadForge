@@ -155,7 +155,7 @@ function AuditTimeline({ rows, selectedEventId, onSelect, onRangeChange }: {
                 key={row.event_id}
                 type="button"
                 className={`absolute z-20 -translate-x-1/2 -translate-y-0.5 ${range.point ? 'h-3 w-3 rounded-full' : 'w-2 rounded-full'} ${row.failed ? 'bg-red-400' : row.event_id === selectedEventId ? 'bg-blue-600' : 'bg-stone-400 hover:bg-blue-400'}`}
-                style={{ left: `${left}%`, top: `${range.top}%`, height: range.point ? undefined : `max(4px, ${range.height}%)` }}
+                style={{ left: `${left}%`, top: `${range.top}%`, height: range.point ? undefined : `${range.height}%` }}
                 title={`${eventLabel(row.type)} · ${new Date(row.timestamp).toLocaleTimeString()}`}
                 onMouseDown={(event) => event.stopPropagation()}
                 onClick={() => onSelect(row.event_id)}

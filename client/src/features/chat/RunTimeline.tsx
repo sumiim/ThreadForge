@@ -141,7 +141,7 @@ export default function RunTimeline({ runs, activeRunId, onSelectRun, inputs = [
                 className={`absolute z-10 -translate-y-0.5 transition-opacity hover:opacity-100 ${point ? 'h-2 w-2 -translate-x-1/2 rounded-full' : 'w-1 rounded-full'} ${barClass(entry, activeKey === entry.event_id)} ${activeKey === entry.event_id ? 'opacity-100' : 'opacity-65'}`}
                 style={{
                   top: `${range.top}%`,
-                  height: point ? undefined : `max(2px, ${range.height}%)`,
+                  height: point ? undefined : `${range.height}%`,
                   left: `${laneOffset(entry.type, expanded)}px`,
                 }}
               />
