@@ -9,13 +9,14 @@ class CapturingPublisher:
     def __init__(self):
         self.events = []
 
-    def publish(self, task_id, run_id, event_type, data):
+    def publish(self, task_id, run_id, event_type, data, **metadata):
         self.events.append(
             {
                 "task_id": task_id,
                 "run_id": run_id,
                 "type": event_type,
                 "data": data,
+                **metadata,
             }
         )
 
@@ -67,3 +68,35 @@ def test_risky_tool_events_do_not_publish_arguments_or_results():
 
     assert "args_preview" not in publisher.events[0]["data"]
     assert "result_preview" not in publisher.events[-1]["data"]
+
+
+def test_unified_event_contract_lifts_phase_parent_and_interval():
+    publisher, boundary = _boundary()
+
+    boundary.before_model(None)
+    boundary.after_model(None, {"input_tokens": 10, "output_tokens": 3})
+    boundary.tool_requested(None, {"id": "call_read", "name": "read_file", "args": {"path": "README.md"}})
+    boundary.before_tool(None, {"id": "call_read", "name": "read_file"})
+    boundary.after_tool(None, ToolExecutionResult(content="ok", metadata={"tool_status": "ok"}))
+
+    model_started = publisher.events[0]
+    assert model_started["type"] == "model.started"
+    assert model_started["phase"] == "model"
+    assert model_started["attempt"] == 1
+    assert model_started["started_at"]
+
+    model_completed = publisher.events[1]
+    assert model_completed["phase"] == "model"
+    assert model_completed["status"] == "completed"
+    assert model_completed["ended_at"]
+
+    tool_requested = publisher.events[2]
+    assert tool_requested["phase"] == "execute"
+    assert tool_requested["parent_event_id"].startswith("model_round_")
+
+    tool_completed = publisher.events[-1]
+    assert tool_completed["type"] == "tool.completed"
+    assert tool_completed["phase"] == "execute"
+    assert tool_completed["status"] == "ok"
+    assert tool_completed["parent_event_id"].startswith("model_round_")
+    assert tool_completed["ended_at"]

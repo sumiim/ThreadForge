@@ -1,47 +1,12 @@
 import { useEffect, useMemo, useState, type MouseEvent } from 'react'
 import { DownOutlined, RightOutlined } from '@ant-design/icons'
 import type { RunIndexItem, SessionRun } from '../../api/types'
+import { barClass, isFailed, isRunning, LANE_ORDER, LANE_TITLE, laneOf, type Lane } from './traceModel'
 
 // 纵向分层泳道：时间自上而下流动，事件为竖向条（替换旧的 RunMinimap/对话索引）。
-// 与 §7.1 的 Trace/审计查看器复用同一套泳道映射与颜色语义。
+// 与 Trace/审计查看器复用 traceModel 中的泳道映射、颜色与状态语义。
 
 type ScaleMode = 'duration' | 'turns' | 'calls'
-
-const LANE_ORDER = ['model', 'plan', 'tools', 'approval', 'review', 'system'] as const
-type Lane = (typeof LANE_ORDER)[number]
-
-const LANE_OF: Record<string, Lane> = {
-  'assistant.commentary': 'model',
-  'model.started': 'model',
-  'model.completed': 'model',
-  'model.retrying': 'model',
-  'model.protocol_retrying': 'model',
-  'plan.created': 'plan',
-  'plan.skipped': 'plan',
-  'tool.requested': 'tools',
-  'tool.started': 'tools',
-  'tool.completed': 'tools',
-  'tool.failed': 'tools',
-  'approval.required': 'approval',
-  'approval.resolved': 'approval',
-  'review.started': 'review',
-  'review.completed': 'review',
-  'task.cancel_requested': 'system',
-  'task.completed': 'system',
-  'task.cancelled': 'system',
-  'task.failed': 'system',
-  'task.interrupted': 'system',
-  'task.blocked': 'system',
-}
-
-const LANE_TITLE: Record<Lane, string> = {
-  model: '模型',
-  plan: '计划',
-  tools: '工具',
-  approval: '审批',
-  review: '审查',
-  system: '系统',
-}
 
 const SCALE_LABEL: Record<ScaleMode, string> = {
   duration: '耗时',
@@ -70,19 +35,8 @@ interface TimelineItem extends RunIndexItem {
   running: boolean
 }
 
-function isFailed(item: RunIndexItem): boolean {
-  return item.type === 'tool.failed' || ['failed', 'blocked', 'interrupted'].includes(item.status ?? '')
-}
-
-function isRunning(item: RunIndexItem): boolean {
-  return item.type === 'tool.started' || item.type === 'approval.required'
-}
-
 function barClassName(item: TimelineItem, active: boolean): string {
-  if (item.failed) return 'bg-red-400 ring-1 ring-red-500'
-  if (item.status === 'needs_fix') return 'bg-amber-400'
-  if (item.running) return 'animate-pulse bg-blue-400'
-  return active ? 'bg-blue-600' : 'bg-stone-400'
+  return barClass(item, active)
 }
 
 export default function RunTimeline({ runs, activeRunId, onSelectRun, inputs = [] }: RunTimelineProps) {
@@ -100,7 +54,7 @@ export default function RunTimeline({ runs, activeRunId, onSelectRun, inputs = [
     const result: TimelineItem[] = []
     for (const run of runs) {
       for (const item of run.items) {
-        const lane = LANE_OF[item.type]
+        const lane = laneOf(item.type)
         if (!lane) continue
         result.push({ ...item, lane, run, failed: isFailed(item), running: isRunning(item) })
       }
@@ -163,7 +117,7 @@ export default function RunTimeline({ runs, activeRunId, onSelectRun, inputs = [
       }
     } else {
       const ordered = scale === 'calls'
-        ? runItems.filter((item) => item.lane === 'tools' || item.lane === 'model')
+        ? runItems.filter((item) => item.lane === 'execute' || item.lane === 'model')
         : runItems
       const n = Math.max(1, ordered.length)
       ordered.forEach((item, index) => map.set(item.event_id, { top: (index / n) * 100, height: Math.max(1.5, 100 / n) }))

@@ -154,7 +154,15 @@ class TaskRunner:
                 try:
                     self._persist_terminal(request, run, TaskStatus.CANCELLED, "user_cancelled", "")
                     run.gate.close()
-                    self._publisher.publish(request.task_id, request.run_id, "task.cancelled", {"final_answer": ""})
+                    self._publisher.publish(
+                        request.task_id,
+                        request.run_id,
+                        "task.cancelled",
+                        {"final_answer": ""},
+                        phase="final",
+                        status="cancelled",
+                        summary="user_cancelled",
+                    )
                 except StaleGenerationError:
                     pass
                 except Exception:
@@ -167,7 +175,9 @@ class TaskRunner:
                     lambda task: _set_status(task, TaskStatus.RUNNING),
                     expected_generation=gate.generation,
                 )
-                self._publisher.publish(request.task_id, request.run_id, "task.started", {})
+                self._publisher.publish(
+                    request.task_id, request.run_id, "task.started", {}, phase="system", status="running"
+                )
             except StaleGenerationError:
                 self._release_active(request.task_id)
                 return
@@ -188,6 +198,9 @@ class TaskRunner:
                         request.run_id,
                         "task.failed",
                         {"stop_reason": "persistence_error"},
+                        phase="final",
+                        status="failed",
+                        summary="persistence_error",
                     )
                     self._release_active(request.task_id)
                 else:
@@ -239,7 +252,15 @@ class TaskRunner:
                 self._persist_terminal(request, run, task_state_status, terminal_stop_reason, "")
                 terminal_write_ok = True
                 run.gate.close()
-                self._publisher.publish(request.task_id, request.run_id, "task.cancelled" if task_state_status == TaskStatus.CANCELLED else "task.failed", {"final_answer": ""})
+                self._publisher.publish(
+                    request.task_id,
+                    request.run_id,
+                    "task.cancelled" if task_state_status == TaskStatus.CANCELLED else "task.failed",
+                    {"final_answer": ""},
+                    phase="final",
+                    status=task_state_status.value,
+                    summary=terminal_stop_reason,
+                )
             except Exception:
                 pass
             if terminal_write_ok:
@@ -313,8 +334,23 @@ class TaskRunner:
         # The terminal Task/Run artifacts are already durable at this point.
         run.gate.close()
         if public_status is TaskStatus.COMPLETED:
-            self._publisher.publish(request.task_id, request.run_id, "message.completed", {"text": redact_artifact(final_answer)})
-        self._publisher.publish(request.task_id, request.run_id, terminal_event, {"final_answer": redact_artifact(final_answer) if isinstance(final_answer, str) else ""})
+            self._publisher.publish(
+                request.task_id,
+                request.run_id,
+                "message.completed",
+                {"text": redact_artifact(final_answer)},
+                phase="final",
+                status="completed",
+            )
+        self._publisher.publish(
+            request.task_id,
+            request.run_id,
+            terminal_event,
+            {"final_answer": redact_artifact(final_answer) if isinstance(final_answer, str) else ""},
+            phase="final",
+            status=public_status.value,
+            summary=stop_reason,
+        )
 
     def _persist_terminal(
         self,
@@ -368,7 +404,14 @@ class TaskRunner:
                         lambda task: _set_status(task, TaskStatus.CANCEL_REQUESTED),
                         expected_generation=run.gate.generation,
                     )
-                    self._publisher.publish(run.task_id, run.run_id, "task.cancel_requested", {})
+                    self._publisher.publish(
+                        run.task_id,
+                        run.run_id,
+                        "task.cancel_requested",
+                        {},
+                        phase="final",
+                        status="cancel_requested",
+                    )
             except StaleGenerationError:
                 pass
             except Exception as exc:
@@ -435,7 +478,15 @@ class TaskRunner:
                     task_id,
                     lambda task: _set_terminal(task, TaskStatus.INTERRUPTED, "service_shutdown_timeout", ""),
                 )
-                self._publisher.publish(task_id, run.run_id, "task.interrupted", {"stop_reason": "service_shutdown_timeout"})
+                self._publisher.publish(
+                    task_id,
+                    run.run_id,
+                    "task.interrupted",
+                    {"stop_reason": "service_shutdown_timeout"},
+                    phase="final",
+                    status="interrupted",
+                    summary="service_shutdown_timeout",
+                )
                 self._release_active(task_id)
             except Exception:
                 self.mark_degraded()

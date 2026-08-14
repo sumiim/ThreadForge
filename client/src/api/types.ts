@@ -288,6 +288,8 @@ export interface RunIndexItem {
   step_count?: number
   status?: string
   run_id?: string
+  /** 统一事件契约：粗粒度分层（talk/plan/execute/approval/review/final/system） */
+  phase?: string
   /** 统一事件契约：父事件 id（如所属模型轮） */
   parent_event_id?: string
   /** 统一事件契约：区间起止（真实耗时） */
@@ -316,6 +318,8 @@ export interface TaskQueued {
 // ---- SSE 事件流 ----------------------------------------------------------
 
 // 每个 SSE 帧的 data 都是一个事件信封；type 事件名同帧头 event 字段
+// 统一事件契约：信封层携带 phase/attempt/started_at/ended_at/status/summary 与
+// 脱敏后的 attributes，前端投影时间轴与审计视图时只消费这一份规范化事件流。
 export interface RunEventEnvelope {
   event_id: string
   sequence: number
@@ -323,6 +327,15 @@ export interface RunEventEnvelope {
   task_id: string
   run_id: string
   timestamp: string
+  trace_id?: string
+  parent_event_id?: string
+  phase?: string
+  attempt?: number | null
+  started_at?: string
+  ended_at?: string
+  status?: string
+  summary?: string
+  attributes?: Record<string, unknown>
   data: Record<string, unknown>
 }
 

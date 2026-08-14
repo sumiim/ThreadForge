@@ -39,6 +39,7 @@ from ..domain.errors import (
     WorkerOfflineError,
     WorkerProtocolError,
 )
+from ..domain.events import event_phase
 from .device_store import Device, DeviceStore, WorkerWorkspace
 
 _PUBLIC_WORKER_EVENTS = {
@@ -690,7 +691,9 @@ class WorkerHub:
             self._device_by_task[task.task_id] = task.device_id
         try:
             self._task_repo.update(task.task_id, lambda item: _set_status(item, TaskStatus.RUNNING))
-            self._publisher.publish(task.task_id, task.run_id, "task.started", {})
+            self._publisher.publish(
+                task.task_id, task.run_id, "task.started", {}, phase="system", status="running"
+            )
             self._send(
                 task.device_id,
                 {
@@ -727,7 +730,9 @@ class WorkerHub:
             if not task.status.terminal:
                 self._cancel_pending_approvals(task, "cancelled")
                 self._task_repo.update(task_id, _set_cancel_requested)
-                self._publisher.publish(task_id, task.run_id, "task.cancel_requested", {})
+                self._publisher.publish(
+                    task_id, task.run_id, "task.cancel_requested", {}, phase="final", status="cancel_requested"
+                )
             self._send(device_id, {"type": "task.cancel", "task_id": task_id})
             return True
 
@@ -766,6 +771,9 @@ class WorkerHub:
                 approval.run_id,
                 "approval.resolved",
                 {"approval_id": approval_id, "status": status.value, "decision": decision},
+                phase="approval",
+                status=status.value,
+                summary=decision,
             )
             self._send(
                 device_id,
@@ -1329,7 +1337,10 @@ class WorkerHub:
         safe_data = _sanitize_event_data(event_type, data)
         if event_type == "agent.state":
             self._remember_agent_progress(task_id, safe_data)
-        event = self._publisher.publish(task_id, task.run_id, event_type, safe_data)
+        metadata = _envelope_metadata(event_type, safe_data)
+        event = self._publisher.publish(
+            task_id, task.run_id, event_type, safe_data, **metadata
+        )
         if event_type in {
             "plan.created",
             "assistant.commentary",
@@ -1405,6 +1416,9 @@ class WorkerHub:
                 "created_at": approval.created_at,
                 "expires_at": expires_at,
             },
+            phase="approval",
+            status="pending",
+            summary=tool_name,
         )
         self._send(
             connection.device.device_id,
@@ -1461,7 +1475,14 @@ class WorkerHub:
         }[status]
         if status is TaskStatus.COMPLETED:
             self._remember_terminal_answer(task_id, final_answer)
-            self._publisher.publish(task_id, task.run_id, "message.completed", {"text": final_answer})
+            self._publisher.publish(
+                task_id,
+                task.run_id,
+                "message.completed",
+                {"text": final_answer},
+                phase="final",
+                status="completed",
+            )
         terminal_data = {
             "final_answer": final_answer,
             "stop_reason": stop_reason,
@@ -1472,6 +1493,9 @@ class WorkerHub:
             task.run_id,
             terminal_event,
             terminal_data,
+            phase="final",
+            status=status.value,
+            summary=stop_reason,
         )
         self._task_repo.update(
             task_id,
@@ -1538,6 +1562,9 @@ class WorkerHub:
                     task.run_id,
                     "task.failed",
                     {"stop_reason": reason, "final_answer": ""},
+                    phase="final",
+                    status="failed",
+                    summary=reason,
                 )
             except Exception:
                 return
@@ -1561,6 +1588,9 @@ class WorkerHub:
                     "status": ApprovalStatus.CANCELLED.value,
                     "decision": decision,
                 },
+                phase="approval",
+                status=ApprovalStatus.CANCELLED.value,
+                summary=decision,
             )
 
     def _release(self, task_id: str, device_id: str) -> None:
@@ -1876,19 +1906,26 @@ def _append_run_index(task, event: dict, data: dict):
         "task.interrupted": "运行已中断",
         "task.blocked": "运行受阻",
     }
+    # Unified event contract: prefer envelope-level fields, fall back to the
+    # redacted ``data`` payload for Worker events emitted before the contract
+    # was lifted to the envelope.
+    parent_event_id = str(event.get("parent_event_id") or data.get("parent_event_id", ""))
+    started_at = str(event.get("started_at") or data.get("started_at", ""))
+    ended_at = str(event.get("ended_at") or data.get("ended_at", ""))
     item = {
         "event_id": str(event.get("event_id", ""))[:64],
         "run_id": str(event.get("run_id", ""))[:128],
         "type": event_type[:64],
         "timestamp": str(event.get("timestamp", ""))[:40],
         "label": labels.get(event_type, event_type)[:64],
+        "phase": str(event.get("phase") or event_phase(event_type))[:32],
     }
-    if data.get("parent_event_id"):
-        item["parent_event_id"] = str(data.get("parent_event_id", ""))[:64]
-    if data.get("started_at"):
-        item["started_at"] = str(data.get("started_at", ""))[:40]
-    if data.get("ended_at"):
-        item["ended_at"] = str(data.get("ended_at", ""))[:40]
+    if parent_event_id:
+        item["parent_event_id"] = parent_event_id[:64]
+    if started_at:
+        item["started_at"] = started_at[:40]
+    if ended_at:
+        item["ended_at"] = ended_at[:40]
     if event_type.startswith("tool."):
         item["tool_name"] = str(data.get("tool_name", ""))[:100]
         item["tool_call_id"] = str(data.get("tool_call_id", ""))[:200]
@@ -1902,6 +1939,39 @@ def _append_run_index(task, event: dict, data: dict):
     task.run_index = [*task.run_index[-499:], item]
     task.updated_at = utc_now()
     return task
+
+
+def _envelope_metadata(event_type: str, data: dict) -> dict:
+    """Lift the unified event-contract fields out of the redacted payload.
+
+    The Worker emits ``parent_event_id``/``started_at``/``ended_at``/``attempt``
+    inside ``data`` (see ``local-worker`` RemoteExecutionHooks). The control
+    plane re-exposes them on the public envelope so the frontend projects the
+    timeline from one canonical source instead of re-parsing ``data``.
+    """
+    attempt = data.get("attempt")
+    if not isinstance(attempt, int) or isinstance(attempt, bool):
+        attempt = None
+    metadata = {
+        "parent_event_id": str(data.get("parent_event_id", ""))[:64],
+        "started_at": str(data.get("started_at", ""))[:64],
+        "ended_at": str(data.get("ended_at", ""))[:64],
+        "phase": event_phase(event_type),
+        "attempt": attempt,
+    }
+    if event_type in {"tool.completed", "tool.failed"}:
+        metadata["status"] = str(data.get("tool_status", ""))[:50]
+        metadata["summary"] = str(data.get("tool_name", ""))[:100]
+    elif event_type == "review.completed":
+        metadata["status"] = str(data.get("status", ""))[:32]
+    elif event_type == "plan.created":
+        metadata["summary"] = str(data.get("summary", ""))[:500]
+    elif event_type == "assistant.commentary":
+        metadata["summary"] = str(data.get("text", ""))[:1000]
+    elif event_type == "agent.state":
+        metadata["phase"] = str(data.get("phase", ""))[:64] or event_phase(event_type)
+        metadata["summary"] = str(data.get("next_step", ""))[:300]
+    return {key: value for key, value in metadata.items() if value not in ("", None)}
 
 
 def _sanitize_event_data(event_type: str, data: dict) -> dict:

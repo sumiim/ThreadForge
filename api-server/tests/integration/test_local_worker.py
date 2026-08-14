@@ -705,9 +705,9 @@ def test_worker_progress_events_are_forward_compatible(client, app, monkeypatch,
     publisher = app.state.container.publisher
     original_publish = publisher.publish
 
-    def record_publish(task_id, run_id, event_type, data):
+    def record_publish(task_id, run_id, event_type, data, **metadata):
         published.append({"type": event_type, "data": data})
-        return original_publish(task_id, run_id, event_type, data)
+        return original_publish(task_id, run_id, event_type, data, **metadata)
 
     monkeypatch.setattr(publisher, "publish", record_publish)
     caplog.set_level("WARNING", logger="threadforge_api.infrastructure.worker_hub")
