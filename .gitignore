@@ -30,6 +30,13 @@ tmp/
 
 # Local maintenance notes
 /docs/issue-log.md
+/docs/coding-agent-comparison.md
+/docs/roadmap-reprioritized.md
+/docs/requirements-v1.1-agent-mvp.md
+/docs/requirements-v1.1-extensibility-and-graph-memory.md
+/docs/requirements-v1.2-agent-hardening-and-productivity.md
+/docs/requirements-v1.3-extension-ecosystem.md
+/docs/frontend-api-and-ssh-access.md
 
 # Icon source files
 /icon/绘图1.vsdx
