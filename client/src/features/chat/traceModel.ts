@@ -107,6 +107,48 @@ export function sortTimelineItems<T extends Pick<RunIndexItem, 'timestamp' | 'st
     .map(({ item }) => item)
 }
 
+export interface TimelineBounds {
+  start: number
+  end: number
+  span: number
+}
+
+/** Compute a shared time domain without imposing a per-event visual duration. */
+export function timelineBounds(items: Array<Pick<RunIndexItem, 'timestamp' | 'started_at' | 'ended_at'> & { createdAt?: string }>): TimelineBounds {
+  const starts = items.map(eventTimeOf).filter((value) => !Number.isNaN(value))
+  if (starts.length === 0) return { start: 0, end: 1, span: 1 }
+  const explicitEnds = items
+    .map((item) => item.ended_at ? new Date(item.ended_at).getTime() : Number.NaN)
+    .filter((value) => !Number.isNaN(value))
+  const start = Math.min(...starts)
+  const end = Math.max(start, ...starts, ...explicitEnds)
+  return { start, end, span: Math.max(1, end - start) }
+}
+
+/** Resolve an event's vertical interval from real ends or the next event start. */
+export function timelineRange(
+  items: Array<Pick<RunIndexItem, 'timestamp' | 'started_at' | 'ended_at'> & { createdAt?: string }>,
+  index: number,
+  bounds: TimelineBounds,
+): { top: number; height: number; point: boolean } {
+  const current = items[index]
+  const start = current ? eventTimeOf(current) : bounds.start
+  const explicitEnd = current?.ended_at ? new Date(current.ended_at).getTime() : Number.NaN
+  const nextStart = index + 1 < items.length ? eventTimeOf(items[index + 1]!) : Number.NaN
+  const end = Number.isFinite(explicitEnd) && explicitEnd > start
+    ? explicitEnd
+    : Number.isFinite(nextStart) && nextStart > start
+      ? nextStart
+      : bounds.end
+  const safeStart = Number.isFinite(start) ? Math.min(bounds.end, Math.max(bounds.start, start)) : bounds.start
+  const safeEnd = Math.max(safeStart, Math.min(bounds.end, end))
+  return {
+    top: ((safeStart - bounds.start) / bounds.span) * 100,
+    height: ((safeEnd - safeStart) / bounds.span) * 100,
+    point: safeEnd <= safeStart,
+  }
+}
+
 /** Convert a chat message into the same event shape as run-index entries. */
 export function inputTimelineEvent(input: TimelineInput): TimelineEvent {
   return {

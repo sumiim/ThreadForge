@@ -81,16 +81,17 @@ export default function ChatView({ session, historyStatus, running, stopping, ag
           ) : null}
         </div>
       ) : null}
-      <RunTimeline
-        runs={session.runs ?? []}
-        activeRunId={session.activeRunId ?? session.lastRunId}
-        onSelectRun={onSelectRun}
-        inputs={session.messages
-          .filter((message) => message.role === 'user')
-          .map((message) => ({ id: message.id, content: message.content, createdAt: message.createdAt }))}
-      />
       <div className="flex min-h-0 flex-1">
-      {historyStatus === 'loading' && !session.draft ? (
+        <RunTimeline
+          runs={session.runs ?? []}
+          activeRunId={session.activeRunId ?? session.lastRunId}
+          onSelectRun={onSelectRun}
+          inputs={session.messages
+            .filter((message) => message.role === 'user')
+            .map((message) => ({ id: message.id, content: message.content, createdAt: message.createdAt }))}
+        />
+        <div className="flex min-w-0 min-h-0 flex-1">
+        {historyStatus === 'loading' && !session.draft ? (
         <div id="run-scroll-container" className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-sm text-stone-500" role="status">
           <Spin size="large" />
           <span>正在读取历史记录...</span>
@@ -129,7 +130,8 @@ export default function ChatView({ session, historyStatus, running, stopping, ag
         </div>
       ) : (
         <MessageList messages={session.messages} onApprove={onApprove} onReject={onReject} />
-      )}
+        )}
+        </div>
       </div>
 
       <ApprovalNotice count={pendingApprovals.length} onLocate={locatePending} />

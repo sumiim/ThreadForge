@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { Avatar, Button, ConfigProvider, Drawer, Dropdown, Input, Layout, Spin, Tag } from 'antd'
 import {
   AuditOutlined,
-  FileTextOutlined,
   FolderOpenOutlined,
   LogoutOutlined,
   SafetyCertificateOutlined,
@@ -13,7 +12,6 @@ import { useTheme } from './hooks/useTheme'
 import { themeConfig, darkThemeConfig } from './styles/theme'
 import SessionPanel, { type PanelView } from './features/sessions/SessionPanel'
 import ChatView from './features/chat/ChatView'
-import RunArtifactsDrawer from './features/chat/RunArtifactsDrawer'
 import RunTracePanel from './features/chat/RunTracePanel'
 import SkillsView from './features/skills/SkillsView'
 import McpView from './features/mcp/McpView'
@@ -62,7 +60,6 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
   } = useSessions()
   const { mode, toggle: toggleTheme } = useTheme()
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [artifactsOpen, setArtifactsOpen] = useState(false)
   const [traceOpen, setTraceOpen] = useState(false)
   const [view, setView] = useState<PanelView>('chat')
   const hasRun = active?.lastRunId != null
@@ -133,16 +130,6 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
               <Tag icon={<SafetyCertificateOutlined />} color={runtimeConfig?.container_sandbox_enabled ? 'green' : 'warning'}>
                 {executionLabel}
               </Tag>
-              <Button
-                type="text"
-                size="small"
-                icon={<FileTextOutlined />}
-                disabled={!hasRun}
-                onClick={() => setArtifactsOpen(true)}
-                className="font-mono text-[11px] text-stone-500"
-              >
-                运行结果
-              </Button>
               <Button
                 type="text"
                 size="small"
@@ -244,14 +231,6 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
             <WorkerDevices />
           </div>
         </Drawer>
-
-        {/* 运行结果：task_state / trace / report（GET /api/v1/runs/{run_id}/artifacts） */}
-        <RunArtifactsDrawer
-          open={artifactsOpen}
-          session={active}
-          activeRunId={active?.activeRunId}
-          onClose={() => setArtifactsOpen(false)}
-        />
 
       </Layout>
     </ConfigProvider>

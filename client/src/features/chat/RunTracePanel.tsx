@@ -2,7 +2,7 @@ import { useMemo, useState, type MouseEvent } from 'react'
 import { Button, Empty, Input, Select, Tag } from 'antd'
 import { CloseOutlined, DownloadOutlined, SearchOutlined } from '@ant-design/icons'
 import type { RunIndexItem, Session, SessionRun } from '../../api/types'
-import { eventLabel, eventTimeOf, isFailed, LANE_ORDER, LANE_TITLE, laneOf, sortTimelineItems, type Lane } from './traceModel'
+import { eventLabel, eventTimeOf, isFailed, LANE_ORDER, LANE_TITLE, laneOf, sortTimelineItems, timelineBounds, timelineRange, type Lane } from './traceModel'
 
 interface RunTracePanelProps {
   open: boolean
@@ -76,35 +76,29 @@ function AuditTimeline({ rows, selectedEventId, onSelect, onRangeChange }: {
 }) {
   const [dragging, setDragging] = useState(false)
   const [selection, setSelection] = useState<RangeSelection | null>(null)
-  const times = rows.map(eventTimeOf).filter((value) => !Number.isNaN(value))
-  const start = times.length > 0 ? Math.min(...times) : 0
-  const endingTimes = rows
-    .map((row) => row.ended_at ? new Date(row.ended_at).getTime() : eventTimeOf(row))
-    .filter((value) => !Number.isNaN(value))
-  const end = endingTimes.length > 0 ? Math.max(...endingTimes) : start + 1
-  const span = Math.max(1_000, end - start)
+  const bounds = timelineBounds(rows)
   const visibleLanes = LANE_ORDER.filter((lane) => rows.some((row) => row.lane === lane))
 
-  const ratioAt = (clientX: number, target: HTMLDivElement): number => {
+  const ratioAt = (clientY: number, target: HTMLDivElement): number => {
     const rect = target.getBoundingClientRect()
-    return Math.min(1, Math.max(0, (clientX - rect.left) / Math.max(1, rect.width)))
+    return Math.min(1, Math.max(0, (clientY - rect.top) / Math.max(1, rect.height)))
   }
   const beginSelection = (event: MouseEvent<HTMLDivElement>) => {
     if ((event.target as HTMLElement).closest('button')) return
-    const ratio = ratioAt(event.clientX, event.currentTarget)
+    const ratio = ratioAt(event.clientY, event.currentTarget)
     setDragging(true)
     setSelection({ start: ratio, end: ratio })
     onRangeChange(null)
   }
   const moveSelection = (event: MouseEvent<HTMLDivElement>) => {
     if (!dragging || !selection) return
-    const next = { ...selection, end: ratioAt(event.clientX, event.currentTarget) }
+    const next = { ...selection, end: ratioAt(event.clientY, event.currentTarget) }
     setSelection(next)
     const rangeStart = Math.min(next.start, next.end)
     const rangeEnd = Math.max(next.start, next.end)
     onRangeChange(rangeEnd - rangeStart > 0.005
       ? rows.filter((row) => {
-          const ratio = (eventTimeOf(row) - start) / span
+          const ratio = (eventTimeOf(row) - bounds.start) / bounds.span
           return ratio >= rangeStart && ratio <= rangeEnd
         }).map((row) => row.event_id)
       : null)
@@ -115,59 +109,60 @@ function AuditTimeline({ rows, selectedEventId, onSelect, onRangeChange }: {
     : null
   const selectedRows = normalizedRange && normalizedRange.end - normalizedRange.start > 0.005
     ? rows.filter((row) => {
-        const ratio = (eventTimeOf(row) - start) / span
+        const ratio = (eventTimeOf(row) - bounds.start) / bounds.span
         return ratio >= normalizedRange.start && ratio <= normalizedRange.end
       })
     : rows
 
   return (
-    <section className="border-b border-stone-200 bg-white">
-      <div className="flex items-center gap-3 border-b border-stone-100 px-4 py-2 text-xs text-stone-500">
-        <span className="font-medium text-stone-700">时间泳道</span>
-        <span>拖拽框选时间区间</span>
+    <section className="flex min-h-0 min-w-0 flex-col border-r border-stone-200 bg-white">
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-stone-100 px-3 text-[11px] text-stone-500">
+        <span className="font-medium text-stone-700">时间</span>
         {normalizedRange && normalizedRange.end - normalizedRange.start > 0.005 ? (
-          <button type="button" className="ml-auto text-blue-600 hover:text-blue-800" onClick={() => { setSelection(null); onRangeChange(null) }}>
-            清除框选 · {selectedRows.length} 个事件
+          <button type="button" className="ml-auto truncate text-blue-600 hover:text-blue-800" onClick={() => { setSelection(null); onRangeChange(null) }}>
+            清除 · {selectedRows.length}
           </button>
         ) : null}
       </div>
       <div
-        className="relative select-none px-4 py-2"
+        className="relative min-h-[320px] min-w-0 flex-1 cursor-crosshair select-none overflow-hidden px-2 py-3"
         onMouseDown={beginSelection}
         onMouseMove={moveSelection}
         onMouseUp={stopSelection}
         onMouseLeave={stopSelection}
       >
-        {normalizedRange && normalizedRange.end - normalizedRange.start > 0.005 ? (
-          <div
-            className="pointer-events-none absolute bottom-2 top-2 z-10 border-x border-blue-500 bg-blue-100/45"
-            style={{ left: `calc(64px + ${normalizedRange.start * 100}% - ${normalizedRange.start * 64}px)`, width: `calc(${(normalizedRange.end - normalizedRange.start) * 100}% - ${(normalizedRange.end - normalizedRange.start) * 64}px)` }}
-          />
-        ) : null}
-        {visibleLanes.map((lane) => (
-          <div key={lane} className="grid grid-cols-[56px_minmax(0,1fr)] items-center gap-2">
-            <span className="truncate text-[10px] text-stone-400">{LANE_TITLE[lane]}</span>
-            <div className="relative h-3 bg-stone-50">
-              {rows.filter((row) => row.lane === lane).map((row) => {
-                const rowStart = eventTimeOf(row)
-                const rowEnd = row.ended_at ? new Date(row.ended_at).getTime() : Number.NaN
-                const left = Number.isNaN(rowStart) ? 0 : ((rowStart - start) / span) * 100
-                const width = Number.isNaN(rowEnd) || rowEnd <= rowStart ? 0.35 : Math.max(0.35, ((rowEnd - rowStart) / span) * 100)
-                return (
-                  <button
-                    key={row.event_id}
-                    type="button"
-                    className={`absolute top-0.5 z-20 h-2 rounded-[1px] ${row.failed ? 'bg-red-400' : row.event_id === selectedEventId ? 'bg-blue-600' : 'bg-stone-300 hover:bg-blue-400'}`}
-                    style={{ left: `${left}%`, width: `${width}%`, minWidth: 3 }}
-                    title={`${eventLabel(row.type)} · ${new Date(row.timestamp).toLocaleTimeString()}`}
-                    onMouseDown={(event) => event.stopPropagation()}
-                    onClick={() => onSelect(row.event_id)}
-                  />
-                )
-              })}
-            </div>
-          </div>
-        ))}
+        <div className="absolute inset-x-2 bottom-3 top-3 rounded-md bg-stone-50/70">
+          {visibleLanes.map((lane, laneIndex) => (
+            <div
+              key={lane}
+              className="absolute bottom-0 top-0 w-px bg-stone-200/70"
+              style={{ left: `${((laneIndex + 1) / (visibleLanes.length + 1)) * 100}%` }}
+              title={LANE_TITLE[lane]}
+            />
+          ))}
+          {normalizedRange && normalizedRange.end - normalizedRange.start > 0.005 ? (
+            <div
+              className="pointer-events-none absolute inset-x-0 z-10 border-y-2 border-blue-500 bg-blue-100/45"
+              style={{ top: `${normalizedRange.start * 100}%`, height: `${(normalizedRange.end - normalizedRange.start) * 100}%` }}
+            />
+          ) : null}
+          {rows.map((row, index) => {
+            const range = timelineRange(rows, index, bounds)
+            const laneIndex = Math.max(0, visibleLanes.indexOf(row.lane))
+            const left = ((laneIndex + 1) / (visibleLanes.length + 1)) * 100
+            return (
+              <button
+                key={row.event_id}
+                type="button"
+                className={`absolute z-20 -translate-x-1/2 -translate-y-0.5 ${range.point ? 'h-3 w-3 rounded-full' : 'w-2 rounded-full'} ${row.failed ? 'bg-red-400' : row.event_id === selectedEventId ? 'bg-blue-600' : 'bg-stone-400 hover:bg-blue-400'}`}
+                style={{ left: `${left}%`, top: `${range.top}%`, height: range.point ? undefined : `${range.height}%` }}
+                title={`${eventLabel(row.type)} · ${new Date(row.timestamp).toLocaleTimeString()}`}
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={() => onSelect(row.event_id)}
+              />
+            )
+          })}
+        </div>
       </div>
     </section>
   )
@@ -248,10 +243,10 @@ export default function RunTracePanel({ open, session, activeRunId, provider, on
             <div className="px-5 py-2"><div className="text-[10px] uppercase text-stone-400">Calls</div><div className="font-mono text-sm text-stone-800">{toolCalls}</div></div>
           </div>
 
-          <AuditTimeline rows={rows} selectedEventId={effectiveSelectedEventId} onSelect={selectAndJump} onRangeChange={setRangeEventIds} />
+          <div className="grid min-h-0 flex-1 grid-cols-[136px_minmax(0,1fr)] lg:grid-cols-[152px_minmax(0,1fr)_340px]">
+            <AuditTimeline rows={rows} selectedEventId={effectiveSelectedEventId} onSelect={selectAndJump} onRangeChange={setRangeEventIds} />
 
-          <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px]">
-            <section className="flex min-h-0 flex-col border-r border-stone-200">
+            <section className="flex min-h-0 min-w-0 flex-col border-r border-stone-200">
               <div className="shrink-0 border-b border-stone-100 p-2">
                 <Input
                   size="small"
@@ -282,7 +277,7 @@ export default function RunTracePanel({ open, session, activeRunId, provider, on
               </div>
             </section>
 
-            <aside className="min-h-0 overflow-y-auto border-t border-stone-200 p-4 lg:border-t-0">
+            <aside className="col-span-2 min-h-0 overflow-y-auto border-t border-stone-200 p-4 lg:col-span-1 lg:border-t-0">
               {selectedEvent ? (
                 <div className="space-y-5">
                   <div>
