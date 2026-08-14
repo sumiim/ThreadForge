@@ -12,7 +12,12 @@ import sys
 import textwrap
 
 from .config import load_project_env, provider_env
-from .providers.clients import AnthropicCompatibleModelClient, OllamaModelClient, OpenAICompatibleModelClient
+from .providers.clients import (
+    AnthropicCompatibleModelClient,
+    OllamaModelClient,
+    OpenAICompatibleModelClient,
+    OpenAICompletionsModelClient,
+)
 from .runtime import Pico, SessionStore
 from .workspace import WorkspaceContext, middle
 
@@ -25,6 +30,8 @@ DEFAULT_SECRET_ENV_NAMES = (
     "ANTHROPIC_AUTH_TOKEN",
     "PICO_DEEPSEEK_API_KEY",
     "DEEPSEEK_API_KEY",
+    "PICO_CHAT_COMPLETIONS_API_KEY",
+    "SILICONFLOW_API_KEY",
     "PICO_RIGHT_CODES_API_KEY",
     "RIGHT_CODES_API_KEY",
     "GITHUB_PAT",
@@ -60,6 +67,8 @@ DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 DEFAULT_ANTHROPIC_BASE_URL = "https://www.right.codes/claude/v1"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro"
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com/anthropic"
+DEFAULT_CHAT_COMPLETIONS_MODEL = "deepseek-ai/DeepSeek-V3.2"
+DEFAULT_CHAT_COMPLETIONS_BASE_URL = "https://api.siliconflow.cn/v1"
 SECRET_ENV_NAMES_VAR = "PICO_SECRET_ENV_NAMES"
 
 
@@ -86,6 +95,11 @@ def _effective_model(args, provider):
         if model:
             return model
         return DEFAULT_DEEPSEEK_MODEL
+    if provider == "chat_completions":
+        model = provider_env("PICO_CHAT_COMPLETIONS_MODEL", ("CHAT_COMPLETIONS_MODEL",))
+        if model:
+            return model
+        return DEFAULT_CHAT_COMPLETIONS_MODEL
     return DEFAULT_OLLAMA_MODEL
 
 
@@ -138,8 +152,22 @@ def _build_model_client(args, *, model_override=None, temperature_override=None)
     if provider == "deepseek":
         model = model_override or _effective_model(args, provider)
         base_url = getattr(args, "base_url", None) or provider_env("PICO_DEEPSEEK_API_BASE", ("DEEPSEEK_API_BASE",), DEFAULT_DEEPSEEK_BASE_URL)
-        api_key = provider_env("PICO_DEEPSEEK_API_KEY", ("DEEPSEEK_API_KEY",))
+        api_key = provider_env(
+            "PICO_DEEPSEEK_API_KEY",
+            ("DEEPSEEK_API_KEY", "PICO_ANTHROPIC_API_KEY"),
+        )
         return AnthropicCompatibleModelClient(
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            temperature=temperature,
+            timeout=getattr(args, "openai_timeout", getattr(args, "ollama_timeout", 300)),
+        )
+    if provider == "chat_completions":
+        model = model_override or _effective_model(args, provider)
+        base_url = getattr(args, "base_url", None) or provider_env("PICO_CHAT_COMPLETIONS_API_BASE", ("CHAT_COMPLETIONS_API_BASE",), DEFAULT_CHAT_COMPLETIONS_BASE_URL)
+        api_key = provider_env("PICO_CHAT_COMPLETIONS_API_KEY", ("SILICONFLOW_API_KEY",))
+        return OpenAICompletionsModelClient(
             model=model,
             base_url=base_url,
             api_key=api_key,
@@ -272,14 +300,14 @@ def _add_run_arguments(parser):
         default="native",
         help="Agent orchestration backend.",
     )
-    parser.add_argument("--provider", choices=("ollama", "openai", "anthropic", "deepseek"), default="deepseek", help="Model backend to use.")
+    parser.add_argument("--provider", choices=("ollama", "openai", "anthropic", "deepseek", "chat_completions"), default="deepseek", help="Model backend to use.")
     parser.add_argument(
         "--model",
         default=None,
-        help="Model name override. Defaults to qwen3.5:4b for Ollama, PICO_OPENAI_MODEL for openai, PICO_ANTHROPIC_MODEL for anthropic, and PICO_DEEPSEEK_MODEL for deepseek when set.",
+        help="Model name override. Defaults to qwen3.5:4b for Ollama, PICO_OPENAI_MODEL for openai, PICO_ANTHROPIC_MODEL for anthropic, PICO_DEEPSEEK_MODEL for deepseek, and PICO_CHAT_COMPLETIONS_MODEL for chat_completions when set.",
     )
     parser.add_argument("--host", default=DEFAULT_OLLAMA_HOST, help="Ollama server URL.")
-    parser.add_argument("--base-url", default=None, help="Provider API base URL for deepseek, openai, or anthropic.")
+    parser.add_argument("--base-url", default=None, help="Provider API base URL for deepseek, openai, anthropic, or chat_completions.")
     parser.add_argument("--ollama-timeout", type=int, default=300, help="Ollama request timeout in seconds.")
     parser.add_argument("--openai-timeout", type=int, default=300, help="OpenAI-compatible request timeout in seconds.")
     parser.add_argument("--resume", default=None, help="Session id to resume or 'latest'.")

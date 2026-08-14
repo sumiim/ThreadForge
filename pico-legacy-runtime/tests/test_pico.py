@@ -15,6 +15,7 @@ from pico import cli as cli_module
 from pico import (
     AnthropicCompatibleModelClient,
     FakeModelClient,
+    OpenAICompletionsModelClient,
     Pico,
     OllamaModelClient,
     OpenAICompatibleModelClient,
@@ -1045,7 +1046,7 @@ def test_anthropic_compatible_client_posts_expected_messages_payload():
             }
         ],
         "max_tokens": 42,
-        "stream": False,
+        "stream": True,
         "temperature": 0.2,
     }
 
@@ -1179,8 +1180,9 @@ def test_build_model_client_applies_router_model_and_temperature_overrides(monke
     monkeypatch.setattr(cli_module, "OllamaModelClient", fake_client)
     monkeypatch.setattr(cli_module, "OpenAICompatibleModelClient", fake_client)
     monkeypatch.setattr(cli_module, "AnthropicCompatibleModelClient", fake_client)
+    monkeypatch.setattr(cli_module, "OpenAICompletionsModelClient", fake_client)
 
-    for provider in ("ollama", "openai", "anthropic", "deepseek"):
+    for provider in ("ollama", "openai", "anthropic", "deepseek", "chat_completions"):
         args = pico_pkg.build_arg_parser().parse_args(
             ["--cwd", str(tmp_path), "--provider", provider, "--temperature", "0.7"]
         )
@@ -1190,8 +1192,8 @@ def test_build_model_client_applies_router_model_and_temperature_overrides(monke
             temperature_override=0.0,
         )
 
-    assert [item["model"] for item in captured] == ["router-model"] * 4
-    assert [item["temperature"] for item in captured] == [0.0] * 4
+    assert [item["model"] for item in captured] == ["router-model"] * 5
+    assert [item["temperature"] for item in captured] == [0.0] * 5
 
 
 def test_build_arg_parser_accepts_anthropic_provider(tmp_path):
@@ -1328,6 +1330,20 @@ def test_build_agent_uses_deepseek_provider_and_env_configuration(tmp_path):
     assert agent.model_client is fake_client
 
 
+def test_build_agent_uses_anthropic_key_fallback_for_deepseek_provider(tmp_path):
+    args = pico_pkg.build_arg_parser().parse_args(["--cwd", str(tmp_path), "--provider", "deepseek"])
+
+    with patch.dict(
+        os.environ,
+        {"PICO_ANTHROPIC_API_KEY": "sk-anthropic-shared", "OPENAI_API_KEY": "sk-openai"},
+        clear=True,
+    ):
+        with patch("pico.cli.AnthropicCompatibleModelClient") as mock_anthropic:
+            pico_pkg.build_agent(args)
+
+    assert mock_anthropic.call_args.kwargs["api_key"] == "sk-anthropic-shared"
+
+
 def test_build_agent_uses_deepseek_default_model_when_env_is_missing(tmp_path):
     args = pico_pkg.build_arg_parser().parse_args(["--cwd", str(tmp_path), "--provider", "deepseek"])
 
@@ -1337,6 +1353,144 @@ def test_build_agent_uses_deepseek_default_model_when_env_is_missing(tmp_path):
 
     assert mock_anthropic.call_args.kwargs["model"] == "deepseek-v4-pro"
     assert mock_anthropic.call_args.kwargs["base_url"] == "https://api.deepseek.com/anthropic"
+
+
+def test_build_arg_parser_accepts_chat_completions_provider(tmp_path):
+    args = pico_pkg.build_arg_parser().parse_args(["--cwd", str(tmp_path), "--provider", "chat_completions"])
+
+    assert args.provider == "chat_completions"
+
+
+def test_build_agent_uses_chat_completions_provider_and_env_configuration(tmp_path):
+    (tmp_path / ".env").write_text(
+        "\n".join(
+            [
+                "PICO_CHAT_COMPLETIONS_API_BASE=https://api.siliconflow.cn/v1",
+                "PICO_CHAT_COMPLETIONS_API_KEY=sk-project-siliconflow",
+                "PICO_CHAT_COMPLETIONS_MODEL=deepseek-ai/DeepSeek-V3.2",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    args = type(
+        "Args",
+        (),
+        {
+            "cwd": str(tmp_path),
+            "provider": "chat_completions",
+            "model": None,
+            "base_url": None,
+            "host": "http://127.0.0.1:11434",
+            "ollama_timeout": 300,
+            "openai_timeout": 300,
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "resume": None,
+            "approval": "ask",
+            "secret_env_names": [],
+            "max_steps": 6,
+            "max_new_tokens": 512,
+        },
+    )()
+
+    with patch.dict(
+        os.environ,
+        {
+            "CHAT_COMPLETIONS_API_BASE": "https://legacy.chat.example/v1",
+            "SILICONFLOW_API_KEY": "sk-legacy-siliconflow",
+            "DEEPSEEK_API_KEY": "sk-deepseek",
+            "ANTHROPIC_API_KEY": "sk-anthropic",
+            "OPENAI_API_KEY": "sk-openai",
+        },
+        clear=True,
+    ):
+        with patch(
+            "pico.cli.OllamaModelClient",
+            side_effect=AssertionError("ollama client should not be used"),
+        ), patch(
+            "pico.cli.OpenAICompatibleModelClient",
+            side_effect=AssertionError("openai client should not be used"),
+        ), patch(
+            "pico.cli.AnthropicCompatibleModelClient",
+            side_effect=AssertionError("anthropic client should not be used"),
+        ), patch("pico.cli.OpenAICompletionsModelClient") as mock_completions:
+            fake_client = mock_completions.return_value
+            agent = pico_pkg.build_agent(args)
+
+    mock_completions.assert_called_once()
+    assert mock_completions.call_args.kwargs["model"] == "deepseek-ai/DeepSeek-V3.2"
+    assert mock_completions.call_args.kwargs["base_url"] == "https://api.siliconflow.cn/v1"
+    assert mock_completions.call_args.kwargs["api_key"] == "sk-project-siliconflow"
+    assert agent.model_client is fake_client
+
+
+def test_build_agent_uses_siliconflow_shared_key_for_chat_completions_provider(tmp_path):
+    args = type(
+        "Args",
+        (),
+        {
+            "cwd": str(tmp_path),
+            "provider": "chat_completions",
+            "model": None,
+            "base_url": None,
+            "host": "http://127.0.0.1:11434",
+            "ollama_timeout": 300,
+            "openai_timeout": 300,
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "resume": None,
+            "approval": "ask",
+            "secret_env_names": [],
+            "max_steps": 6,
+            "max_new_tokens": 512,
+        },
+    )()
+
+    with patch.dict(os.environ, {"SILICONFLOW_API_KEY": "sk-siliconflow"}, clear=True):
+        with patch(
+            "pico.cli.OllamaModelClient",
+            side_effect=AssertionError("ollama client should not be used"),
+        ), patch(
+            "pico.cli.OpenAICompatibleModelClient",
+            side_effect=AssertionError("openai client should not be used"),
+        ), patch(
+            "pico.cli.AnthropicCompatibleModelClient",
+            side_effect=AssertionError("anthropic client should not be used"),
+        ), patch("pico.cli.OpenAICompletionsModelClient") as mock_completions:
+            fake_client = mock_completions.return_value
+            agent = pico_pkg.build_agent(args)
+
+    mock_completions.assert_called_once()
+    assert mock_completions.call_args.kwargs["api_key"] == "sk-siliconflow"
+    assert agent.model_client is fake_client
+
+
+def test_build_agent_uses_chat_completions_default_model_when_env_is_missing(tmp_path):
+    args = pico_pkg.build_arg_parser().parse_args(["--cwd", str(tmp_path), "--provider", "chat_completions"])
+
+    with patch.dict(os.environ, {"SILICONFLOW_API_KEY": "sk-siliconflow"}, clear=True):
+        with patch("pico.cli.OpenAICompletionsModelClient") as mock_completions:
+            pico_pkg.build_agent(args)
+
+    assert mock_completions.call_args.kwargs["model"] == "deepseek-ai/DeepSeek-V3.2"
+    assert mock_completions.call_args.kwargs["base_url"] == "https://api.siliconflow.cn/v1"
+
+
+def test_build_agent_uses_chat_completions_explicit_model_override(tmp_path):
+    args = pico_pkg.build_arg_parser().parse_args(
+        ["--cwd", str(tmp_path), "--provider", "chat_completions", "--model", "custom-model"]
+    )
+
+    with patch.dict(
+        os.environ,
+        {"SILICONFLOW_API_KEY": "sk-siliconflow", "PICO_CHAT_COMPLETIONS_MODEL": "env-model"},
+        clear=True,
+    ):
+        with patch("pico.cli.OpenAICompletionsModelClient") as mock_completions:
+            pico_pkg.build_agent(args)
+
+    assert mock_completions.call_args.kwargs["model"] == "custom-model"
 
 
 def test_build_agent_uses_deepseek_provider_by_default(tmp_path):
@@ -2162,3 +2316,619 @@ def test_module_execution_help_works():
 
     assert result.returncode == 0
     assert "usage:" in result.stdout.lower()
+
+
+# ---------------------------------------------------------------------------
+# AnthropicCompatibleModelClient（完整版：流式 + 工具调用 + usage）
+# ---------------------------------------------------------------------------
+
+
+def test_anthropic_compatible_client_streams_and_emits_text_deltas():
+    class FakeResponse:
+        headers = {"Content-Type": "text/event-stream"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            body = (
+                'data: {"type":"message_start","message":{"usage":{"input_tokens":12,"output_tokens":0}}}\n'
+                'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n'
+                'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hel"}}\n'
+                'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}\n'
+                'data: {"type":"content_block_stop","index":0}\n'
+                'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}\n'
+                'data: {"type":"message_stop"}\n'
+            ).encode("utf-8")
+            return iter(body.splitlines(keepends=True))
+
+    client = AnthropicCompatibleModelClient(
+        model="deepseek-chat",
+        base_url="https://api.deepseek.com/anthropic",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+    deltas = []
+
+    with patch("urllib.request.urlopen", return_value=FakeResponse()):
+        result = client.complete("hello", 42, on_text_delta=deltas.append)
+
+    assert result == "hello"
+    assert "".join(deltas) == "hello"
+    assert client.last_completion_metadata["input_tokens"] == 12
+    assert client.last_completion_metadata["output_tokens"] == 4
+
+
+def test_anthropic_compatible_client_accumulates_tool_use_across_chunks():
+    class FakeResponse:
+        headers = {"Content-Type": "text/event-stream"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            # input_json_delta 分 3 片，参数 JSON 在 `{` 中间被切断。
+            body = (
+                'data: {"type":"message_start","message":{"usage":{"input_tokens":12,"output_tokens":0}}}\n'
+                'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file","input":{}}}\n'
+                'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"pa"}}\n'
+                'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"th\\":\\"README.md\\"}"}}\n'
+                'data: {"type":"content_block_stop","index":0}\n'
+                'data: {"type":"message_stop"}\n'
+            ).encode("utf-8")
+            return iter(body.splitlines(keepends=True))
+
+    client = AnthropicCompatibleModelClient(
+        model="deepseek-chat",
+        base_url="https://api.deepseek.com/anthropic",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+
+    with patch("urllib.request.urlopen", return_value=FakeResponse()):
+        result = client.complete(
+            "hello", 42, tool_definitions=[{"type": "function", "name": "read_file"}]
+        )
+
+    assert json.loads(result.removeprefix("<tool>").removesuffix("</tool>")) == {
+        "name": "read_file",
+        "args": {"path": "README.md"},
+    }
+    assert client.last_completion_metadata["native_tool_call"] is True
+
+
+def test_anthropic_compatible_client_maps_openai_tools_to_input_schema():
+    captured = {}
+
+    class FakeResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"content": [{"type": "text", "text": "ok"}]}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    client = AnthropicCompatibleModelClient(
+        model="deepseek-chat",
+        base_url="https://api.deepseek.com/anthropic",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+    tool_definitions = [
+        {
+            "type": "function",
+            "name": "read_file",
+            "description": "Read a file",
+            "parameters": {"type": "object", "properties": {}, "strict": True},
+        }
+    ]
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        client.complete("hello", 42, tool_definitions=tool_definitions)
+
+    assert captured["body"]["stream"] is True
+    assert captured["body"]["tools"] == [
+        {
+            "name": "read_file",
+            "description": "Read a file",
+            "input_schema": {"type": "object", "properties": {}, "strict": True},
+        }
+    ]
+    assert "parallel_tool_calls" not in captured["body"]
+
+
+def test_anthropic_compatible_client_tool_precedence_over_text():
+    class FakeResponse:
+        headers = {"Content-Type": "text/event-stream"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            body = (
+                'data: {"type":"message_start","message":{"usage":{"input_tokens":3,"output_tokens":0}}}\n'
+                'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n'
+                'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"let me check"}}\n'
+                'data: {"type":"content_block_stop","index":0}\n'
+                'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"list_dir","input":{}}}\n'
+                'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}\n'
+                'data: {"type":"content_block_stop","index":1}\n'
+                'data: {"type":"message_stop"}\n'
+            ).encode("utf-8")
+            return iter(body.splitlines(keepends=True))
+
+    client = AnthropicCompatibleModelClient(
+        model="deepseek-chat",
+        base_url="https://api.deepseek.com/anthropic",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+
+    with patch("urllib.request.urlopen", return_value=FakeResponse()):
+        result = client.complete("hello", 42)
+
+    assert json.loads(result.removeprefix("<tool>").removesuffix("</tool>")) == {
+        "name": "list_dir",
+        "args": {},
+    }
+    assert client.last_completion_metadata["native_tool_call"] is True
+
+
+def test_anthropic_compatible_client_retries_rate_limit_and_respects_deadline():
+    from pico.providers.clients import ModelProviderError
+
+    calls = 0
+
+    class FakeResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"content": [{"type": "text", "text": "ok"}]}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise urllib.error.HTTPError(
+                request.full_url,
+                429,
+                "too many",
+                {"Retry-After": "0"},
+                io.BytesIO(b"private provider response"),
+            )
+        return FakeResponse()
+
+    client = AnthropicCompatibleModelClient(
+        model="deepseek-chat",
+        base_url="https://api.deepseek.com/anthropic",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+        max_attempts=3,
+    )
+    retries = []
+
+    with patch("urllib.request.urlopen", fake_urlopen), patch("time.sleep"):
+        result = client.complete("hello", 42, on_retry=retries.append)
+
+    assert result == "ok"
+    assert calls == 2
+    assert retries == [
+        {
+            "attempt": 1,
+            "max_attempts": 3,
+            "error_code": "model_rate_limited",
+            "retry_delay_seconds": 0.5,
+        }
+    ]
+
+    # deadline 临近时不再重试：429 的延迟超过 deadline -> 抛映射后的错误。
+    calls = 0
+
+    def raise_429(request, timeout):
+        nonlocal calls
+        calls += 1
+        raise urllib.error.HTTPError(
+            request.full_url,
+            429,
+            "too many",
+            {"Retry-After": "2"},
+            io.BytesIO(b"private provider response"),
+        )
+
+    with patch("urllib.request.urlopen", raise_429), pytest.raises(ModelProviderError) as exc_info:
+        client.complete("hello", 42, deadline_monotonic=time.monotonic() + 0.01)
+
+    assert calls == 1
+    assert exc_info.value.code == "model_rate_limited"
+    assert exc_info.value.attempts == 1
+    assert client.last_completion_metadata["provider_request_attempts"] == 1
+
+
+def test_anthropic_compatible_client_raises_provider_error_on_sse_error_event():
+    class FakeResponse:
+        headers = {"Content-Type": "text/event-stream"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            body = (
+                'event: error\n'
+                'data: {"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}\n'
+            ).encode("utf-8")
+            return iter(body.splitlines(keepends=True))
+
+    client = AnthropicCompatibleModelClient(
+        model="deepseek-chat",
+        base_url="https://api.deepseek.com/anthropic",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+
+    from pico.providers.clients import ModelProviderError
+
+    with patch("urllib.request.urlopen", return_value=FakeResponse()):
+        with pytest.raises(ModelProviderError) as exc_info:
+            client.complete("hello", 42)
+
+    assert exc_info.value.code == "model_provider_error"
+    assert client.last_completion_metadata["provider_error_code"] == "model_provider_error"
+
+
+def test_anthropic_compatible_client_uses_instructions_as_system():
+    captured = {}
+
+    class FakeResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"content": [{"type": "text", "text": "ok"}]}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    client = AnthropicCompatibleModelClient(
+        model="deepseek-chat",
+        base_url="https://api.deepseek.com/anthropic",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+        instructions="You are a file assistant",
+    )
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        client.complete("hello", 42)
+
+    assert captured["body"]["system"] == [{"type": "text", "text": "You are a file assistant"}]
+
+
+def test_anthropic_compatible_client_normalizes_plain_text_to_final():
+    class FakeResponse:
+        headers = {"Content-Type": "text/event-stream"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            body = (
+                'data: {"type":"message_start","message":{"usage":{"input_tokens":3,"output_tokens":0}}}\n'
+                'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n'
+                'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"done"}}\n'
+                'data: {"type":"content_block_stop","index":0}\n'
+                'data: {"type":"message_stop"}\n'
+            ).encode("utf-8")
+            return iter(body.splitlines(keepends=True))
+
+    client = AnthropicCompatibleModelClient(
+        model="deepseek-chat",
+        base_url="https://api.deepseek.com/anthropic",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+
+    with patch("urllib.request.urlopen", return_value=FakeResponse()):
+        result = client.complete(
+            "hello", 42, tool_definitions=[{"type": "function", "name": "read_file"}]
+        )
+
+    assert result == "<final>done</final>"
+    assert client.last_completion_metadata["native_text_response"] is True
+
+
+# ---------------------------------------------------------------------------
+# OpenAICompletionsModelClient（chat/completions：流式 + 工具调用 + usage）
+# ---------------------------------------------------------------------------
+
+
+def test_chat_completions_client_posts_expected_payload():
+    captured = {}
+
+    class FakeResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {"choices": [{"message": {"content": "<final>ok</final>"}}]}
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["headers"] = dict(request.headers)
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    client = OpenAICompletionsModelClient(
+        model="deepseek-ai/DeepSeek-V3.2",
+        base_url="https://api.siliconflow.cn/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        result = client.complete("hello", 42)
+
+    assert result == "<final>ok</final>"
+    assert captured["url"] == "https://api.siliconflow.cn/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer sk-test"
+    assert captured["headers"]["Accept"] == "text/event-stream"
+    assert captured["body"] == {
+        "model": "deepseek-ai/DeepSeek-V3.2",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 42,
+        "stream": True,
+        "temperature": 0.2,
+    }
+    assert "stream_options" not in captured["body"]
+
+    # base_url 已带完整 /chat/completions 时不重复追加。
+    client2 = OpenAICompletionsModelClient(
+        model="m",
+        base_url="https://api.siliconflow.cn/v1/chat/completions",
+        api_key="",
+        temperature=None,
+        timeout=30,
+    )
+    assert client2.base_url.endswith("/v1/chat/completions")
+    assert client2.base_url.count("/chat/completions") == 1
+
+
+def test_chat_completions_client_accumulates_tool_call_arguments_by_index():
+    class FakeResponse:
+        headers = {"Content-Type": "text/event-stream"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            body = (
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"read_file","arguments":""}}]}}]}\n'
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"path\\":\\"README.md\\""}}]}}]}\n'
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"}"}}]}}]}\n'
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"name":"list_dir","arguments":"{}"}}]}}]}\n'
+                "data: [DONE]\n"
+            ).encode("utf-8")
+            return iter(body.splitlines(keepends=True))
+
+    client = OpenAICompletionsModelClient(
+        model="deepseek-ai/DeepSeek-V3.2",
+        base_url="https://api.siliconflow.cn/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+
+    with patch("urllib.request.urlopen", return_value=FakeResponse()):
+        result = client.complete(
+            "hello", 42, tool_definitions=[{"type": "function", "name": "read_file"}]
+        )
+
+    assert json.loads(result.removeprefix("<tool>").removesuffix("</tool>")) == {
+        "name": "read_file",
+        "args": {"path": "README.md"},
+    }
+    assert client.last_completion_metadata["native_tool_call"] is True
+
+
+def test_chat_completions_client_uses_usage_from_last_chunk():
+    class FakeResponse:
+        headers = {"Content-Type": "text/event-stream"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            body = (
+                'data: {"choices":[{"delta":{"content":"hi"}}]}\n'
+                'data: {"choices":[{"delta":{"content":""}}],"usage":{"prompt_tokens":9,"completion_tokens":3,"total_tokens":12}}\n'
+                "data: [DONE]\n"
+            ).encode("utf-8")
+            return iter(body.splitlines(keepends=True))
+
+    client = OpenAICompletionsModelClient(
+        model="deepseek-ai/DeepSeek-V3.2",
+        base_url="https://api.siliconflow.cn/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+
+    with patch("urllib.request.urlopen", return_value=FakeResponse()):
+        result = client.complete("hello", 42)
+
+    assert result == "hi"
+    assert client.last_completion_metadata["input_tokens"] == 9
+    assert client.last_completion_metadata["output_tokens"] == 3
+
+
+def test_chat_completions_client_streams_text_and_final_wraps():
+    class FakeResponse:
+        headers = {"Content-Type": "text/event-stream"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            body = (
+                'data: {"choices":[{"delta":{"content":"fin"}}]}\n'
+                'data: {"choices":[{"delta":{"content":"al"}}]}\n'
+                "data: [DONE]\n"
+            ).encode("utf-8")
+            return iter(body.splitlines(keepends=True))
+
+    client = OpenAICompletionsModelClient(
+        model="deepseek-ai/DeepSeek-V3.2",
+        base_url="https://api.siliconflow.cn/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+    deltas = []
+
+    with patch("urllib.request.urlopen", return_value=FakeResponse()):
+        result = client.complete(
+            "hello", 42, on_text_delta=deltas.append,
+            tool_definitions=[{"type": "function", "name": "read_file"}],
+        )
+
+    assert result == "<final>final</final>"
+    assert "".join(deltas) == "final"
+    assert client.last_completion_metadata["native_text_response"] is True
+
+
+def test_chat_completions_client_json_fallback_and_retry():
+    from pico.providers.clients import ModelProviderError
+
+    captured = {"attempts": 0}
+
+    class FakeResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": '{"path":"README.md"}',
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["attempts"] += 1
+        return FakeResponse()
+
+    client = OpenAICompletionsModelClient(
+        model="deepseek-ai/DeepSeek-V3.2",
+        base_url="https://api.siliconflow.cn/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        result = client.complete(
+            "hello", 42, tool_definitions=[{"type": "function", "name": "read_file"}]
+        )
+
+    assert json.loads(result.removeprefix("<tool>").removesuffix("</tool>")) == {
+        "name": "read_file",
+        "args": {"path": "README.md"},
+    }
+    assert client.last_completion_metadata["input_tokens"] == 5
+
+    # 非 JSON body -> model_response_invalid（retryable，重试耗尽后抛）。
+    class FakeBadResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b"not json at all"
+
+    client.max_attempts = 1
+    with patch("urllib.request.urlopen", return_value=FakeBadResponse()):
+        with pytest.raises(ModelProviderError) as exc_info:
+            client.complete("hello", 42)
+
+    assert exc_info.value.code == "model_response_invalid"
+    assert client.last_completion_metadata["provider_error_code"] == "model_response_invalid"
