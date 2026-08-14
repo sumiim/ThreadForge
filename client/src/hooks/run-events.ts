@@ -51,8 +51,19 @@ export function mergeRunIndex(
   for (const item of existing) byId.set(item.event_id, item)
   for (const item of incoming) byId.set(item.event_id, item)
   return [...byId.values()].sort((a, b) => {
-    if (a.timestamp < b.timestamp) return -1
-    if (a.timestamp > b.timestamp) return 1
+    const timeOf = (item: RunIndexItem) => {
+      for (const value of [item.started_at, item.timestamp, item.ended_at]) {
+        if (!value) continue
+        const time = new Date(value).getTime()
+        if (!Number.isNaN(time)) return time
+      }
+      return Number.NaN
+    }
+    const aTime = timeOf(a)
+    const bTime = timeOf(b)
+    if (!Number.isNaN(aTime) && !Number.isNaN(bTime) && aTime !== bTime) return aTime - bTime
+    if (!Number.isNaN(aTime)) return -1
+    if (!Number.isNaN(bTime)) return 1
     return 0
   })
 }

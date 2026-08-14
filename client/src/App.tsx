@@ -178,7 +178,15 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
             </div>
           </Header>
           <Content className="min-h-0">
-            {view === 'chat' ? (
+            {traceOpen ? (
+              <RunTracePanel
+                open
+                session={active}
+                activeRunId={active?.activeRunId}
+                provider={activeWorkspace?.model_capabilities?.provider}
+                onClose={() => setTraceOpen(false)}
+              />
+            ) : view === 'chat' ? (
               active ? (
                 <ChatView
                   session={active}
@@ -243,14 +251,6 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
           session={active}
           activeRunId={active?.activeRunId}
           onClose={() => setArtifactsOpen(false)}
-        />
-
-        {/* 运行审计：纵向时间轴投影 + 审计表 + 因果图 + 事件详情 + 脱敏导出 */}
-        <RunTracePanel
-          open={traceOpen}
-          session={active}
-          activeRunId={active?.activeRunId}
-          onClose={() => setTraceOpen(false)}
         />
 
       </Layout>

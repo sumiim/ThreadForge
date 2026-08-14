@@ -81,7 +81,6 @@ export default function ChatView({ session, historyStatus, running, stopping, ag
           ) : null}
         </div>
       ) : null}
-      <div className="flex min-h-0 flex-1">
       <RunTimeline
         runs={session.runs ?? []}
         activeRunId={session.activeRunId ?? session.lastRunId}
@@ -90,6 +89,7 @@ export default function ChatView({ session, historyStatus, running, stopping, ag
           .filter((message) => message.role === 'user')
           .map((message) => ({ id: message.id, content: message.content, createdAt: message.createdAt }))}
       />
+      <div className="flex min-h-0 flex-1">
       {historyStatus === 'loading' && !session.draft ? (
         <div id="run-scroll-container" className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-sm text-stone-500" role="status">
           <Spin size="large" />

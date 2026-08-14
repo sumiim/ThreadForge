@@ -1,21 +1,25 @@
-import { useMemo, useState, type ReactNode } from 'react'
-import { Button, Drawer, Empty, Select, Table, Tag } from 'antd'
-import { DownloadOutlined, NodeIndexOutlined } from '@ant-design/icons'
+import { useMemo, useState, type MouseEvent } from 'react'
+import { Button, Empty, Input, Select, Tag } from 'antd'
+import { CloseOutlined, DownloadOutlined, SearchOutlined } from '@ant-design/icons'
 import type { RunIndexItem, Session, SessionRun } from '../../api/types'
-import { eventLabel, isFailed, LANE_TITLE, laneOf, type Lane } from './traceModel'
+import { eventLabel, eventTimeOf, isFailed, LANE_ORDER, LANE_TITLE, laneOf, sortTimelineItems, type Lane } from './traceModel'
 
 interface RunTracePanelProps {
   open: boolean
   session: Session | null
   activeRunId?: string
+  provider?: string
   onClose: () => void
 }
 
 interface TraceRow extends RunIndexItem {
-  key: string
   lane: Lane
-  laneTitle: string
   failed: boolean
+}
+
+interface RangeSelection {
+  start: number
+  end: number
 }
 
 const EMPTY_RUNS: SessionRun[] = []
@@ -31,15 +35,16 @@ const LANE_COLOR: Record<Lane, string> = {
   system: 'default',
 }
 
-function formatDuration(startedAt?: string, endedAt?: string): string {
-  if (!startedAt || !endedAt) return '—'
-  const start = new Date(startedAt).getTime()
-  const end = new Date(endedAt).getTime()
-  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return '—'
-  const ms = end - start
-  if (ms < 1000) return `${ms}ms`
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
-  return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`
+function formatDurationMs(milliseconds: number): string {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return '—'
+  if (milliseconds < 1_000) return `${Math.round(milliseconds)} ms`
+  if (milliseconds < 60_000) return `${(milliseconds / 1_000).toFixed(milliseconds < 10_000 ? 2 : 1)} s`
+  return `${Math.floor(milliseconds / 60_000)}m ${Math.round((milliseconds % 60_000) / 1_000)}s`
+}
+
+function durationOf(startedAt?: string, endedAt?: string): number {
+  if (!startedAt || !endedAt) return Number.NaN
+  return new Date(endedAt).getTime() - new Date(startedAt).getTime()
 }
 
 function downloadJson(run: SessionRun | undefined) {
@@ -49,6 +54,8 @@ function downloadJson(run: SessionRun | undefined) {
     run_id: run.runId,
     task_id: run.taskId,
     status: run.status,
+    model_id: run.modelId,
+    reasoning_effort: run.reasoningEffort,
     events: run.items,
     exported_at: new Date().toISOString(),
   }
@@ -61,194 +68,261 @@ function downloadJson(run: SessionRun | undefined) {
   URL.revokeObjectURL(url)
 }
 
-export default function RunTracePanel({ open, session, activeRunId, onClose }: RunTracePanelProps) {
+function AuditTimeline({ rows, selectedEventId, onSelect, onRangeChange }: {
+  rows: TraceRow[]
+  selectedEventId?: string
+  onSelect: (eventId: string) => void
+  onRangeChange: (eventIds: string[] | null) => void
+}) {
+  const [dragging, setDragging] = useState(false)
+  const [selection, setSelection] = useState<RangeSelection | null>(null)
+  const times = rows.map(eventTimeOf).filter((value) => !Number.isNaN(value))
+  const start = times.length > 0 ? Math.min(...times) : 0
+  const endingTimes = rows
+    .map((row) => row.ended_at ? new Date(row.ended_at).getTime() : eventTimeOf(row))
+    .filter((value) => !Number.isNaN(value))
+  const end = endingTimes.length > 0 ? Math.max(...endingTimes) : start + 1
+  const span = Math.max(1_000, end - start)
+  const visibleLanes = LANE_ORDER.filter((lane) => rows.some((row) => row.lane === lane))
+
+  const ratioAt = (clientX: number, target: HTMLDivElement): number => {
+    const rect = target.getBoundingClientRect()
+    return Math.min(1, Math.max(0, (clientX - rect.left) / Math.max(1, rect.width)))
+  }
+  const beginSelection = (event: MouseEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement).closest('button')) return
+    const ratio = ratioAt(event.clientX, event.currentTarget)
+    setDragging(true)
+    setSelection({ start: ratio, end: ratio })
+    onRangeChange(null)
+  }
+  const moveSelection = (event: MouseEvent<HTMLDivElement>) => {
+    if (!dragging || !selection) return
+    const next = { ...selection, end: ratioAt(event.clientX, event.currentTarget) }
+    setSelection(next)
+    const rangeStart = Math.min(next.start, next.end)
+    const rangeEnd = Math.max(next.start, next.end)
+    onRangeChange(rangeEnd - rangeStart > 0.005
+      ? rows.filter((row) => {
+          const ratio = (eventTimeOf(row) - start) / span
+          return ratio >= rangeStart && ratio <= rangeEnd
+        }).map((row) => row.event_id)
+      : null)
+  }
+  const stopSelection = () => setDragging(false)
+  const normalizedRange = selection
+    ? { start: Math.min(selection.start, selection.end), end: Math.max(selection.start, selection.end) }
+    : null
+  const selectedRows = normalizedRange && normalizedRange.end - normalizedRange.start > 0.005
+    ? rows.filter((row) => {
+        const ratio = (eventTimeOf(row) - start) / span
+        return ratio >= normalizedRange.start && ratio <= normalizedRange.end
+      })
+    : rows
+
+  return (
+    <section className="border-b border-stone-200 bg-white">
+      <div className="flex items-center gap-3 border-b border-stone-100 px-4 py-2 text-xs text-stone-500">
+        <span className="font-medium text-stone-700">时间泳道</span>
+        <span>拖拽框选时间区间</span>
+        {normalizedRange && normalizedRange.end - normalizedRange.start > 0.005 ? (
+          <button type="button" className="ml-auto text-blue-600 hover:text-blue-800" onClick={() => { setSelection(null); onRangeChange(null) }}>
+            清除框选 · {selectedRows.length} 个事件
+          </button>
+        ) : null}
+      </div>
+      <div
+        className="relative select-none px-4 py-2"
+        onMouseDown={beginSelection}
+        onMouseMove={moveSelection}
+        onMouseUp={stopSelection}
+        onMouseLeave={stopSelection}
+      >
+        {normalizedRange && normalizedRange.end - normalizedRange.start > 0.005 ? (
+          <div
+            className="pointer-events-none absolute bottom-2 top-2 z-10 border-x border-blue-500 bg-blue-100/45"
+            style={{ left: `calc(64px + ${normalizedRange.start * 100}% - ${normalizedRange.start * 64}px)`, width: `calc(${(normalizedRange.end - normalizedRange.start) * 100}% - ${(normalizedRange.end - normalizedRange.start) * 64}px)` }}
+          />
+        ) : null}
+        {visibleLanes.map((lane) => (
+          <div key={lane} className="grid grid-cols-[56px_minmax(0,1fr)] items-center gap-2">
+            <span className="truncate text-[10px] text-stone-400">{LANE_TITLE[lane]}</span>
+            <div className="relative h-3 bg-stone-50">
+              {rows.filter((row) => row.lane === lane).map((row) => {
+                const rowStart = eventTimeOf(row)
+                const rowEnd = row.ended_at ? new Date(row.ended_at).getTime() : Number.NaN
+                const left = Number.isNaN(rowStart) ? 0 : ((rowStart - start) / span) * 100
+                const width = Number.isNaN(rowEnd) || rowEnd <= rowStart ? 0.35 : Math.max(0.35, ((rowEnd - rowStart) / span) * 100)
+                return (
+                  <button
+                    key={row.event_id}
+                    type="button"
+                    className={`absolute top-0.5 z-20 h-2 rounded-[1px] ${row.failed ? 'bg-red-400' : row.event_id === selectedEventId ? 'bg-blue-600' : 'bg-stone-300 hover:bg-blue-400'}`}
+                    style={{ left: `${left}%`, width: `${width}%`, minWidth: 3 }}
+                    title={`${eventLabel(row.type)} · ${new Date(row.timestamp).toLocaleTimeString()}`}
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onClick={() => onSelect(row.event_id)}
+                  />
+                )
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+export default function RunTracePanel({ open, session, activeRunId, provider, onClose }: RunTracePanelProps) {
   const runs = session?.runs ?? EMPTY_RUNS
   const [selectedRunId, setSelectedRunId] = useState<string | undefined>(activeRunId)
-  const [selectedEventId, setSelectedEventId] = useState<string | undefined>(undefined)
+  const [selectedEventId, setSelectedEventId] = useState<string | undefined>()
+  const [query, setQuery] = useState('')
+  const [rangeEventIds, setRangeEventIds] = useState<string[] | null>(null)
 
   const activeRun = useMemo(() => {
     const id = selectedRunId ?? activeRunId
     return runs.find((run) => run.runId === id) ?? runs[runs.length - 1]
   }, [runs, selectedRunId, activeRunId])
 
-  const rows = useMemo<TraceRow[]>(
-    () =>
-      (activeRun?.items ?? []).map((item) => ({
-        ...item,
-        key: item.event_id,
-        lane: laneOf(item.type),
-        laneTitle: LANE_TITLE[laneOf(item.type)],
-        failed: isFailed(item),
-      })),
-    [activeRun],
-  )
+  const rows = useMemo<TraceRow[]>(() => sortTimelineItems(
+    (activeRun?.items ?? []).map((item) => ({ ...item, lane: laneOf(item.type), failed: isFailed(item) })),
+  ), [activeRun])
 
-  const summary = useMemo(() => {
-    const failedCount = rows.filter((row) => row.failed).length
-    const byLane = new Map<Lane, number>()
-    for (const row of rows) byLane.set(row.lane, (byLane.get(row.lane) ?? 0) + 1)
-    const first = rows[0]?.timestamp
-    const last = rows[rows.length - 1]?.timestamp
-    return { failedCount, byLane, first, last }
-  }, [rows])
+  const filteredRows = useMemo(() => {
+    const range = rangeEventIds ? new Set(rangeEventIds) : null
+    const rangeRows = range ? rows.filter((row) => range.has(row.event_id)) : rows
+    const needle = query.trim().toLowerCase()
+    if (!needle) return rangeRows
+    return rangeRows.filter((row) => [row.type, eventLabel(row.type), row.tool_name, row.intent, row.summary, row.status]
+      .some((value) => String(value ?? '').toLowerCase().includes(needle)))
+  }, [query, rangeEventIds, rows])
 
-  const selectedEvent = rows.find((row) => row.event_id === selectedEventId)
+  const effectiveSelectedEventId = rows.some((row) => row.event_id === selectedEventId)
+    ? selectedEventId
+    : rows[0]?.event_id
+  const selectedEvent = rows.find((row) => row.event_id === effectiveSelectedEventId)
+  const firstTime = rows.length > 0 ? eventTimeOf(rows[0]) : Number.NaN
+  const lastTime = rows.length > 0 ? Math.max(...rows.map((row) => {
+    const ended = row.ended_at ? new Date(row.ended_at).getTime() : Number.NaN
+    return Number.isNaN(ended) ? eventTimeOf(row) : ended
+  })) : Number.NaN
+  const modelTurns = rows.filter((row) => row.type === 'model.started').length
+  const toolCalls = new Set(rows.filter((row) => row.type === 'tool.requested' && row.tool_call_id).map((row) => row.tool_call_id)).size
 
-  // 因果图（简化）：按 parent_event_id 归组，展示模型轮 -> 工具/审批的父子链。
-  const tree = useMemo(() => {
-    const children = new Map<string, RunIndexItem[]>()
-    const roots: RunIndexItem[] = []
-    for (const row of rows) {
-      const parent = row.parent_event_id
-      if (parent && rows.some((candidate) => candidate.event_id === parent || candidate.parent_event_id === parent || candidate.type.startsWith('model.'))) {
-        children.set(parent, [...(children.get(parent) ?? []), row])
-      } else if (!parent) {
-        roots.push(row)
-      }
-    }
-    return { children, roots }
-  }, [rows])
-
-  const renderCausal = (parent: RunIndexItem, depth: number): ReactNode => {
-    const kids = tree.children.get(parent.event_id) ?? []
-    return (
-      <div key={parent.event_id} style={{ marginLeft: depth * 16 }}>
-        <div className="flex items-center gap-1.5 py-0.5">
-          <NodeIndexOutlined className="text-stone-400" />
-          <span className="font-mono text-[11px] text-stone-600">{eventLabel(parent.type)}</span>
-          <Tag color={LANE_COLOR[laneOf(parent.type)]} className="!mr-0">{LANE_TITLE[laneOf(parent.type)]}</Tag>
-        </div>
-        {kids.map((kid) => renderCausal(kid, depth + 1))}
-      </div>
-    )
+  const selectAndJump = (eventId: string) => {
+    setSelectedEventId(eventId)
+    window.setTimeout(() => document.getElementById(`audit-event-${eventId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 0)
   }
 
+  if (!open) return null
+
   return (
-    <Drawer
-      title={`运行审计 · ${activeRun?.runId ?? '无运行记录'}`}
-      open={open}
-      onClose={onClose}
-      width={720}
-      extra={
-        <Button
-          icon={<DownloadOutlined />}
-          onClick={() => downloadJson(activeRun)}
-          disabled={!activeRun || rows.length === 0}
-        >
-          导出脱敏 JSON
-        </Button>
-      }
-    >
-      {!activeRun || rows.length === 0 ? (
-        <Empty description="该运行没有可审计的事件" />
-      ) : (
-        <div className="space-y-5">
-          {/* 诊断摘要 */}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <div className="rounded-lg border border-stone-100 bg-stone-50/60 px-3 py-2">
-              <div className="text-[11px] text-stone-500">事件总数</div>
-              <div className="text-lg font-semibold text-stone-800">{rows.length}</div>
-            </div>
-            <div className="rounded-lg border border-stone-100 bg-stone-50/60 px-3 py-2">
-              <div className="text-[11px] text-stone-500">失败/受阻</div>
-              <div className={`text-lg font-semibold ${summary.failedCount > 0 ? 'text-red-600' : 'text-stone-800'}`}>
-                {summary.failedCount}
-              </div>
-            </div>
-            <div className="rounded-lg border border-stone-100 bg-stone-50/60 px-3 py-2">
-              <div className="text-[11px] text-stone-500">终态</div>
-              <div className="text-lg font-semibold text-stone-800">{activeRun.status}</div>
-            </div>
-            <div className="rounded-lg border border-stone-100 bg-stone-50/60 px-3 py-2">
-              <div className="text-[11px] text-stone-500">总耗时</div>
-              <div className="text-sm font-semibold text-stone-800">{formatDuration(summary.first, summary.last)}</div>
-            </div>
-          </div>
-
-          {/* 分层泳道统计 */}
-          <div className="flex flex-wrap gap-1.5">
-            {[...summary.byLane.entries()].map(([lane, count]) => (
-              <Tag key={lane} color={LANE_COLOR[lane]}>
-                {LANE_TITLE[lane]} · {count}
-              </Tag>
-            ))}
-          </div>
-
-          {/* Run 选择 + 因果图 */}
-          <div className="space-y-2">
-            <Select
-              size="small"
-              value={activeRun.runId}
-              onChange={setSelectedRunId}
-              options={runs.map((run) => ({ value: run.runId, label: `${run.runId} · ${run.status}` }))}
-              className="w-full max-w-md"
-              aria-label="选择运行"
-            />
-            <details className="rounded-lg border border-stone-100 px-3 py-2">
-              <summary className="cursor-pointer text-xs font-medium text-stone-600">因果图（父子事件链）</summary>
-              <div className="mt-2 space-y-0.5">
-                {tree.roots.map((root) => renderCausal(root, 0))}
-              </div>
-            </details>
-          </div>
-
-          {/* 审计表 */}
-          <div className="overflow-x-auto">
-            <Table<TraceRow>
-              size="small"
-              dataSource={rows}
-              rowKey="event_id"
-              pagination={false}
-              scroll={{ x: 720, y: 320 }}
-              rowClassName={(row) => (row.event_id === selectedEventId ? 'bg-blue-50' : '')}
-              onRow={(row) => ({
-                onClick: () => setSelectedEventId(row.event_id),
-                className: 'cursor-pointer',
-              })}
-              columns={[
-                {
-                  title: '时间',
-                  dataIndex: 'timestamp',
-                  width: 96,
-                  render: (value: string) => <span className="font-mono text-[11px] text-stone-500">{new Date(value).toLocaleTimeString()}</span>,
-                },
-                { title: '事件', dataIndex: 'type', width: 150, render: (_: unknown, row) => eventLabel(row.type) },
-                {
-                  title: '泳道',
-                  dataIndex: 'lane',
-                  width: 84,
-                  render: (_: unknown, row) => <Tag color={LANE_COLOR[row.lane]} className="!mr-0">{row.laneTitle}</Tag>,
-                },
-                {
-                  title: '状态',
-                  dataIndex: 'status',
-                  width: 96,
-                  render: (_: unknown, row) => (row.status ? <span className={row.failed ? 'text-red-600' : 'text-stone-600'}>{row.status}</span> : '—'),
-                },
-                {
-                  title: '耗时',
-                  dataIndex: 'duration',
-                  width: 90,
-                  render: (_: unknown, row) => <span className="font-mono text-[11px] text-stone-500">{formatDuration(row.started_at, row.ended_at)}</span>,
-                },
-                { title: '摘要', dataIndex: 'tool_name', render: (_: unknown, row) => row.tool_name ?? row.intent ?? '—' },
-              ]}
-            />
-          </div>
-
-          {/* 事件详情（脱敏后的公开属性） */}
-          {selectedEvent ? (
-            <details open className="rounded-lg border border-stone-100 px-3 py-2">
-              <summary className="cursor-pointer text-xs font-medium text-stone-600">
-                事件详情 · {selectedEvent.event_id}
-              </summary>
-              <pre className="mt-2 overflow-x-auto rounded bg-stone-50 p-3 text-[11px] leading-relaxed text-stone-700">
-                {JSON.stringify(selectedEvent, null, 2)}
-              </pre>
-            </details>
-          ) : null}
+    <div className="flex h-full min-h-0 flex-col bg-white" aria-label="运行审计界面">
+      <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-stone-200 px-4 py-2.5">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-semibold text-stone-800">{session?.title || '新对话'} · 运行审计</div>
+          <div className="mt-0.5 font-mono text-[10px] text-stone-400">{activeRun?.runId ?? '无运行记录'}</div>
         </div>
+        <Select
+          size="small"
+          value={activeRun?.runId}
+          onChange={(value) => { setSelectedRunId(value); setSelectedEventId(undefined); setRangeEventIds(null) }}
+          options={runs.map((run, index) => ({ value: run.runId, label: `R${index + 1} · ${run.status}` }))}
+          className="ml-auto w-36"
+          aria-label="选择运行"
+        />
+        <Button icon={<DownloadOutlined />} onClick={() => downloadJson(activeRun)} disabled={!activeRun || rows.length === 0}>
+          导出 JSON
+        </Button>
+        <Button type="text" icon={<CloseOutlined />} onClick={onClose} aria-label="关闭运行审计" />
+      </header>
+
+      {!activeRun || rows.length === 0 ? (
+        <div className="flex flex-1 items-center justify-center"><Empty description="该运行没有可审计的事件" /></div>
+      ) : (
+        <>
+          <div className="grid shrink-0 grid-cols-3 divide-x divide-stone-100 border-b border-stone-200 bg-stone-50/40">
+            <div className="px-5 py-2"><div className="text-[10px] uppercase text-stone-400">Duration</div><div className="font-mono text-sm text-stone-800">{formatDurationMs(lastTime - firstTime)}</div></div>
+            <div className="px-5 py-2"><div className="text-[10px] uppercase text-stone-400">Turns</div><div className="font-mono text-sm text-stone-800">{modelTurns}</div></div>
+            <div className="px-5 py-2"><div className="text-[10px] uppercase text-stone-400">Calls</div><div className="font-mono text-sm text-stone-800">{toolCalls}</div></div>
+          </div>
+
+          <AuditTimeline rows={rows} selectedEventId={effectiveSelectedEventId} onSelect={selectAndJump} onRangeChange={setRangeEventIds} />
+
+          <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px]">
+            <section className="flex min-h-0 flex-col border-r border-stone-200">
+              <div className="shrink-0 border-b border-stone-100 p-2">
+                <Input
+                  size="small"
+                  allowClear
+                  prefix={<SearchOutlined className="text-stone-400" />}
+                  placeholder="搜索事件、工具或状态"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                />
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                {filteredRows.map((row, index) => (
+                  <button
+                    id={`audit-event-${row.event_id}`}
+                    key={row.event_id}
+                    type="button"
+                    onClick={() => setSelectedEventId(row.event_id)}
+                    className={`grid w-full grid-cols-[64px_72px_minmax(0,1fr)] items-center gap-2 border-b border-stone-100 px-3 py-2 text-left text-xs sm:grid-cols-[72px_88px_minmax(0,1fr)_80px] ${row.event_id === effectiveSelectedEventId ? 'bg-blue-50' : 'hover:bg-stone-50'}`}
+                  >
+                    <span className="font-mono text-[10px] text-stone-400">{new Date(row.timestamp).toLocaleTimeString()}</span>
+                    <Tag color={LANE_COLOR[row.lane]} className="!m-0 w-fit">{LANE_TITLE[row.lane]}</Tag>
+                    <span className="min-w-0 truncate text-stone-700">{eventLabel(row.type)}{row.tool_name ? ` · ${row.tool_name}` : ''}</span>
+                    <span className={`hidden truncate text-right font-mono text-[10px] sm:block ${row.failed ? 'text-red-600' : 'text-stone-400'}`}>
+                      {Number.isNaN(durationOf(row.started_at, row.ended_at)) ? `#${index + 1}` : formatDurationMs(durationOf(row.started_at, row.ended_at))}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <aside className="min-h-0 overflow-y-auto border-t border-stone-200 p-4 lg:border-t-0">
+              {selectedEvent ? (
+                <div className="space-y-5">
+                  <div>
+                    <div className="text-[10px] uppercase text-stone-400">Request / Event</div>
+                    <div className="mt-1 text-sm font-semibold text-stone-800">{eventLabel(selectedEvent.type)}</div>
+                    <div className="mt-1 break-all font-mono text-[10px] text-stone-400">{selectedEvent.event_id}</div>
+                  </div>
+                  <div className="border-b border-stone-200 pb-2 text-xs font-medium text-blue-700">Summary</div>
+                  <dl className="grid grid-cols-[96px_minmax(0,1fr)] gap-x-3 gap-y-2 text-xs">
+                    <dt className="text-stone-400">Status</dt><dd className="text-stone-700">{selectedEvent.status ?? (selectedEvent.failed ? 'failed' : 'completed')}</dd>
+                    <dt className="text-stone-400">Phase</dt><dd className="text-stone-700">{selectedEvent.phase ?? selectedEvent.lane}</dd>
+                    <dt className="text-stone-400">Model</dt><dd className="break-all text-stone-700">{activeRun.modelId ?? session?.model ?? '未记录'}</dd>
+                    <dt className="text-stone-400">Provider</dt><dd className="text-stone-700">{provider ?? '未记录'}</dd>
+                    <dt className="text-stone-400">Reasoning</dt><dd className="text-stone-700">{activeRun.reasoningEffort ?? '未指定'}</dd>
+                    <dt className="text-stone-400">Tool</dt><dd className="break-all text-stone-700">{selectedEvent.tool_name ?? '—'}</dd>
+                    <dt className="text-stone-400">Attempt</dt><dd className="text-stone-700">{selectedEvent.attempt ?? '—'}</dd>
+                  </dl>
+                  <div>
+                    <div className="mb-2 text-xs font-medium text-stone-700">Usage</div>
+                    <dl className="grid grid-cols-[96px_minmax(0,1fr)] gap-x-3 gap-y-2 text-xs">
+                      <dt className="text-stone-400">Input</dt><dd className="text-stone-700">{selectedEvent.usage?.input_tokens?.toLocaleString() ?? '—'} tok</dd>
+                      <dt className="text-stone-400">Cached</dt><dd className="text-stone-700">{selectedEvent.usage?.cached_tokens?.toLocaleString() ?? '—'} tok</dd>
+                      <dt className="text-stone-400">Output</dt><dd className="text-stone-700">{selectedEvent.usage?.output_tokens?.toLocaleString() ?? '—'} tok</dd>
+                    </dl>
+                  </div>
+                  <div>
+                    <div className="mb-2 text-xs font-medium text-stone-700">Timing</div>
+                    <dl className="grid grid-cols-[96px_minmax(0,1fr)] gap-x-3 gap-y-2 text-xs">
+                      <dt className="text-stone-400">Started</dt><dd className="break-all font-mono text-[10px] text-stone-700">{selectedEvent.started_at ?? selectedEvent.timestamp}</dd>
+                      <dt className="text-stone-400">Ended</dt><dd className="break-all font-mono text-[10px] text-stone-700">{selectedEvent.ended_at ?? '—'}</dd>
+                      <dt className="text-stone-400">Duration</dt><dd className="text-stone-700">{formatDurationMs(durationOf(selectedEvent.started_at, selectedEvent.ended_at))}</dd>
+                    </dl>
+                  </div>
+                  {selectedEvent.summary ? <div className="rounded bg-stone-50 p-3 text-xs leading-relaxed text-stone-600">{selectedEvent.summary}</div> : null}
+                </div>
+              ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择事件查看详情" />}
+            </aside>
+          </div>
+        </>
       )}
-    </Drawer>
+    </div>
   )
 }
