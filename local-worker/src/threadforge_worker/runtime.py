@@ -624,6 +624,7 @@ def run_task(
         allowed_tools=ALLOWED_TOOLS,
         max_steps=int(task.get("max_steps", 6)),
         max_new_tokens=int(settings.get("max_new_tokens", 512)),
+        prompt_total_budget=int(settings.get("prompt_total_budget", 12000)),
         event_sink=CompositeSink(EventCollector(), JsonlSink(run_store), RemoteAgentStateSink(send_runtime_event)),
         shell_output_max_bytes=int(settings.get("shell_output_max_bytes", 1048576)),
         shell_cleanup_grace_seconds=float(settings.get("shell_cleanup_grace_seconds", 5)),

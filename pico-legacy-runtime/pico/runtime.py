@@ -84,6 +84,7 @@ class Pico:
         approval_policy="ask",
         max_steps=6,
         max_new_tokens=512,
+        prompt_total_budget=None,
         depth=0,
         max_depth=1,
         read_only=False,
@@ -152,6 +153,8 @@ class Pico:
         self.prefix_state = self.build_prefix()
         self.prefix = self.prefix_state.text
         self.context_manager = ContextManager(self)
+        if prompt_total_budget is not None:
+            self.context_manager.total_budget = int(prompt_total_budget)
         self.resume_state = self.evaluate_resume_state()
         self.session_path = self.session_store.save(self.session)
         self.current_task_state = None
