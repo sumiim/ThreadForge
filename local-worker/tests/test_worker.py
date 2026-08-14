@@ -1245,6 +1245,15 @@ def test_history_read_and_model_configuration_protocol(tmp_path):
                             "id": "model-b",
                             "display_name": "model-b",
                             "reasoning_efforts": ["none"],
+                            "max_output_tokens": 512,
+                            "usage_fields": [
+                                "input_tokens",
+                                "output_tokens",
+                                "total_tokens",
+                                "cached_tokens",
+                                "cache_hit",
+                            ],
+                            "supports_temperature": True,
                         }
                     ],
                 },
