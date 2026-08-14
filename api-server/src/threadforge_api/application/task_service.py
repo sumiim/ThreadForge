@@ -107,8 +107,9 @@ class TaskService:
                 raise TaskRunnerUnavailableError("runner is unavailable")
             if not self._settings.model_configured():
                 raise ModelNotConfiguredError("model configuration is incomplete")
-            selected_model = selected_model or self._settings.pico_openai_model
-            if selected_model != self._settings.pico_openai_model or selected_effort != "none":
+            provider_model = self._settings.provider_model()
+            selected_model = selected_model or provider_model
+            if selected_model != provider_model or selected_effort != "none":
                 raise WorkerCapabilityUnavailableError(
                     "server-side execution does not advertise the selected model settings"
                 )

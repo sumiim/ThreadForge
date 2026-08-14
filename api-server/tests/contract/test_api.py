@@ -36,6 +36,7 @@ def test_client_metadata_is_truthful(client):
     assert config.json() == {
         "model": "gpt-5.4",
         "model_configured": True,
+        "model_provider": "openai",
         "execution_environment": "backend_process",
         "container_sandbox_enabled": False,
         "identity_mode": "single_owner_instance",
