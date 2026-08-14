@@ -51,6 +51,7 @@ import {
 import type { HistoryStatus } from './session-state.ts'
 import { selectInitialNavigableSession } from '../features/sessions/session-groups'
 import { workspaceKey } from '../features/sessions/workspaceIdentity'
+import { mergeRunIndex } from './run-events'
 
 let idCounter = 0
 const nextId = (prefix: string) => `${prefix}-${Date.now()}-${idCounter++}`
@@ -452,20 +453,25 @@ export function useSessions(): UseSessions {
           'task.blocked': '运行受阻',
         }
         if (!labels[envelope.type]) return
+        // 统一事件契约：优先读取信封层的 phase/interval/parent，缺失时回退到 data
+        const parentEventId = envelope.parent_event_id ?? envelope.data.parent_event_id
+        const startedAt = envelope.started_at ?? envelope.data.started_at
+        const endedAt = envelope.ended_at ?? envelope.data.ended_at
         const item: RunIndexItem = {
           event_id: envelope.event_id,
           type: envelope.type,
           timestamp: envelope.timestamp,
           label: labels[envelope.type],
+          phase: envelope.phase ? String(envelope.phase) : undefined,
           tool_name: envelope.data.tool_name ? String(envelope.data.tool_name) : undefined,
           tool_call_id: envelope.data.tool_call_id ? String(envelope.data.tool_call_id) : undefined,
           intent: envelope.data.intent ? String(envelope.data.intent) : undefined,
           step_count: envelope.data.step_count == null ? undefined : Number(envelope.data.step_count),
           status: envelope.data.status ? String(envelope.data.status) : undefined,
           run_id: envelope.run_id,
-          parent_event_id: envelope.data.parent_event_id ? String(envelope.data.parent_event_id) : undefined,
-          started_at: envelope.data.started_at ? String(envelope.data.started_at) : undefined,
-          ended_at: envelope.data.ended_at ? String(envelope.data.ended_at) : undefined,
+          parent_event_id: parentEventId ? String(parentEventId) : undefined,
+          started_at: startedAt ? String(startedAt) : undefined,
+          ended_at: endedAt ? String(endedAt) : undefined,
         }
         updateSession(sessionId, (session) => {
           const current = session.runIndex ?? []
@@ -542,20 +548,25 @@ export function useSessions(): UseSessions {
             const status = String(data.status ?? '')
             if (data.phase) setAgentProgress(parseAgentProgress(data))
             if (Array.isArray(data.run_index)) {
-              updateSession(sessionId, (session) => ({
-                ...session,
-                runIndex: data.run_index as RunIndexItem[],
-                runs: (session.runs ?? []).map((run) =>
-                  run.runId === String(data.run_id ?? envelope.run_id)
-                    ? {
-                        ...run,
-                        status,
-                        updatedAt: String(data.updated_at ?? run.updatedAt),
-                        items: data.run_index as RunIndexItem[],
-                      }
-                    : run,
-                ),
-              }))
+              // 快照只用于收敛状态：与本地流式 run_index 按 event_id 幂等合并，
+              // 重连/刷新时不会把在途事件清零，也不产生重复。
+              updateSession(sessionId, (session) => {
+                const snapshotItems = data.run_index as RunIndexItem[]
+                return {
+                  ...session,
+                  runIndex: mergeRunIndex(session.runIndex ?? [], snapshotItems),
+                  runs: (session.runs ?? []).map((run) =>
+                    run.runId === String(data.run_id ?? envelope.run_id)
+                      ? {
+                          ...run,
+                          status,
+                          updatedAt: String(data.updated_at ?? run.updatedAt),
+                          items: mergeRunIndex(run.items, snapshotItems),
+                        }
+                      : run,
+                  ),
+                }
+              })
             }
             const finalAnswer = getFinalAnswer(data) ?? terminalFailureMessage(data)
             if (finalAnswer) {

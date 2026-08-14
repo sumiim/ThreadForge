@@ -51,12 +51,17 @@ class ExecutionBoundary:
                     "round_id": self._model_round_id,
                     "started_at": self._model_started_wall,
                 },
+                phase="model",
+                attempt=self._model_round,
+                started_at=self._model_started_wall,
+                summary=f"模型第 {self._model_round} 轮请求",
             )
 
     def after_model(self, task_state, metadata: dict) -> None:
         with self._gate:
             self._check()
             summary = {key: value for key, value in (metadata or {}).items() if key in {"input_tokens", "output_tokens", "total_tokens", "cached_tokens"}}
+            ended_at = utc_now()
             self._publisher.publish(
                 self._task_id,
                 self._run_id,
@@ -65,8 +70,14 @@ class ExecutionBoundary:
                     "usage": summary,
                     "round_id": self._model_round_id,
                     "started_at": self._model_started_wall,
-                    "ended_at": utc_now(),
+                    "ended_at": ended_at,
                 },
+                phase="model",
+                attempt=self._model_round,
+                started_at=self._model_started_wall,
+                ended_at=ended_at,
+                status="completed",
+                summary=_usage_summary(summary),
             )
 
     def tool_requested(self, task_state, tool_call: dict) -> None:
@@ -85,6 +96,8 @@ class ExecutionBoundary:
                 self._run_id,
                 "tool.requested",
                 payload,
+                phase="execute",
+                parent_event_id=self._model_round_id,
             )
 
     def before_tool(self, task_state, tool_call: dict) -> None:
@@ -103,6 +116,10 @@ class ExecutionBoundary:
                     "parent_event_id": self._model_round_id,
                     "started_at": self._tool_started_wall,
                 },
+                phase="execute",
+                parent_event_id=self._model_round_id,
+                started_at=self._tool_started_wall,
+                status="running",
             )
 
     def after_tool(self, task_state, result: Any) -> None:
@@ -116,6 +133,7 @@ class ExecutionBoundary:
         result_preview, result_truncated = public_tool_result_preview(
             tool_name, getattr(result, "content", "")
         )
+        ended_at = utc_now()
         payload = {
             "tool_call_id": tool_call_id,
             "tool_name": tool_name,
@@ -124,7 +142,7 @@ class ExecutionBoundary:
             "affected_paths": metadata.get("affected_paths", []),
             "parent_event_id": self._model_round_id,
             "started_at": self._tool_started_wall,
-            "ended_at": utc_now(),
+            "ended_at": ended_at,
         }
         if result_preview:
             payload["result_preview"] = result_preview
@@ -136,6 +154,12 @@ class ExecutionBoundary:
                 self._run_id,
                 event_type,
                 payload,
+                phase="execute",
+                parent_event_id=self._model_round_id,
+                started_at=self._tool_started_wall,
+                ended_at=ended_at,
+                status=tool_status,
+                summary=tool_name,
             )
             self._active_tool_call_id = ""
             self._active_tool_name = ""
@@ -148,6 +172,8 @@ class ExecutionBoundary:
                 self._run_id,
                 "assistant.commentary",
                 {"text": str(text)[:1000]},
+                phase="talk",
+                summary=str(text)[:1000],
             )
 
     def model_retrying(self, task_state, stage: str, details: dict) -> None:
@@ -158,6 +184,8 @@ class ExecutionBoundary:
                 self._run_id,
                 "model.retrying",
                 {"stage": str(stage), **dict(details or {})},
+                phase="model",
+                attempt=int(details.get("attempt", 1)),
             )
 
     def model_protocol_retrying(self, task_state, stage: str, details: dict) -> None:
@@ -180,9 +208,27 @@ class ExecutionBoundary:
                     "response_hash": str(details.get("response_hash", ""))[:64],
                     "reset_stream": True,
                 },
+                phase="model",
+                attempt=int(details.get("attempt", 1)),
             )
 
     def model_text_delta(self, task_state, stage: str, text: str) -> None:
         # Native server execution keeps protocol output private. Local Worker
         # execution applies the final-answer projector before publishing deltas.
         return None
+
+
+def _usage_summary(usage: dict) -> str:
+    if not usage:
+        return ""
+    parts = []
+    for key, label in (
+        ("input_tokens", "输入"),
+        ("output_tokens", "输出"),
+        ("cached_tokens", "缓存"),
+    ):
+        value = usage.get(key)
+        if isinstance(value, int) and value >= 0:
+            parts.append(f"{label} {value}")
+    return "，".join(parts) if parts else ""
+

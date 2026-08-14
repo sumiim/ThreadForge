@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Avatar, Button, ConfigProvider, Drawer, Dropdown, Input, Layout, Spin, Tag } from 'antd'
 import {
+  AuditOutlined,
   FileTextOutlined,
   FolderOpenOutlined,
   LogoutOutlined,
@@ -13,6 +14,7 @@ import { themeConfig, darkThemeConfig } from './styles/theme'
 import SessionPanel, { type PanelView } from './features/sessions/SessionPanel'
 import ChatView from './features/chat/ChatView'
 import RunArtifactsDrawer from './features/chat/RunArtifactsDrawer'
+import RunTracePanel from './features/chat/RunTracePanel'
 import SkillsView from './features/skills/SkillsView'
 import McpView from './features/mcp/McpView'
 import WorkerDevices from './features/devices/WorkerDevices'
@@ -61,6 +63,7 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
   const { mode, toggle: toggleTheme } = useTheme()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [artifactsOpen, setArtifactsOpen] = useState(false)
+  const [traceOpen, setTraceOpen] = useState(false)
   const [view, setView] = useState<PanelView>('chat')
   const hasRun = active?.lastRunId != null
   const pageTitle = view === 'chat' ? (active?.title ?? 'ThreadForge') : view === 'skills' ? 'Skills' : 'MCP'
@@ -139,6 +142,16 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
                 className="font-mono text-[11px] text-stone-500"
               >
                 运行结果
+              </Button>
+              <Button
+                type="text"
+                size="small"
+                icon={<AuditOutlined />}
+                disabled={!hasRun}
+                onClick={() => setTraceOpen(true)}
+                className="font-mono text-[11px] text-stone-500"
+              >
+                运行审计
               </Button>
               <div className="flex min-w-0 items-center gap-1.5" title={activePath}>
                 <FolderOpenOutlined className="shrink-0 text-stone-400" />
@@ -230,6 +243,14 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
           session={active}
           activeRunId={active?.activeRunId}
           onClose={() => setArtifactsOpen(false)}
+        />
+
+        {/* 运行审计：纵向时间轴投影 + 审计表 + 因果图 + 事件详情 + 脱敏导出 */}
+        <RunTracePanel
+          open={traceOpen}
+          session={active}
+          activeRunId={active?.activeRunId}
+          onClose={() => setTraceOpen(false)}
         />
 
       </Layout>
