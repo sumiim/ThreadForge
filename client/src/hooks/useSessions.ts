@@ -56,7 +56,25 @@ import { mergeRunIndex } from './run-events'
 let idCounter = 0
 const nextId = (prefix: string) => `${prefix}-${Date.now()}-${idCounter++}`
 
-const automaticSessionTitle = (request: string) => request.trim().replace(/\s+/g, ' ').slice(0, 200) || '新会话'
+const EMPTY_SESSION_TITLE = '新对话'
+const automaticSessionTitle = (request: string) => request.trim().replace(/\s+/g, ' ').slice(0, 200) || EMPTY_SESSION_TITLE
+
+function visibleSessionTitle(title: string | undefined, hasStarted?: boolean, messageTotal?: number): string {
+  const started = hasStarted ?? (messageTotal ?? 0) > 0
+  const normalized = title?.trim()
+  return started && normalized ? normalized : EMPTY_SESSION_TITLE
+}
+
+function parseRunUsage(value: unknown): RunIndexItem['usage'] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const source = value as Record<string, unknown>
+  const result: NonNullable<RunIndexItem['usage']> = {}
+  for (const key of ['input_tokens', 'output_tokens', 'total_tokens', 'cached_tokens'] as const) {
+    const number = source[key]
+    if (typeof number === 'number' && Number.isFinite(number) && number >= 0) result[key] = number
+  }
+  return Object.keys(result).length > 0 ? result : undefined
+}
 
 // 与后端 TaskStatus 对齐
 const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'failed', 'interrupted', 'blocked'])
@@ -438,13 +456,23 @@ export function useSessions(): UseSessions {
           'assistant.commentary': '过程更新',
           'model.started': '模型请求',
           'model.completed': '模型完成',
+          'model.retrying': '模型重试',
+          'model.protocol_retrying': '协议重试',
+          'model.heartbeat': '模型心跳',
           'review.started': '开始审查',
           'review.completed': '审查完成',
+          'tool.requested': '工具请求',
           'tool.started': '工具开始',
           'tool.completed': '工具完成',
           'tool.failed': '工具失败',
+          'policy.violation': '策略拦截',
           'approval.required': '等待审批',
           'approval.resolved': '审批完成',
+          'message.completed': '最终回答',
+          'agent.state': 'Agent 状态',
+          'task.queued': '排队中',
+          'task.started': '运行开始',
+          'task.snapshot': '运行快照',
           'task.cancel_requested': '正在停止',
           'task.completed': '运行完成',
           'task.cancelled': '运行已取消',
@@ -467,9 +495,12 @@ export function useSessions(): UseSessions {
           tool_call_id: envelope.data.tool_call_id ? String(envelope.data.tool_call_id) : undefined,
           intent: envelope.data.intent ? String(envelope.data.intent) : undefined,
           step_count: envelope.data.step_count == null ? undefined : Number(envelope.data.step_count),
-          status: envelope.data.status ? String(envelope.data.status) : undefined,
+          status: envelope.status ? String(envelope.status) : envelope.data.status ? String(envelope.data.status) : undefined,
           run_id: envelope.run_id,
           parent_event_id: parentEventId ? String(parentEventId) : undefined,
+          summary: envelope.summary ? String(envelope.summary) : undefined,
+          attempt: typeof envelope.attempt === 'number' ? envelope.attempt : undefined,
+          usage: parseRunUsage(envelope.attributes?.usage ?? envelope.data.usage),
           started_at: startedAt ? String(startedAt) : undefined,
           ended_at: endedAt ? String(endedAt) : undefined,
         }
@@ -498,6 +529,7 @@ export function useSessions(): UseSessions {
               status: terminalStatus ?? 'running',
               startedAt: envelope.timestamp,
               updatedAt: envelope.timestamp,
+              modelId: session.model,
               items: [item],
             })
           }
@@ -879,7 +911,7 @@ export function useSessions(): UseSessions {
           .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
           .map((item) => ({
             id: item.session_id,
-            title: item.title,
+            title: visibleSessionTitle(item.title, item.has_started, item.message_total),
             createdAt: item.created_at,
             updatedAt: item.updated_at ?? item.created_at,
             displayNameSource: item.display_name_source,
@@ -966,11 +998,13 @@ export function useSessions(): UseSessions {
             status: task.status,
             startedAt: task.created_at,
             updatedAt: task.updated_at,
+            modelId: task.model_id,
+            reasoningEffort: task.reasoning_effort,
             items: task.run_index ?? [],
           }))
         const loaded: Session = {
           id: detail.session_id,
-          title: detail.title,
+          title: visibleSessionTitle(detail.title, detail.has_started, detail.message_total),
           createdAt: detail.created_at,
           updatedAt: detail.updated_at ?? detail.created_at,
           displayNameSource: detail.display_name_source,
@@ -1060,7 +1094,8 @@ export function useSessions(): UseSessions {
             const currentSession = existing.get(item.session_id)
             const updatedAt = item.updated_at ?? item.created_at
             const displayNameUpdatedAt = item.display_name_updated_at ?? item.created_at
-            if (currentSession?.displayNameUpdatedAt === displayNameUpdatedAt && currentSession?.createdAt === item.created_at && currentSession?.title === item.title && currentSession.updatedAt === updatedAt) {
+            const title = visibleSessionTitle(item.title, item.has_started, item.message_total)
+            if (currentSession?.displayNameUpdatedAt === displayNameUpdatedAt && currentSession?.createdAt === item.created_at && currentSession?.title === title && currentSession.updatedAt === updatedAt) {
               return currentSession
             }
             if (currentSession && activeRunRef.current?.sessionId !== item.session_id) {
@@ -1078,7 +1113,7 @@ export function useSessions(): UseSessions {
                 }],
               }),
               id: item.session_id,
-              title: item.title,
+              title,
               createdAt: item.created_at,
               displayNameSource: item.display_name_source,
               displayNameUpdatedAt,
@@ -1134,7 +1169,7 @@ export function useSessions(): UseSessions {
           const res = await apiCreateSession(workspaceId, undefined, deviceId)
           const session: Session = {
             id: res.session_id,
-            title: res.title,
+            title: visibleSessionTitle(res.title, false, 0),
             createdAt: res.created_at,
             updatedAt: res.created_at,
             displayNameSource: res.display_name_source,
@@ -1234,6 +1269,8 @@ export function useSessions(): UseSessions {
                 status: queued.status,
                 startedAt: now,
                 updatedAt: now,
+                modelId: modelId ?? activeSession.model,
+                reasoningEffort,
                 items: [],
               },
             ],

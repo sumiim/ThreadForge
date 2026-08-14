@@ -53,6 +53,15 @@ describe('unified event merge', () => {
     assert.deepEqual(merged.map((item) => item.event_id), ['a', 'b'])
   })
 
+  it('orders run_index by real started_at before envelope timestamp', () => {
+    const laterEnvelope = indexItem('later', 'tool.started', '2026-08-14T00:00:01Z')
+    laterEnvelope.started_at = '2026-08-14T00:00:20Z'
+    const earlierEnvelope = indexItem('earlier', 'model.started', '2026-08-14T00:00:09Z')
+    earlierEnvelope.started_at = '2026-08-14T00:00:10Z'
+    const merged = mergeRunIndex([laterEnvelope], [earlierEnvelope])
+    assert.deepEqual(merged.map((item) => item.event_id), ['earlier', 'later'])
+  })
+
   it('does not misreport an incomplete run as success', () => {
     assert.equal(terminalStatus([envelope(1, 'task.started'), envelope(2, 'tool.started')]), null)
     assert.equal(terminalStatus([envelope(1, 'task.started'), envelope(2, 'task.completed')]), 'completed')

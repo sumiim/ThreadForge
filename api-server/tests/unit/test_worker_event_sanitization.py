@@ -1,4 +1,9 @@
-from threadforge_api.infrastructure.worker_hub import _sanitize_event_data
+from types import SimpleNamespace
+
+from threadforge_api.infrastructure.worker_hub import (
+    _append_run_index,
+    _sanitize_event_data,
+)
 
 
 def test_read_only_tool_event_keeps_allowlisted_arguments_and_preview():
@@ -140,3 +145,43 @@ def test_streaming_events_keep_only_safe_public_fields():
         "run_elapsed_seconds": 12.8,
         "round": 4,
     }
+
+
+def test_run_index_keeps_chronology_and_public_usage_for_audit():
+    task = SimpleNamespace(run_index=[], updated_at="")
+    _append_run_index(
+        task,
+        {
+            "event_id": "evt_model_done",
+            "run_id": "run_1",
+            "type": "model.completed",
+            "timestamp": "2026-08-14T00:00:05Z",
+            "started_at": "2026-08-14T00:00:01Z",
+            "ended_at": "2026-08-14T00:00:05Z",
+            "attempt": 2,
+            "summary": "输入 120 · 输出 30",
+        },
+        {
+            "usage": {
+                "input_tokens": 120,
+                "output_tokens": 30,
+                "secret": "must not pass",
+            },
+        },
+    )
+
+    assert task.run_index == [
+        {
+            "event_id": "evt_model_done",
+            "run_id": "run_1",
+            "type": "model.completed",
+            "timestamp": "2026-08-14T00:00:05Z",
+            "label": "模型完成",
+            "phase": "model",
+            "started_at": "2026-08-14T00:00:01Z",
+            "ended_at": "2026-08-14T00:00:05Z",
+            "summary": "输入 120 · 输出 30",
+            "attempt": 2,
+            "usage": {"input_tokens": 120, "output_tokens": 30},
+        }
+    ]
