@@ -74,10 +74,18 @@ class Settings(BaseSettings):
             raise ValueError("V1 does not allow wildcard trusted hosts")
         return value
 
-    # Provider config, frozen from PICO_OPENAI_* at startup.
+    # Provider config, frozen from PICO_* at startup. model_provider selects
+    # which provider the server uses; the other two groups stay dormant.
+    model_provider: Literal["openai", "anthropic", "chat_completions"] = "openai"
     pico_openai_api_base: str = "https://www.right.codes/codex/v1"
     pico_openai_api_key: str = ""
     pico_openai_model: str = "gpt-5.4"
+    pico_anthropic_api_base: str = "https://api.deepseek.com/anthropic"
+    pico_anthropic_api_key: str = ""
+    pico_anthropic_model: str = "deepseek-chat"
+    pico_chat_completions_api_base: str = "https://api.siliconflow.cn/v1"
+    pico_chat_completions_api_key: str = ""
+    pico_chat_completions_model: str = "deepseek-ai/DeepSeek-V3.2"
 
     @field_validator("host")
     @classmethod
@@ -271,14 +279,31 @@ class Settings(BaseSettings):
         return value
 
     def freeze_provider_env(self) -> Settings:
-        """Read PICO_OPENAI_* once. Not persisted into THREADFORGE_*."""
+        """Read PICO_* once per provider group. Not persisted into THREADFORGE_*."""
         self.pico_openai_api_base = os.environ.get("PICO_OPENAI_API_BASE", self.pico_openai_api_base).rstrip("/") or self.pico_openai_api_base
         self.pico_openai_api_key = os.environ.get("PICO_OPENAI_API_KEY", self.pico_openai_api_key) or self.pico_openai_api_key
         self.pico_openai_model = os.environ.get("PICO_OPENAI_MODEL", self.pico_openai_model) or self.pico_openai_model
+        self.pico_anthropic_api_base = os.environ.get("PICO_ANTHROPIC_API_BASE", self.pico_anthropic_api_base).rstrip("/") or self.pico_anthropic_api_base
+        self.pico_anthropic_api_key = os.environ.get("PICO_ANTHROPIC_API_KEY", self.pico_anthropic_api_key) or self.pico_anthropic_api_key
+        self.pico_anthropic_model = os.environ.get("PICO_ANTHROPIC_MODEL", self.pico_anthropic_model) or self.pico_anthropic_model
+        self.pico_chat_completions_api_base = os.environ.get("PICO_CHAT_COMPLETIONS_API_BASE", self.pico_chat_completions_api_base).rstrip("/") or self.pico_chat_completions_api_base
+        self.pico_chat_completions_api_key = os.environ.get("PICO_CHAT_COMPLETIONS_API_KEY", self.pico_chat_completions_api_key) or self.pico_chat_completions_api_key
+        self.pico_chat_completions_model = os.environ.get("PICO_CHAT_COMPLETIONS_MODEL", self.pico_chat_completions_model) or self.pico_chat_completions_model
         return self
 
     def model_configured(self) -> bool:
+        if self.model_provider == "anthropic":
+            return bool(self.pico_anthropic_api_key)
+        if self.model_provider == "chat_completions":
+            return bool(self.pico_chat_completions_api_key)
         return bool(self.pico_openai_api_key)
+
+    def provider_model(self) -> str:
+        if self.model_provider == "anthropic":
+            return self.pico_anthropic_model
+        if self.model_provider == "chat_completions":
+            return self.pico_chat_completions_model
+        return self.pico_openai_model
 
 
 def _validated_web_url(value: str, *, allow_path: bool, label: str) -> str:

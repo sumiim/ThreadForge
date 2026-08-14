@@ -276,7 +276,9 @@ class TaskRunner:
         try:
             adapter.run(request.input)
         except Exception:
-            pass
+            import traceback
+
+            traceback.print_exc()  # DEBUG: surface the real failure (was silently swallowed)
         finally:
             ok = False
             try:

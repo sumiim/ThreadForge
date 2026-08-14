@@ -75,6 +75,60 @@ def test_model_not_configured_when_key_missing(monkeypatch):
     assert settings.model_configured() is False
 
 
+def test_provider_defaults_and_dispatch():
+    settings = Settings(**_base())
+    assert settings.model_provider == "openai"
+    assert settings.pico_anthropic_api_base == "https://api.deepseek.com/anthropic"
+    assert settings.pico_anthropic_model == "deepseek-chat"
+    assert settings.pico_chat_completions_api_base == "https://api.siliconflow.cn/v1"
+    assert settings.pico_chat_completions_model == "deepseek-ai/DeepSeek-V3.2"
+    assert settings.provider_model() == "gpt-5.4"
+
+    anthropic = Settings(**_base(model_provider="anthropic"))
+    assert anthropic.provider_model() == "deepseek-chat"
+    assert anthropic.model_configured() is False
+
+    completions = Settings(**_base(model_provider="chat_completions"))
+    assert completions.provider_model() == "deepseek-ai/DeepSeek-V3.2"
+    assert completions.model_configured() is False
+
+
+def test_invalid_model_provider_rejected():
+    with pytest.raises(ValidationError, match="model_provider"):
+        Settings(**_base(model_provider="gemini"))
+
+
+def test_anthropic_provider_config_freezes_from_env(monkeypatch):
+    monkeypatch.setenv("PICO_OPENAI_API_KEY", "sk-openai-should-not-count")
+    monkeypatch.setenv("PICO_ANTHROPIC_API_BASE", "https://api.deepseek.com/anthropic/")
+    monkeypatch.setenv("PICO_ANTHROPIC_API_KEY", "sk-anthropic-test")
+    monkeypatch.setenv("PICO_ANTHROPIC_MODEL", "deepseek-chat")
+    settings = Settings(**_base(model_provider="anthropic")).freeze_provider_env()
+    assert settings.pico_anthropic_api_base == "https://api.deepseek.com/anthropic"
+    assert settings.pico_anthropic_api_key == "sk-anthropic-test"
+    assert settings.pico_anthropic_model == "deepseek-chat"
+    assert settings.model_configured() is True
+
+
+def test_chat_completions_provider_config_freezes_from_env(monkeypatch):
+    monkeypatch.setenv("PICO_OPENAI_API_KEY", "sk-openai-should-not-count")
+    monkeypatch.setenv("PICO_CHAT_COMPLETIONS_API_BASE", "https://api.siliconflow.cn/v1/")
+    monkeypatch.setenv("PICO_CHAT_COMPLETIONS_API_KEY", "sk-chat-test")
+    monkeypatch.setenv("PICO_CHAT_COMPLETIONS_MODEL", "deepseek-ai/DeepSeek-V3.2")
+    settings = Settings(**_base(model_provider="chat_completions")).freeze_provider_env()
+    assert settings.pico_chat_completions_api_base == "https://api.siliconflow.cn/v1"
+    assert settings.pico_chat_completions_api_key == "sk-chat-test"
+    assert settings.pico_chat_completions_model == "deepseek-ai/DeepSeek-V3.2"
+    assert settings.model_configured() is True
+
+
+def test_provider_groups_freeze_independently(monkeypatch):
+    monkeypatch.setenv("PICO_OPENAI_API_KEY", "sk-openai-only")
+    settings = Settings(**_base(model_provider="anthropic")).freeze_provider_env()
+    assert settings.pico_anthropic_api_key == ""
+    assert settings.model_configured() is False
+
+
 def test_github_oauth_requires_server_credentials():
     with pytest.raises(ValidationError, match="github_oauth requires"):
         Settings(**_base(identity_mode="github_oauth"))

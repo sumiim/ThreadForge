@@ -201,7 +201,7 @@ export default function SessionPanel({
         ) : (
           <Collapse
             ghost
-            className="min-w-0 [&_.ant-collapse-content-box]:!px-2 [&_.ant-collapse-content-box]:!py-1 [&_.ant-collapse-header-text]:!min-w-0 [&_.ant-collapse-header]:!min-w-0 [&_.ant-collapse-header]:!px-2"
+            className="min-w-0 [&_.ant-collapse-body]:!py-0 [&_.ant-collapse-header-text]:!min-w-0 [&_.ant-collapse-header]:!min-w-0 [&_.ant-collapse-header]:!px-2"
             defaultActiveKey={deviceGroups.map((group) => group.key)}
             items={deviceGroups.map((device) => ({
               key: device.key,
@@ -253,7 +253,7 @@ export default function SessionPanel({
               children: (
                 <Collapse
                   ghost
-                  className="min-w-0 [&_.ant-collapse-content-box]:!px-0 [&_.ant-collapse-content-box]:!py-0 [&_.ant-collapse-header-text]:!min-w-0 [&_.ant-collapse-header]:!min-w-0 [&_.ant-collapse-header]:!px-2"
+                  className="min-w-0 [&_.ant-collapse-body]:!py-0 [&_.ant-collapse-header-text]:!min-w-0 [&_.ant-collapse-header]:!min-w-0 [&_.ant-collapse-header]:!px-2"
                   defaultActiveKey={device.workspaces.map((group) => group.key)}
                   items={device.workspaces.map((workspace) => ({
                     key: workspace.key,
