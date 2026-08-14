@@ -100,7 +100,7 @@ def test_update_generation_guard(tmp_path):
 
 
 def test_idempotent_import_no_duplicates(tmp_path):
-    store, tasks, approvals = _make_repos(tmp_path)
+    _, tasks, approvals = _make_repos(tmp_path)
     # Seed JSON mirror directly (simulating a pre-existing data dir).
     write_json_atomic(tmp_path / "tasks" / "task_1.json", _task().to_dict())
     write_json_atomic(tmp_path / "approvals" / "apr_1.json", _approval().to_dict())
@@ -153,7 +153,7 @@ def test_legacy_owner_claim_is_idempotent(tmp_path):
 
 
 def test_concurrent_reads_and_writes_are_consistent(tmp_path):
-    store, tasks, _ = _make_repos(tmp_path)
+    _, tasks, _ = _make_repos(tmp_path)
     errors: list[BaseException] = []
 
     def writer(index: int):

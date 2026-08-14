@@ -11,6 +11,7 @@ from threadforge_api.infrastructure.sqlite_store import SqliteStore
 from threadforge_api.infrastructure.workspace_catalog import WorkspaceEntry
 from threadforge_api.infrastructure.workspace_isolation import (
     WorkspaceIsolation,
+    WorkspaceIsolationError,
     WorkspaceLeaseBusyError,
 )
 

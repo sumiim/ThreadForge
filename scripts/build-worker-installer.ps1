@@ -21,8 +21,10 @@ try {
         --paths local-worker/src `
         --paths pico-legacy-runtime `
         --paths agent-orchestrator/src `
+        --paths sandbox-workers/src `
         --collect-submodules threadforge_worker `
         --collect-submodules langgraph_pico `
+        --collect-submodules threadforge_sandbox `
         --hidden-import tkinter `
         --hidden-import tkinter.filedialog `
         --hidden-import win32api `
@@ -44,8 +46,10 @@ try {
         --paths local-worker/src `
         --paths pico-legacy-runtime `
         --paths agent-orchestrator/src `
+        --paths sandbox-workers/src `
         --collect-submodules threadforge_worker `
         --collect-submodules langgraph_pico `
+        --collect-submodules threadforge_sandbox `
         --hidden-import tkinter `
         --hidden-import tkinter.filedialog `
         --hidden-import win32api `
