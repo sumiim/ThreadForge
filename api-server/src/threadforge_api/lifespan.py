@@ -89,7 +89,7 @@ class AppContainer:
         self.run_store_reader = RunStoreReader(settings.data_dir, settings.artifact_max_bytes)
         self._loop = asyncio.get_running_loop()
         self.broker = EventBroker(self._loop, queue_size=settings.sse_queue_size)
-        self.publisher = EventPublisher(self.broker, store=self.control_store)
+        self.publisher = EventPublisher(self.broker)
         self.worker_hub = WorkerHub(
             loop=self._loop,
             settings=settings,

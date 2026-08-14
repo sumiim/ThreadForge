@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import tempfile
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 
 from ..domain.entities import Approval, Task, utc_now
@@ -29,7 +31,7 @@ from .json_repositories import (
     RecordUnavailableError,
     StaleGenerationError,
 )
-from .jsonutil import JsonCorruptedError, read_json, write_json_atomic
+from .jsonutil import JsonCorruptedError, read_json
 from .sqlite_store import SqliteStore
 
 
@@ -57,7 +59,31 @@ class _JsonMirror:
         self.root.mkdir(parents=True, exist_ok=True)
 
     def write(self, record_id: str, payload: dict) -> None:
-        write_json_atomic(self.root / f"{record_id}.json", payload)
+        # The mirror is a compatibility/cross-check copy, not the durability
+        # source of truth (SQLite is). Use a fast atomic replace without fsync
+        # so the control-plane write path stays on the same latency budget as
+        # the legacy JSON store and does not widen any publish/slot race.
+        path = self.root / f"{record_id}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                delete=False,
+                dir=str(path.parent),
+                prefix=path.name + ".",
+                suffix=".tmp",
+            ) as handle:
+                temp_path = Path(handle.name)
+                json.dump(payload, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+            temp_path.replace(path)
+            temp_path = None
+        finally:
+            if temp_path is not None:
+                with suppress(OSError):
+                    temp_path.unlink(missing_ok=True)
 
     def remove(self, record_id: str) -> None:
         (self.root / f"{record_id}.json").unlink(missing_ok=True)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from pico.tool_context import ToolContext
@@ -38,7 +39,7 @@ def _context(tmp_path, factory):
     return ToolContext(
         root=Path(tmp_path),
         path_resolver=lambda p: Path(tmp_path) / str(p),
-        shell_env_provider=lambda: {},
+        shell_env_provider=lambda: dict(os.environ),
         depth=0,
         max_depth=1,
         spawn_delegate=lambda args: "",
