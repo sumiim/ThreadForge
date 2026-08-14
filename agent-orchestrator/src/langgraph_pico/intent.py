@@ -52,10 +52,32 @@ def normalize_task_mode(value):
     return mode
 
 
-def parse_intent_output(text):
-    value = json.loads(str(text).strip())
+def strip_json_fence(text):
+    """Strip one surrounding markdown code fence from model JSON output.
+
+    Some providers (e.g. SiliconFlow DeepSeek-V3.2) intermittently wrap JSON
+    in ```json ... ``` fences; contract parsers must tolerate that so strict
+    schema validation only sees the payload.
+    """
+    raw = str(text or "").strip()
+    if raw.startswith("```") and raw.endswith("```") and len(raw) > 6:
+        body = raw[3:].lstrip("\r\n")
+        if body.startswith(("json", "JSON")):
+            body = body[4:].lstrip()
+        raw = body.rsplit("```", 1)[0].strip()
+    return raw
+
+
+def _load_json_object(text):
+    """Parse model output as a JSON object, tolerating markdown code fences."""
+    value = json.loads(strip_json_fence(text))
     if not isinstance(value, dict):
-        raise ValueError("intent output must be an object")
+        raise ValueError("output must be a JSON object")
+    return value
+
+
+def parse_intent_output(text):
+    value = _load_json_object(text)
     if set(value) != {"intent", "requires_research"}:
         raise ValueError("intent output has unexpected fields")
     intent = value["intent"]
@@ -70,8 +92,8 @@ def parse_intent_output(text):
 
 
 def parse_conversation_output(text):
-    value = json.loads(str(text).strip())
-    if not isinstance(value, dict) or set(value) != {"answer"}:
+    value = _load_json_object(text)
+    if set(value) != {"answer"}:
         raise ValueError("conversation output must contain only answer")
     answer = value["answer"]
     if not isinstance(answer, str) or not answer.strip():
@@ -81,7 +103,7 @@ def parse_conversation_output(text):
 
 def parse_routed_task_output(text):
     """Parse the route-first response without validating the nested plan contract."""
-    value = json.loads(str(text).strip())
+    value = _load_json_object(text)
     required = {"mode", "intent", "requires_research", "answer", "plan"}
     if not isinstance(value, dict) or set(value) != required:
         raise ValueError("route output fields do not match the contract")

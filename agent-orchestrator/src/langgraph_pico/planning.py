@@ -10,6 +10,7 @@ from .intent import (
     INTENT_CONVERSATION,
     INTENT_READ_ONLY,
     VALID_INTENTS,
+    strip_json_fence,
 )
 
 PLAN_SCHEMA_VERSION = "1"
@@ -179,7 +180,7 @@ def parse_and_validate_plan(
     minimum_budgets=None,
 ):
     try:
-        value = json.loads(str(text).strip())
+        value = json.loads(strip_json_fence(text))
     except json.JSONDecodeError as exc:
         raise PlanValidationError("plan_invalid_json", "plan must be valid JSON") from exc
     if not isinstance(value, dict):
