@@ -10,6 +10,7 @@ from pico import Pico
 from pico.event_sink import CompositeSink, EventCollector, JsonlSink
 from pico.run_lifecycle import finalize_failed_run
 from pico.task_state import (
+    STATUS_COMPLETED,
     STATUS_RUNNING,
     STOP_REASON_MODEL_ERROR,
     STOP_REASON_RUNTIME_ERROR,
@@ -47,6 +48,7 @@ class NativeRuntimeAdapter:
         task_id: str,
         run_id: str,
         max_steps: int,
+        isolation=None,
     ):
         self._settings = settings
         self._workspace_entry = workspace_entry
@@ -61,12 +63,65 @@ class NativeRuntimeAdapter:
         self._task_id = task_id
         self._run_id = run_id
         self._max_steps = max_steps
+        self._isolation = isolation
         self._pico: Pico | None = None
+        self._shell_factory = self._build_sandbox_shell_factory()
+
+    def _build_sandbox_shell_factory(self):
+        """Fail-closed: return a sandbox shell factory or None (legacy CLI path).
+
+        When the sandbox is enabled this returns a Docker-backed factory and
+        raises ``SandboxError`` if Docker or the safety config is unavailable,
+        so the Run fails closed before any shell executes. When the sandbox is
+        disabled (CLI/评测兼容 path) this returns None and the legacy host
+        ``ShellProcess`` remains in use.
+        """
+        if not getattr(self._settings, "sandbox_enabled", False):
+            return None
+        from threadforge_sandbox import (
+            DockerSandboxBackend,
+            SandboxConfig,
+            SandboxLifecycle,
+        )
+
+        config = SandboxConfig(
+            image=self._settings.sandbox_image,
+            user=self._settings.sandbox_user,
+            network=self._settings.sandbox_network,
+            cpu_limit=self._settings.sandbox_cpu_limit,
+            memory_limit=self._settings.sandbox_memory_limit,
+            pids_limit=self._settings.sandbox_pids_limit,
+        )
+        lifecycle = SandboxLifecycle(on_event=self._sandbox_event)
+        backend = DockerSandboxBackend(config, lifecycle=lifecycle)
+        return backend.make_shell
+
+    def _sandbox_event(self, kind: str, payload: dict) -> None:
+        self._publisher.publish(
+            self._task_id,
+            self._run_id,
+            kind,
+            dict(payload or {}),
+            phase="execute",
+            status="running" if kind == "sandbox.started" else "completed",
+            summary=str(payload.get("reason", "") or payload.get("container", ""))[:100],
+        )
 
     def run(self, user_message: str):
         from pico.workspace import WorkspaceContext as _W
 
-        workspace = _W.build(str(self._workspace_entry.canonical_path))
+        handle = (
+            self._isolation.prepare(
+                task_id=self._task_id,
+                run_id=self._run_id,
+                workspace_id=self._workspace_entry.workspace_id,
+                owner_id=self._session_data.get("owner_id", ""),
+            )
+            if self._isolation is not None
+            else None
+        )
+        run_root = handle.root if handle is not None else self._workspace_entry.canonical_path
+        workspace = _W.build(str(run_root))
         event_sink = CompositeSink(
             EventCollector(),
             JsonlSink(self._fenced_run_store),
@@ -94,27 +149,48 @@ class NativeRuntimeAdapter:
             shell_output_max_bytes=self._settings.shell_output_max_bytes,
             shell_cleanup_grace_seconds=self._settings.shell_cleanup_grace_seconds,
             allow_durable_memory_write=False,  # Web path must not write Workspace .pico/memory/
+            shell_factory=self._shell_factory,
         )
         started = time.monotonic()
         try:
-            run_agent(
-                self._pico,
-                user_message,
-                task_mode="auto",
-                task_id=self._task_id,
-                run_id=self._run_id,
-            )
-        except Exception as exc:
-            if self._pico.current_task_state is not None and self._pico.current_task_state.status == STATUS_RUNNING:
-                error_type, stop_reason = _classify_public_error(exc)
-                finalize_failed_run(
+            try:
+                run_agent(
                     self._pico,
-                    self._pico.current_task_state,
-                    error_type=error_type,
-                    duration_ms=int((time.monotonic() - started) * 1000),
-                    stop_reason=stop_reason,
+                    user_message,
+                    task_mode="auto",
+                    task_id=self._task_id,
+                    run_id=self._run_id,
                 )
-            raise
+            except Exception as exc:
+                if self._pico.current_task_state is not None and self._pico.current_task_state.status == STATUS_RUNNING:
+                    error_type, stop_reason = _classify_public_error(exc)
+                    finalize_failed_run(
+                        self._pico,
+                        self._pico.current_task_state,
+                        error_type=error_type,
+                        duration_ms=int((time.monotonic() - started) * 1000),
+                        stop_reason=stop_reason,
+                    )
+                raise
+        finally:
+            if handle is not None:
+                state = getattr(self._pico, "current_task_state", None)
+                apply = getattr(state, "status", "") == STATUS_COMPLETED
+                result = self._isolation.finalize(handle, apply=apply)
+                if result.get("applied") or result.get("conflicts"):
+                    self._publisher.publish(
+                        self._task_id,
+                        self._run_id,
+                        "workspace.applied" if result.get("applied") else "workspace.conflict",
+                        {
+                            "workspace_id": handle.workspace_id,
+                            "changed_paths": result.get("changed_paths", []),
+                            "conflicts": result.get("conflicts", []),
+                        },
+                        phase="execute",
+                        status="completed" if result.get("applied") else "conflict",
+                        summary=f"{len(result.get('changed_paths', []))} paths changed",
+                    )
         return self._pico.current_task_state
 
     def terminate_shell(self) -> bool:

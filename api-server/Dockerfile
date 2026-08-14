@@ -4,10 +4,11 @@ WORKDIR /build
 
 COPY pico-legacy-runtime ./pico-legacy-runtime
 COPY agent-orchestrator ./agent-orchestrator
+COPY sandbox-workers ./sandbox-workers
 COPY api-server ./api-server
 
 RUN python -m pip wheel --no-cache-dir --wheel-dir /wheels \
-    ./pico-legacy-runtime ./agent-orchestrator ./api-server
+    ./pico-legacy-runtime ./agent-orchestrator ./sandbox-workers ./api-server
 
 
 FROM python:3.12-slim

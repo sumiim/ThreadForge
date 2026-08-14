@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     worker_message_max_bytes: int = 2 * 1024 * 1024
     worker_release_dir: Path = Path("worker-releases")
     worker_release_max_bytes: int = 128 * 1024 * 1024
+    sandbox_enabled: bool = False
+    sandbox_image: str = "threadforge-sandbox:latest"
+    sandbox_user: str = "65534:65534"
+    sandbox_cpu_limit: float = 1.0
+    sandbox_memory_limit: str = "512m"
+    sandbox_pids_limit: int = 64
+    sandbox_network: str = "none"
 
     @field_validator("trusted_hosts")
     @classmethod

@@ -25,6 +25,8 @@ _PHASE_BY_TYPE_PREFIX = {
     "approval.": "approval",
     "review.": "review",
     "policy.": "execute",
+    "sandbox.": "execute",
+    "workspace.": "execute",
     "message.completed": "final",
     "task.completed": "final",
     "task.cancelled": "final",

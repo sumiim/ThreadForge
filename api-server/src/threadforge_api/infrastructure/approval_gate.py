@@ -149,6 +149,10 @@ class ApprovalGate:
                     approval_id=approval_id,
                 )
                 approval.transition_id = transition_id
+                # Create the approval record BEFORE publishing the task's
+                # pending_approval state so a concurrent snapshot can never
+                # observe WAITING_FOR_APPROVAL with a dangling approval_id.
+                self._approval_repo.create(approval)
                 self._task_repo.update(
                     run.task_id,
                     lambda task: _set_pending_approval(
@@ -163,7 +167,6 @@ class ApprovalGate:
                     ),
                     expected_generation=run.gate.generation,
                 )
-                self._approval_repo.create(approval)
                 self._journal.commit(transition_id)
             except Exception as exc:
                 rollback_ok = self._rollback_request(run, approval_id)

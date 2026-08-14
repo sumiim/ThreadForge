@@ -566,6 +566,8 @@ def run_task(
             }
         )
 
+    shell_factory = _sandbox_shell_factory(settings, send_runtime_event)
+
     model_timeout = int(settings.get("model_timeout_seconds", 120))
     model_max_attempts = max(1, min(5, int(settings.get("model_max_attempts", 3))))
     if model_client_factory is not None:
@@ -628,6 +630,7 @@ def run_task(
         max_read_files=int(settings.get("max_read_files", 4)),
         max_total_steps=int(settings.get("max_total_steps", max(int(task.get("max_steps", 6)) * 3, int(task.get("max_steps", 6)) + 4))),
         allow_durable_memory_write=False,
+        shell_factory=shell_factory,
     )
     active.pico = pico
     started = time.monotonic()
@@ -691,6 +694,41 @@ def run_task(
             "error": error if error["code"] else {},
         }
     )
+
+
+def _sandbox_shell_factory(settings: dict, send_runtime_event) -> Callable | None:
+    """Fail-closed Docker sandbox shell factory for the Worker.
+
+    Returns None when the sandbox is disabled (legacy host shell remains in use
+    for the CLI-compat path). Raises ``SandboxError`` when the sandbox is
+    enabled but the configuration is unsafe or Docker is unavailable, so the
+    task fails closed before any command runs.
+    """
+    if not bool(settings.get("sandbox_enabled", False)):
+        return None
+    from threadforge_sandbox import (
+        DockerSandboxBackend,
+        SandboxConfig,
+        SandboxLifecycle,
+    )
+
+    config = SandboxConfig(
+        image=str(settings.get("sandbox_image", "threadforge-sandbox:latest")),
+        user=str(settings.get("sandbox_user", "65534:65534")),
+        network=str(settings.get("sandbox_network", "none")),
+        cpu_limit=float(settings.get("sandbox_cpu_limit", 1.0)),
+        memory_limit=str(settings.get("sandbox_memory_limit", "512m")),
+        pids_limit=int(settings.get("sandbox_pids_limit", 64)),
+    )
+
+    def on_sandbox_event(kind: str, payload: dict) -> None:
+        send_runtime_event(kind, dict(payload or {}))
+
+    backend = DockerSandboxBackend(
+        config,
+        lifecycle=SandboxLifecycle(on_event=on_sandbox_event),
+    )
+    return backend.make_shell
 
 
 def _required_env(name: str, default: str = "") -> str:

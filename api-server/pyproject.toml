@@ -15,6 +15,7 @@ dependencies = [
   "filelock>=3.13,<4.0",
   "cryptography>=43,<46",
   "threadforge-agent-orchestrator>=0.1.0",
+  "threadforge-sandbox>=0.1.0",
 ]
 
 [project.optional-dependencies]

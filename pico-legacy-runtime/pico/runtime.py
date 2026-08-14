@@ -102,6 +102,7 @@ class Pico:
         shell_cleanup_grace_seconds=5.0,
         max_read_files=4,
         max_total_steps=None,
+        shell_factory=None,
     ):
         self.model_client = model_client
         self.workspace = workspace
@@ -113,6 +114,7 @@ class Pico:
         self.execution_hooks = execution_hooks if execution_hooks is not None else NoopExecutionHooks()
         self.shell_output_max_bytes = int(shell_output_max_bytes)
         self.shell_cleanup_grace_seconds = float(shell_cleanup_grace_seconds)
+        self.shell_factory = shell_factory
         self.max_steps = max_steps
         self.max_read_files = max(0, int(max_read_files))
         self.max_total_steps = max_total_steps
@@ -686,6 +688,7 @@ class Pico:
                 cancellation_token=self.cancellation_token,
                 shell_output_max_bytes=self.shell_output_max_bytes,
                 shell_cleanup_grace_seconds=self.shell_cleanup_grace_seconds,
+                shell_factory=self.shell_factory,
             )
         return self._tool_context
 
