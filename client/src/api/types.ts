@@ -282,6 +282,8 @@ export interface RunIndexItem {
   type: string
   timestamp: string
   label: string
+  /** Chat message id for synthetic user-input timeline entries. */
+  message_id?: string
   tool_name?: string
   tool_call_id?: string
   intent?: string
@@ -292,6 +294,16 @@ export interface RunIndexItem {
   phase?: string
   /** 统一事件契约：父事件 id（如所属模型轮） */
   parent_event_id?: string
+  /** 统一事件契约：安全摘要及尝试次数。 */
+  summary?: string
+  attempt?: number
+  /** 模型完成事件公开的脱敏 token 用量。 */
+  usage?: {
+    input_tokens?: number
+    output_tokens?: number
+    total_tokens?: number
+    cached_tokens?: number
+  }
   /** 统一事件契约：区间起止（真实耗时） */
   started_at?: string
   ended_at?: string
@@ -303,6 +315,8 @@ export interface SessionRun {
   status: string
   startedAt: string
   updatedAt: string
+  modelId?: string
+  reasoningEffort?: ReasoningEffort
   items: RunIndexItem[]
 }
 

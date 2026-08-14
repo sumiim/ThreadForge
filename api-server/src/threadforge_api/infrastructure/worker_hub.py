@@ -1919,12 +1919,20 @@ def _append_run_index(task, event: dict, data: dict):
     event_type = str(event.get("type", ""))
     labels = {
         "plan.created": "计划已创建",
+        "plan.skipped": "直接回答",
         "assistant.commentary": "过程更新",
+        "model.started": "模型请求",
+        "model.completed": "模型完成",
+        "model.retrying": "模型重试",
+        "model.protocol_retrying": "协议重试",
         "review.started": "开始审查",
         "review.completed": "审查完成",
+        "tool.requested": "工具请求",
         "tool.started": "工具开始",
         "tool.completed": "工具完成",
         "tool.failed": "工具失败",
+        "approval.required": "等待审批",
+        "approval.resolved": "审批完成",
         "task.completed": "运行完成",
         "task.cancelled": "运行已取消",
         "task.failed": "运行失败",
@@ -1951,9 +1959,26 @@ def _append_run_index(task, event: dict, data: dict):
         item["started_at"] = started_at[:40]
     if ended_at:
         item["ended_at"] = ended_at[:40]
+    summary = str(event.get("summary") or data.get("summary", ""))
+    if summary:
+        item["summary"] = summary[:1000]
+    attempt = event.get("attempt", data.get("attempt"))
+    if isinstance(attempt, int) and not isinstance(attempt, bool) and attempt >= 0:
+        item["attempt"] = attempt
     if event_type.startswith("tool."):
         item["tool_name"] = str(data.get("tool_name", ""))[:100]
         item["tool_call_id"] = str(data.get("tool_call_id", ""))[:200]
+    elif event_type == "model.completed":
+        usage = data.get("usage", {})
+        if isinstance(usage, dict):
+            item["usage"] = {
+                key: value
+                for key, value in usage.items()
+                if key in {"input_tokens", "output_tokens", "total_tokens", "cached_tokens"}
+                and isinstance(value, int)
+                and not isinstance(value, bool)
+                and value >= 0
+            }
     elif event_type == "plan.created":
         item["intent"] = str(data.get("intent", ""))[:32]
         item["step_count"] = _nonnegative_int(data.get("step_count", 0))

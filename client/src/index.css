@@ -98,8 +98,24 @@ body {
   animation: msg-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+.timeline-jump-highlight {
+  animation: timeline-jump-highlight 900ms ease-out;
+}
+
+@keyframes timeline-jump-highlight {
+  0%, 35% {
+    box-shadow: 0 0 0 3px rgb(59 130 246 / 22%);
+    background-color: rgb(239 246 255 / 80%);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+    background-color: transparent;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .message-enter {
+  .message-enter,
+  .timeline-jump-highlight {
     animation: none;
   }
 }
