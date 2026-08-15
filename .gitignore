@@ -52,3 +52,6 @@ dist-electron/
 release/
 /release-desktop/
 /worker-releases/
+
+# Unrelated project artifacts
+/pi-main/

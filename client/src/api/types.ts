@@ -50,6 +50,7 @@ export interface Device {
   name: string
   online: boolean
   model: string
+  model_provider?: string
   model_configured: boolean
   version: string
   protocol_version: number
@@ -133,6 +134,7 @@ export interface WorkerReleaseManifest {
 
 export interface RuntimeConfig {
   model: string
+  model_provider?: string
   model_configured: boolean
   execution_environment: string
   container_sandbox_enabled: boolean
