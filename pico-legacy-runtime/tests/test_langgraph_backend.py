@@ -1352,3 +1352,20 @@ def test_explored_summary_renders_memory_and_checklist():
     assert "listed_dirs: src/, tests/" in summary
     assert "[x] list src" in summary
     assert "[ ] read tests" in summary
+
+
+def test_safe_execution_failure_classifies_connection_errors():
+    from langgraph_pico.backend import _safe_execution_failure
+
+    # 普通异常仍归为 runtime_error（不回归）
+    assert _safe_execution_failure(RuntimeError("boom")) == (
+        "runtime_error",
+        "Agent 运行失败，请稍后重试。",
+    )
+    # 连接被掐断（取消/网络断开）不再误报成「请稍后重试」
+    code, message = _safe_execution_failure(ConnectionError("closed"))
+    assert code == "model_connection_error"
+    assert "网络" in message
+    # ConnectionResetError 是 ConnectionError 子类，也走连接分类
+    code, _ = _safe_execution_failure(ConnectionResetError("reset"))
+    assert code == "model_connection_error"

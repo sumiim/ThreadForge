@@ -1,6 +1,7 @@
 """LangGraph backend adapter for Pico's public runtime and benchmark harness."""
 
 import time
+import traceback
 from pathlib import Path, PureWindowsPath
 
 from pico.evaluation.backends import (
@@ -81,11 +82,28 @@ MODEL_ERROR_MESSAGES = {
 }
 
 
+# 连接被掐断的异常类型（取消 / 网络断开），不再误报成「运行失败，请稍后重试」。
+_CONNECTION_ERROR_TYPE_NAMES = frozenset(
+    {
+        "ConnectionClosedError",
+        "ConnectionResetError",
+        "ConnectionAbortedError",
+        "ConnectionRefusedError",
+        "BrokenPipeError",
+        "RemoteDisconnected",
+        "IncompleteRead",
+    }
+)
+
+
 def _safe_execution_failure(exc):
     code = str(getattr(exc, "code", "") or "")
     if getattr(exc, "stop_reason", "") == STOP_REASON_MODEL_ERROR:
         code = code or "model_call_failed"
         return code, MODEL_ERROR_MESSAGES.get(code, MODEL_ERROR_MESSAGES["model_call_failed"])
+    exc_type = type(exc).__name__
+    if exc_type in _CONNECTION_ERROR_TYPE_NAMES or isinstance(exc, ConnectionError):
+        return "model_connection_error", MODEL_ERROR_MESSAGES["model_connection_error"]
     return "runtime_error", "Agent 运行失败，请稍后重试。"
 
 
@@ -513,12 +531,26 @@ def run_agent(
                 STOP_REASON_PERSISTENCE_ERROR,
             }:
                 stop_reason = STOP_REASON_RUNTIME_ERROR
+            exc_type = type(exc).__name__
             task_state.record_error(
                 stage=getattr(exc, "stage", "runtime"),
                 code=error_code,
                 retryable=getattr(exc, "retryable", False),
                 attempts=getattr(exc, "attempts", 1),
             )
+            # 把异常类型 + traceback 落进 trace，避免「到底抛了什么」从工件里看不到。
+            try:
+                agent.emit_trace(
+                    task_state,
+                    "graph_error",
+                    {
+                        "error_type": exc_type,
+                        "error_code": error_code,
+                        "traceback": traceback.format_exc()[:4000],
+                    },
+                )
+            except Exception:
+                pass
             task_state.stop(stop_reason, status=STATUS_FAILED, final_answer=final_answer)
         finally:
             budget_task_states = [task_state, *node_child_states]
