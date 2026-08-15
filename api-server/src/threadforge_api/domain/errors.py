@@ -159,6 +159,14 @@ class WorkerCommandFailedError(AppError):
     code = "worker_command_failed"
 
 
+class WorkerConcurrencyLimitError(AppError):
+    http_status = 409
+    code = "worker_concurrency_limit"
+
+    def __init__(self, device_id: str, limit: int):
+        super().__init__("Worker concurrency limit reached", {"device_id": device_id, "limit": limit})
+
+
 class WorkerProtocolError(AppError):
     http_status = 400
     code = "worker_protocol_error"

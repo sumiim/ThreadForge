@@ -26,7 +26,6 @@ from pico.security import (
 from ..domain.entities import Approval, canonical_json, utc_now
 from ..domain.enums import ApprovalStatus, TaskStatus
 from ..domain.errors import (
-    ActiveTaskExistsError,
     ApprovalAlreadyResolvedError,
     ApprovalExpiredError,
     ApprovalStaleError,
@@ -36,6 +35,7 @@ from ..domain.errors import (
     RenameConflictError,
     WorkerCapabilityUnavailableError,
     WorkerCommandFailedError,
+    WorkerConcurrencyLimitError,
     WorkerOfflineError,
     WorkerProtocolError,
 )
@@ -135,7 +135,7 @@ class WorkerHub:
         self._session_store = session_store
         self._publisher = publisher
         self._connections: dict[str, WorkerConnection] = {}
-        self._active_by_device: dict[str, str] = {}
+        self._active_by_device: dict[str, set[str]] = {}
         self._device_by_task: dict[str, str] = {}
         self._workspace_requests: dict[str, WorkspaceSelectionRequest] = {}
         self._history_requests: dict[str, PendingWorkerRequest] = {}
@@ -159,17 +159,17 @@ class WorkerHub:
             websocket=websocket,
             outbox=asyncio.Queue(maxsize=256),
         )
-        replaced_task_id = ""
+        replaced_task_ids: list[str] = []
         with self._lock:
             previous = self._connections.get(device.device_id)
             self._connections[device.device_id] = connection
             if previous is not None:
                 self._fail_workspace_requests_locked(device.device_id, "worker_reconnected")
                 self._fail_pending_requests_locked(device.device_id, "worker_reconnected")
-                replaced_task_id = self._active_by_device.pop(device.device_id, "")
-                if replaced_task_id:
+                replaced_task_ids = list(self._active_by_device.pop(device.device_id, set()))
+                for replaced_task_id in replaced_task_ids:
                     self._device_by_task.pop(replaced_task_id, None)
-        if replaced_task_id:
+        for replaced_task_id in replaced_task_ids:
             self._fail_task(replaced_task_id, "worker_reconnected")
         if previous is not None:
             await previous.websocket.close(code=4001, reason="device reconnected")
@@ -183,7 +183,7 @@ class WorkerHub:
             await connection.websocket.send_json(message)
 
     async def disconnect(self, connection: WorkerConnection) -> None:
-        task_id = ""
+        task_ids: list[str] = []
         with self._lock:
             if self._connections.get(connection.device.device_id) is connection:
                 self._connections.pop(connection.device.device_id, None)
@@ -193,10 +193,10 @@ class WorkerHub:
                 self._fail_pending_requests_locked(
                     connection.device.device_id, "worker_disconnected"
                 )
-                task_id = self._active_by_device.pop(connection.device.device_id, "")
-                if task_id:
+                task_ids = list(self._active_by_device.pop(connection.device.device_id, set()))
+                for task_id in task_ids:
                     self._device_by_task.pop(task_id, None)
-        if task_id:
+        for task_id in task_ids:
             self._fail_task(task_id, "worker_disconnected")
         try:
             connection.outbox.put_nowait(None)
@@ -686,16 +686,16 @@ class WorkerHub:
 
     def revoke(self, device_id: str, owner_id: str) -> None:
         self._devices.get_for_owner(device_id, owner_id)
-        task_id = ""
+        task_ids: list[str] = []
         with self._lock:
             connection = self._connections.pop(device_id, None)
             self._fail_workspace_requests_locked(device_id, "worker_revoked")
             self._fail_pending_requests_locked(device_id, "worker_revoked")
-            task_id = self._active_by_device.pop(device_id, "")
-            if task_id:
+            task_ids = list(self._active_by_device.pop(device_id, set()))
+            for task_id in task_ids:
                 self._device_by_task.pop(task_id, None)
         self._devices.revoke(device_id, owner_id)
-        if task_id:
+        for task_id in task_ids:
             self._fail_task(task_id, "worker_revoked")
         if connection is not None:
             self._loop.call_soon_threadsafe(
@@ -718,10 +718,12 @@ class WorkerHub:
                 )
             ):
                 raise WorkerProtocolError("task, device and workspace ownership do not match")
-            active = self._active_by_device.get(task.device_id)
-            if active:
-                raise ActiveTaskExistsError(active)
-            self._active_by_device[task.device_id] = task.task_id
+            active = self._active_by_device.get(task.device_id, set())
+            limit = int(getattr(self._settings, "worker_max_concurrent_tasks", 2))
+            if len(active) >= limit:
+                raise WorkerConcurrencyLimitError(task.device_id, limit)
+            active.add(task.task_id)
+            self._active_by_device[task.device_id] = active
             self._device_by_task[task.task_id] = task.device_id
         try:
             self._task_repo.update(task.task_id, lambda item: _set_status(item, TaskStatus.RUNNING))
@@ -1684,8 +1686,11 @@ class WorkerHub:
     def _release(self, task_id: str, device_id: str) -> None:
         with self._lock:
             self._device_by_task.pop(task_id, None)
-            if self._active_by_device.get(device_id) == task_id:
-                self._active_by_device.pop(device_id, None)
+            active = self._active_by_device.get(device_id)
+            if active is not None:
+                active.discard(task_id)
+                if not active:
+                    self._active_by_device.pop(device_id, None)
 
     def _send(self, device_id: str, message: dict) -> None:
         encoded = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
