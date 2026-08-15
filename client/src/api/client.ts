@@ -137,6 +137,7 @@ const errorText: Record<string, string> = {
   worker_capability_unavailable: '本地 Worker 版本过旧，请更新后重试',
   worker_command_pending: '该设备已有目录选择请求等待处理',
   worker_command_failed: '本地 Worker 未能完成请求，请检查配置后重试',
+  worker_concurrency_limit: '该 Worker 已达并发任务上限，请等待其他任务完成后再试',
   worker_protocol_error: '本地 Worker 协议错误，请检查版本',
   worker_release_unavailable: 'Worker 安装包暂时不可用，请稍后重试',
   rename_conflict: '名称已在其他页面被修改，已保留对方的版本，请刷新后重试',

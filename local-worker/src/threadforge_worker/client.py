@@ -76,7 +76,7 @@ class WorkerClient:
     ):
         self.store = store
         self.config = config
-        self.active: ActiveRun | None = None
+        self.active_runs: dict[str, ActiveRun] = {}
         self._socket = None
         self._send_lock = threading.Lock()
         self._workspace_lock = threading.Lock()
@@ -94,8 +94,9 @@ class WorkerClient:
 
     def stop(self) -> None:
         self._stop_event.set()
-        active = self.active
-        if active is not None:
+        with self._activity_lock:
+            runs = list(self.active_runs.values())
+        for active in runs:
             active.cancel(5)
         websocket = self._socket
         if websocket is not None:
@@ -106,7 +107,7 @@ class WorkerClient:
 
     def begin_update(self) -> bool:
         with self._activity_lock:
-            if self.active is not None or self._updating.is_set():
+            if self.active_runs or self._updating.is_set():
                 return False
             self._updating.set()
             return True
@@ -232,9 +233,11 @@ class WorkerClient:
                     if isinstance(message, dict):
                         self._handle(message)
             finally:
-                active = self.active
-                if active is not None:
+                with self._activity_lock:
+                    runs = list(self.active_runs.values())
+                for active in runs:
                     active.cancel(5)
+                for active in runs:
                     if active.thread is not None:
                         active.thread.join()
                 self._socket = None
@@ -245,11 +248,13 @@ class WorkerClient:
         if message_type == "task.start":
             self._start_task(message.get("task", {}))
         elif message_type == "task.cancel":
-            if self.active is not None and self.active.task_id == message.get("task_id"):
-                self.active.cancel(5)
+            active = self.active_runs.get(str(message.get("task_id", "")))
+            if active is not None:
+                active.cancel(5)
         elif message_type == "approval.decision":
-            if self.active is not None and self.active.task_id == message.get("task_id"):
-                self.active.approval.resolve(
+            active = self.active_runs.get(str(message.get("task_id", "")))
+            if active is not None:
+                active.approval.resolve(
                     str(message.get("tool_call_id", "")),
                     str(message.get("decision", "")),
                     str(message.get("args_digest", "")),
@@ -533,11 +538,12 @@ class WorkerClient:
                 raise ValueError("invalid run id")
             self.config = self.store.load()
             with self._activity_lock:
-                active = self.active
-                if active is not None and (
+                busy = any(
                     (entity_type == "session" and active.session_id == entity_id)
                     or (entity_type == "workspace" and active.workspace_id == entity_id)
-                ):
+                    for active in self.active_runs.values()
+                )
+                if busy:
                     raise RuntimeError("entity_busy")
             if entity_type == "session":
                 if not _SESSION_ID.fullmatch(entity_id):
@@ -635,7 +641,7 @@ class WorkerClient:
             "request_id": request_id,
         }
         with self._activity_lock:
-            busy = self.active is not None or self._updating.is_set()
+            busy = bool(self.active_runs) or self._updating.is_set()
         if not request_id or self._uninstall_callback is None:
             response.update(status="failed", error="uninstall_unavailable")
         elif busy:
@@ -754,8 +760,6 @@ class WorkerClient:
 
         with self._activity_lock:
             updating = self._updating.is_set()
-            if not updating and self.active is not None:
-                raise RuntimeError("server dispatched a second task to a busy Worker")
             if not updating:
                 token = CancellationToken()
                 approval = RemoteApprovalStrategy(self._send, str(task["task_id"]), token)
@@ -766,7 +770,7 @@ class WorkerClient:
                     session_id=str(task.get("session_id", "")),
                     workspace_id=workspace_id,
                 )
-                self.active = active
+                self.active_runs[str(task["task_id"])] = active
 
         if updating:
             session_id = str(task.get("session_id", ""))
@@ -814,8 +818,8 @@ class WorkerClient:
                 )
             finally:
                 with self._activity_lock:
-                    if self.active is active:
-                        self.active = None
+                    if self.active_runs.get(active.task_id) is active:
+                        self.active_runs.pop(active.task_id, None)
 
         active.thread = threading.Thread(target=target, name=f"worker-{active.task_id}", daemon=True)
         active.thread.start()

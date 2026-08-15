@@ -801,3 +801,37 @@ def test_worker_auth_owner_isolation_and_revocation(client, app):
         headers={"Authorization": f"Bearer {paired['device_token']}"},
     ):
         pass
+
+
+def test_single_worker_runs_concurrent_tasks_up_to_quota(client):
+    paired = _pair(client)
+    headers = {"Authorization": f"Bearer {paired['device_token']}"}
+    with client.websocket_connect("/api/v1/workers/connect", headers=headers) as socket:
+        workspace_id = _hello(socket)
+
+        def create_session_and_task(label):
+            session = client.post(
+                "/api/v1/sessions", json={"workspace_id": workspace_id, "title": label}
+            ).json()
+            return client.post(
+                "/api/v1/tasks",
+                json={"session_id": session["session_id"], "input": label},
+            )
+
+        first = create_session_and_task("first")
+        assert first.status_code in {200, 202}
+        assert socket.receive_json()["type"] == "task.start"
+
+        second = create_session_and_task("second")
+        assert second.status_code in {200, 202}
+        assert socket.receive_json()["type"] == "task.start"
+
+        third_session = client.post(
+            "/api/v1/sessions", json={"workspace_id": workspace_id, "title": "third"}
+        ).json()
+        third = client.post(
+            "/api/v1/tasks",
+            json={"session_id": third_session["session_id"], "input": "third"},
+        )
+        assert third.status_code == 409
+        assert third.json()["error"]["code"] == "worker_concurrency_limit"
