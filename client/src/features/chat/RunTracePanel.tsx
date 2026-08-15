@@ -215,7 +215,7 @@ export default function RunTracePanel({ open, session, activeRunId, provider, on
   return (
     <div className="flex h-full min-h-0 flex-col bg-white" aria-label="运行审计界面">
       <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-stone-200 px-4 py-2.5">
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-semibold text-stone-800">{session?.title || '新对话'} · 运行审计</div>
           <div className="mt-0.5 font-mono text-[10px] text-stone-400">{activeRun?.runId ?? '无运行记录'}</div>
         </div>
@@ -243,7 +243,7 @@ export default function RunTracePanel({ open, session, activeRunId, provider, on
             <div className="px-5 py-2"><div className="text-[10px] uppercase text-stone-400">Calls</div><div className="font-mono text-sm text-stone-800">{toolCalls}</div></div>
           </div>
 
-          <div className="grid min-h-0 flex-1 grid-cols-[136px_minmax(0,1fr)] lg:grid-cols-[152px_minmax(0,1fr)_340px]">
+          <div className="grid min-h-0 flex-1 grid-cols-[136px_minmax(0,1fr)] overflow-y-auto lg:grid-cols-[152px_minmax(0,1fr)_340px] lg:overflow-hidden">
             <AuditTimeline rows={rows} selectedEventId={effectiveSelectedEventId} onSelect={selectAndJump} onRangeChange={setRangeEventIds} />
 
             <section className="flex min-h-0 min-w-0 flex-col border-r border-stone-200">
@@ -257,7 +257,7 @@ export default function RunTracePanel({ open, session, activeRunId, provider, on
                   onChange={(event) => setQuery(event.target.value)}
                 />
               </div>
-              <div className="min-h-0 flex-1 overflow-y-auto">
+              <div className="max-h-80 min-h-0 flex-1 overflow-y-auto lg:max-h-none">
                 {filteredRows.map((row, index) => (
                   <button
                     id={`audit-event-${row.event_id}`}
