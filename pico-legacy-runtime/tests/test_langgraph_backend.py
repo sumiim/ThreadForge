@@ -1266,3 +1266,39 @@ def test_v11_system_token_budget_remains_a_hard_limit(tmp_path):
     exhausted = [event for event in result.events if event.get("event") == "plan_budget_exhausted"]
     assert exhausted[-1]["budget_keys"] == ["input_tokens"]
     assert not any(event.get("event") == "plan_budget_extended" for event in result.events)
+
+
+def test_v11_review_auto_passes_when_step_budget_exhausted(tmp_path):
+    from langgraph_pico import run_agent
+
+    first_plan = json.loads(_v11_plan("read_only", ["read_file"]))
+    first_plan["budgets"]["tool_calls"] = 2
+    revised_plan = json.loads(json.dumps(first_plan))
+    revised_plan["revision"] = 2
+    agent, _, _ = _build_runtime(
+        tmp_path,
+        [
+            json.dumps(first_plan),
+            '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
+            "<final>The first answer.</final>",
+            "status: needs_fix\nissue: still incomplete",
+            json.dumps(revised_plan),
+            '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
+            "<final>The second answer.</final>",
+            "status: needs_fix\nissue: still incomplete",
+        ],
+    )
+
+    result = run_agent(
+        agent,
+        "Inspect README",
+        task_mode="auto",
+        requires_research=False,
+        enable_planning=True,
+        step_budget=2,
+    )
+
+    assert result.task_state.stop_reason == "final_answer_returned"
+    assert "预算已用尽" in result.final_answer
+    assert "The second answer." in result.final_answer
+    assert "still incomplete" in result.final_answer

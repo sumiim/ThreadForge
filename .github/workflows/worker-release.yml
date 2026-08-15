@@ -42,7 +42,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip build cryptography pyinstaller
           python -m pip install -e ./pico-legacy-runtime -e ./agent-orchestrator -e ./sandbox-workers -e "./local-worker[dev]"
-          choco install nsis --no-progress -y
+          ./scripts/install-nsis.ps1
 
       - name: Test Worker
         shell: pwsh
