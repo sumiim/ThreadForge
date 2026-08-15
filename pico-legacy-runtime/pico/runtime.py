@@ -520,7 +520,9 @@ class Pico:
         canonical_path = self.memory.canonical_path(path)
         # 不是所有工具结果都进入工作记忆。
         # 读文件会生成摘要；写文件/patch 会让旧摘要失效，因为它们可能过期了。
-        if name in {"read_file", "write_file", "patch_file"}:
+        if name == "list_files":
+            self.memory.remember_listing(canonical_path)
+        elif name in {"read_file", "write_file", "patch_file"}:
             self.memory.remember_file(canonical_path)
         if name == "read_file":
             summary = memorylib.summarize_read_result(result)

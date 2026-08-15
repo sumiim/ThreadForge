@@ -1302,3 +1302,29 @@ def test_v11_review_auto_passes_when_step_budget_exhausted(tmp_path):
     assert "预算已用尽" in result.final_answer
     assert "The second answer." in result.final_answer
     assert "still incomplete" in result.final_answer
+
+
+def test_read_only_answer_merges_listed_dirs_into_parent_memory(tmp_path):
+    from langgraph_pico import run_agent
+
+    agent, _, _ = _build_runtime(
+        tmp_path,
+        [
+            _v11_plan("read_only", ["list_files"]),
+            '<tool>{"name":"list_files","args":{"path":"."}}</tool>',
+            "<final>Listed the project root.</final>",
+            "status: pass\nThe answer is grounded.",
+        ],
+    )
+
+    result = run_agent(
+        agent,
+        "List the project root",
+        task_mode="auto",
+        requires_research=False,
+        enable_planning=True,
+    )
+
+    assert result.task_state.stop_reason == "final_answer_returned"
+    listed = [item["path"] for item in agent.memory.to_dict()["working"]["listed_dirs"]]
+    assert "." in listed
