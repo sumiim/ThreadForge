@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Alert, Button, Dropdown, Form, Input, Modal, Progress, Spin, Tag, Tooltip, Typography } from 'antd'
+import { Alert, Button, Dropdown, Form, Input, Modal, Progress, Select, Spin, Tag, Tooltip, Typography } from 'antd'
 import {
   DeleteOutlined,
   FolderOpenOutlined,
@@ -53,7 +53,7 @@ export default function WorkerDevices() {
   const [uninstallingDeviceId, setUninstallingDeviceId] = useState('')
   const [updatingDeviceId, setUpdatingDeviceId] = useState('')
   const [statusClock, setStatusClock] = useState(0)
-  const [modelForm] = Form.useForm<{ base_url: string; api_key: string; model: string }>()
+  const [modelForm] = Form.useForm<{ base_url: string; api_key: string; model: string; model_provider: string }>()
   const [modal, modalContextHolder] = Modal.useModal()
   const operationVersion = useRef(0)
   const workerServer = window.threadforge?.apiBaseUrl ?? window.location.origin
@@ -234,6 +234,7 @@ export default function WorkerDevices() {
       base_url: 'https://api.openai.com/v1',
       api_key: '',
       model: device.model || 'gpt-5.4',
+      model_provider: '',
     })
   }
 
@@ -471,6 +472,16 @@ export default function WorkerDevices() {
           </Form.Item>
           <Form.Item label="模型" name="model" rules={[{ required: true, message: '请输入模型名称' }]}>
             <Input autoComplete="off" placeholder="gpt-5.4" />
+          </Form.Item>
+          <Form.Item label="接口协议" name="model_provider">
+            <Select
+              options={[
+                { value: '', label: 'OpenAI Responses API（默认）' },
+                { value: 'chat_completions', label: 'Chat Completions（SiliconFlow 等）' },
+                { value: 'anthropic', label: 'Anthropic Messages API' },
+                { value: 'openai', label: 'OpenAI（显式指定 Responses API）' },
+              ]}
+            />
           </Form.Item>
           <Form.Item label="API Key" name="api_key" rules={[{ required: true, message: '请输入 API Key' }]}>
             <Input.Password autoComplete="new-password" />

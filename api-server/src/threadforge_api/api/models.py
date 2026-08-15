@@ -31,6 +31,16 @@ class ConfigureWorkerModelRequest(BaseModel):
     base_url: str = Field(min_length=1, max_length=2048)
     api_key: str = Field(min_length=1, max_length=8192)
     model: str = Field(min_length=1, max_length=200)
+    model_provider: str = Field(default="", max_length=40)
+
+    @field_validator("model_provider")
+    @classmethod
+    def _valid_model_provider(cls, value: str) -> str:
+        value = str(value).strip().lower()
+        allowed = frozenset({"", "openai", "chat_completions", "anthropic"})
+        if value not in allowed:
+            raise ValueError(f"model_provider must be one of: {', '.join(sorted(allowed))}")
+        return value
 
     @field_validator("base_url")
     @classmethod

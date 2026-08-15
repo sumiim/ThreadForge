@@ -19,7 +19,11 @@ from pico import Pico
 from pico.approval import ApprovalOutcome, ApprovalRequest, ApprovalStrategy
 from pico.event_sink import CompositeSink, EventCollector, EventSink, JsonlSink
 from pico.execution_hooks import RunCancelled
-from pico.providers.clients import OpenAICompatibleModelClient
+from pico.providers.clients import (
+    AnthropicCompatibleModelClient,
+    OpenAICompatibleModelClient,
+    OpenAICompletionsModelClient,
+)
 from pico.run_lifecycle import finalize_failed_run
 from pico.run_store import RunStore
 from pico.security import (
@@ -568,13 +572,15 @@ def run_task(
 
     shell_factory = _sandbox_shell_factory(settings, send_runtime_event)
 
+    model_provider = str(settings.get("model_provider", "") or os.environ.get("PICO_MODEL_PROVIDER", "")).strip().lower()
     model_timeout = int(settings.get("model_timeout_seconds", 120))
     model_max_attempts = max(1, min(5, int(settings.get("model_max_attempts", 3))))
     if model_client_factory is not None:
         provider_model_client = model_client_factory()
         router_provider_client = provider_model_client
     else:
-        provider_model_client = OpenAICompatibleModelClient(
+        provider_model_client = _create_model_client(
+            model_provider=model_provider,
             model=requested_model,
             base_url=_required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
             api_key=_required_env("PICO_OPENAI_API_KEY"),
@@ -588,7 +594,8 @@ def run_task(
         router_effort = "none" if "none" in supported_efforts else (
             "low" if "low" in supported_efforts else ""
         )
-        router_provider_client = OpenAICompatibleModelClient(
+        router_provider_client = _create_model_client(
+            model_provider=model_provider,
             model=requested_model,
             base_url=_required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
             api_key=_required_env("PICO_OPENAI_API_KEY"),
@@ -739,6 +746,59 @@ def _required_env(name: str, default: str = "") -> str:
     if not value:
         raise RuntimeError(f"{name} is not configured on the local Worker")
     return value
+
+
+def _create_model_client(
+    *,
+    model_provider: str,
+    model: str,
+    base_url: str,
+    api_key: str,
+    temperature: float,
+    timeout: int,
+    max_attempts: int,
+    reasoning_effort: str = "",
+    supported_reasoning_efforts: tuple[str, ...] = (),
+    instructions: str = "",
+) -> OpenAICompatibleModelClient | AnthropicCompatibleModelClient | OpenAICompletionsModelClient:
+    """Create the correct model client based on the configured provider.
+
+    ``model_provider`` is the normalized value of ``PICO_MODEL_PROVIDER``:
+    - ``""`` or ``"openai"`` → ``OpenAICompatibleModelClient`` (Responses API)
+    - ``"chat_completions"`` → ``OpenAICompletionsModelClient`` (Chat Completions API)
+    - ``"anthropic"`` → ``AnthropicCompatibleModelClient`` (Messages API)
+    """
+    if model_provider == "chat_completions":
+        return OpenAICompletionsModelClient(
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            temperature=temperature,
+            timeout=timeout,
+            max_attempts=max_attempts,
+        )
+    if model_provider == "anthropic":
+        return AnthropicCompatibleModelClient(
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            temperature=temperature,
+            timeout=timeout,
+            max_attempts=max_attempts,
+            instructions=instructions,
+        )
+    # Default: OpenAI Responses API (backwards compatible)
+    return OpenAICompatibleModelClient(
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+        temperature=temperature,
+        timeout=timeout,
+        max_attempts=max_attempts,
+        reasoning_effort=reasoning_effort,
+        supported_reasoning_efforts=supported_reasoning_efforts,
+        instructions=instructions,
+    )
 
 
 def _supported_reasoning_efforts() -> tuple[str, ...]:

@@ -1238,6 +1238,7 @@ def test_history_read_and_model_configuration_protocol(tmp_path):
                 "request_id": "model_test",
                 "status": "completed",
                 "model": "model-b",
+                "model_provider": "",
                 "model_capabilities": {
                     "provider": "openai-compatible",
                     "models": [

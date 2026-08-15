@@ -327,6 +327,7 @@ class WorkerHub:
         base_url: str,
         api_key: str,
         model: str,
+        model_provider: str = "",
     ) -> dict:
         self._devices.get_for_owner(device_id, owner_id)
         request_id = "model_" + uuid.uuid4().hex
@@ -347,6 +348,7 @@ class WorkerHub:
                     "base_url": base_url,
                     "api_key": api_key,
                     "model": model,
+                    "model_provider": model_provider,
                 },
             )
             result = await asyncio.wait_for(future, timeout=10)
@@ -893,6 +895,7 @@ class WorkerHub:
         connection.device = self._devices.update_presence(
             connection.device.device_id,
             model=str(message.get("model", "")),
+            model_provider=str(message.get("model_provider", "")),
             model_configured=bool(message.get("model_configured", False)),
             version=version,
             protocol_version=protocol_version,
@@ -1098,6 +1101,7 @@ class WorkerHub:
             connection.device = self._devices.update_presence(
                 connection.device.device_id,
                 model=model,
+                model_provider=str(message.get("model_provider", "")),
                 model_configured=True,
                 version=connection.device.version,
                 protocol_version=connection.device.protocol_version,
@@ -1336,6 +1340,7 @@ class WorkerHub:
         connection.device = self._devices.update_presence(
             connection.device.device_id,
             model=connection.device.model,
+            model_provider=connection.device.model_provider,
             model_configured=connection.device.model_configured,
             version=connection.device.version,
             protocol_version=connection.device.protocol_version,

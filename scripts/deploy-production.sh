@@ -56,6 +56,9 @@ fi
 
 git pull --ff-only origin main
 "${compose[@]}" config --quiet
+if ! docker builder prune --all --force >/dev/null; then
+    echo "Warning: failed to prune Docker build cache before deploy." >&2
+fi
 "${compose[@]}" up -d --build --remove-orphans "${services[@]}"
 
 for ((attempt = 1; attempt <= HEALTH_ATTEMPTS; attempt++)); do

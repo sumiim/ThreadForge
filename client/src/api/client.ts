@@ -213,7 +213,7 @@ export function getWorkspaceSelection(
 
 export function configureWorkerModel(
   deviceId: string,
-  config: { base_url: string; api_key: string; model: string },
+  config: { base_url: string; api_key: string; model: string; model_provider?: string },
 ): Promise<{ status: string; model: string }> {
   return request(`/api/v1/devices/${encodeURIComponent(deviceId)}/model-config`, {
     method: 'PUT',
