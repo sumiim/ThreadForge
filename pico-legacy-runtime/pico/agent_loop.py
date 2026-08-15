@@ -28,6 +28,26 @@ def _new_tool_call_id():
     return "call_" + uuid.uuid4().hex
 
 
+def _best_effort_step_limit(task_state, reason):
+    """预算/重试耗尽时的可读收尾：列出已收集证据，而非一句英文裸失败。"""
+    evidence = list(task_state.evidence or [])
+    header = f"⚠️ 运行中断：{reason}，未能在预算内产出最终结论。"
+    if not evidence:
+        return header + " 本轮未成功读取任何工作区证据，建议缩小请求范围后重试。"
+    lines = []
+    for item in evidence[-12:]:
+        tool = str(item.get("tool_name", "tool"))
+        paths = item.get("relative_paths") or []
+        path_text = "、".join(str(path) for path in paths[:4])
+        lines.append(f"- {tool}：{path_text or '（无路径）'}")
+    return (
+        header
+        + " 本轮已收集的部分证据：\n"
+        + "\n".join(lines)
+        + "\n\n请缩小范围、换一个更具体的请求，或提高预算后重试。"
+    )
+
+
 MAX_CONSECUTIVE_TALKS = 2
 MAX_PROTOCOL_REPAIRS = 1
 
@@ -512,10 +532,10 @@ class AgentLoop:
             return final
 
         if protocol_failed or (attempts >= max_attempts and tool_steps < agent.max_steps):
-            final = "Stopped after too many malformed model responses without a valid tool call or final answer."
+            final = _best_effort_step_limit(task_state, "模型反复返回无效输出（retry_limit_reached）")
             task_state.stop_retry_limit(final)
         else:
-            final = "Stopped after reaching the step limit without a final answer."
+            final = _best_effort_step_limit(task_state, "步数预算已用尽（budget_exhausted）")
             task_state.stop_step_limit(final)
         task_state.set_phase(PHASE_FINAL, next_step="Explain the budget or execution blocker")
         agent.run_store.write_task_state(task_state)

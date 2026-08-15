@@ -288,6 +288,8 @@ export interface RunIndexItem {
   message_id?: string
   tool_name?: string
   tool_call_id?: string
+  /** 只读工具脱敏后的参数预览（如 list_files 的 path、read_file 的行区间）。 */
+  args_preview?: Record<string, unknown>
   intent?: string
   step_count?: number
   status?: string

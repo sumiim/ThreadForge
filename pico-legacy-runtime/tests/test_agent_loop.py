@@ -63,7 +63,8 @@ def test_agent_loop_rejects_tool_during_final_only_round(tmp_path):
 
     answer = agent.ask("Inspect the workspace")
 
-    assert answer == "Stopped after reaching the step limit without a final answer."
+    assert "步数预算已用尽" in answer
+    assert "list_files" in answer
     assert agent.current_task_state.tool_steps == 1
     assert agent.current_task_state.read_files == 0
     assert len(agent.model_client.outputs) == 1

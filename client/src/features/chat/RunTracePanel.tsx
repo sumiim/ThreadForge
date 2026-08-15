@@ -293,6 +293,11 @@ export default function RunTracePanel({ open, session, activeRunId, provider, on
                     <dt className="text-stone-400">Provider</dt><dd className="text-stone-700">{provider ?? '未记录'}</dd>
                     <dt className="text-stone-400">Reasoning</dt><dd className="text-stone-700">{activeRun.reasoningEffort ?? '未指定'}</dd>
                     <dt className="text-stone-400">Tool</dt><dd className="break-all text-stone-700">{selectedEvent.tool_name ?? '—'}</dd>
+                    {selectedEvent.args_preview ? (
+                      <>
+                        <dt className="text-stone-400">参数</dt><dd className="break-all font-mono text-[10px] text-stone-700">{JSON.stringify(selectedEvent.args_preview)}</dd>
+                      </>
+                    ) : null}
                     <dt className="text-stone-400">Attempt</dt><dd className="text-stone-700">{selectedEvent.attempt ?? '—'}</dd>
                   </dl>
                   <div>

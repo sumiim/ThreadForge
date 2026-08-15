@@ -177,7 +177,8 @@ def test_agent_stops_after_one_protocol_repair(tmp_path):
 
     answer = agent.ask("Do the task")
 
-    assert answer == "Stopped after too many malformed model responses without a valid tool call or final answer."
+    assert "retry_limit_reached" in answer
+    assert "运行中断" in answer
     assert agent.current_task_state.stop_reason == "retry_limit_reached"
     assert agent.current_task_state.attempts == 2
     assert agent.current_task_state.malformed_output_recovered == 2
