@@ -403,6 +403,29 @@ def _merge_child_exploration(agent, task_state):
     agent.session["memory"] = agent.memory.to_dict()
 
 
+def _explored_summary(agent):
+    """把本 run 已探索状态（listed_dirs / recent_files / 已完成 checklist）拼成 planner 可读摘要。"""
+    parts = []
+    memory = getattr(agent, "memory", None)
+    if memory is not None and hasattr(memory, "render_memory_text"):
+        try:
+            memory_text = str(memory.render_memory_text() or "").strip()
+        except Exception:
+            memory_text = ""
+        if memory_text:
+            parts.append(memory_text)
+    task_state = getattr(agent, "current_task_state", None)
+    checklist = list(getattr(task_state, "checklist", []) or [])
+    if checklist:
+        completed = set(getattr(task_state, "completed_items", []) or [])
+        lines = ["Checklist:"]
+        lines.extend(
+            f"  - [{'x' if item in completed else ' '}] {item}" for item in checklist
+        )
+        parts.append("\n".join(lines))
+    return "\n".join(parts)
+
+
 def _planned_read_tools(state, agent):
     if not state["planning_enabled"]:
         return ()
@@ -568,6 +591,7 @@ def prepare_plan_node(state: AgentState, config: RunnableConfig) -> AgentState:
                     f"{error_code}: {error_message}" if attempt > 1 and error_code else ""
                 ),
                 minimum_budgets=minimum_budgets,
+                explored_summary=_explored_summary(agent),
             ),
             PLANNER_MAX_NEW_TOKENS,
             stage="planning",

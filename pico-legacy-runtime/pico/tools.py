@@ -71,6 +71,48 @@ DELEGATE_TOOL_SPEC = {
     "description": "Ask a bounded read-only child agent to investigate.",
 }
 
+TOOL_SCHEMA_VERSION = "1"
+
+
+class ToolRegistry:
+    """版本化工具注册表——agent 工具面的唯一事实来源。
+
+    ``specs`` 描述「模型能申请哪些动作」（schema / risky / description），
+    ``runners`` 是每个动作的执行实现。扩展（MCP / Skill，V1.4）只往注册表
+    加条目，不改变循环与 prompt 组装。当前是纯重构：``build_tool_registry``
+    是默认注册表的薄投影，保持现有调用点零行为变更。
+    """
+
+    def __init__(self, specs=None, runners=None, version=TOOL_SCHEMA_VERSION):
+        self.version = version
+        self.specs = dict(specs if specs is not None else BASE_TOOL_SPECS)
+        self.runners = dict(runners if runners is not None else _TOOL_RUNNERS)
+
+    def register(self, name, spec, runner):
+        self.specs[str(name)] = dict(spec)
+        if runner is not None:
+            self.runners[str(name)] = runner
+        return self
+
+    def names(self):
+        return set(self.specs) | {"delegate"}
+
+    def build(self, context):
+        # 工具不是动态发现的，而是显式注册的。
+        # 这样模型看到的是一个有边界、可审计的动作集合。
+        tools = {
+            name: {**spec, "run": partial(self.runners[name], context)}
+            for name, spec in self.specs.items()
+        }
+        # 子 agent 是刻意做成受限能力的：一旦深度耗尽，
+        # 就连 delegate 这个工具都不再暴露给模型。
+        if context.depth < context.max_depth:
+            tools["delegate"] = {**DELEGATE_TOOL_SPEC, "run": partial(tool_delegate, context)}
+        return tools
+
+    def definitions(self, tools):
+        return provider_tool_definitions(tools)
+
 
 def legal_tool_names():
     return set(BASE_TOOL_SPECS) | {"delegate"}
@@ -129,17 +171,8 @@ TOOL_EXAMPLES = {
 
 
 def build_tool_registry(context):
-    # 工具不是动态发现的，而是显式注册的。
-    # 这样模型看到的是一个有边界、可审计的动作集合。
-    tools = {
-        name: {**spec, "run": partial(_TOOL_RUNNERS[name], context)}
-        for name, spec in BASE_TOOL_SPECS.items()
-    }
-    # 子 agent 是刻意做成受限能力的：一旦深度耗尽，
-    # 就连 delegate 这个工具都不再暴露给模型。
-    if context.depth < context.max_depth:
-        tools["delegate"] = {**DELEGATE_TOOL_SPEC, "run": partial(tool_delegate, context)}
-    return tools
+    """把默认工具注册表投影成当前 context 的运行时工具表（薄投影，零行为变更）。"""
+    return _DEFAULT_REGISTRY.build(context)
 
 
 def tool_example(name):
@@ -432,3 +465,9 @@ _TOOL_RUNNERS = {
     "write_file": tool_write_file,
     "patch_file": tool_patch_file,
 }
+
+
+# 默认注册表（builtin 6 工具 + 条件 delegate）。模块级单例只在构建时
+# 持有 specs 与 runner 函数引用，不持有任何 context 绑定的 partial，
+# 因此跨 context 复用安全。
+_DEFAULT_REGISTRY = ToolRegistry()
