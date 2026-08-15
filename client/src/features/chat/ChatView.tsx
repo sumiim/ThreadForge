@@ -12,6 +12,7 @@ interface ChatViewProps {
   session: Session
   historyStatus: HistoryStatus
   running: boolean
+  isMobile?: boolean
   stopping: boolean
   agentProgress: AgentProgress | null
   onSend: Parameters<typeof Composer>[0]['onSend']
@@ -35,7 +36,7 @@ const phaseLabels: Record<string, string> = {
   FINAL: '已完成',
 }
 
-export default function ChatView({ session, historyStatus, running, stopping, agentProgress, onSend, onRetryHistory, onStop, onSelectRun, onApprove, onReject }: ChatViewProps) {
+export default function ChatView({ session, historyStatus, running, isMobile = false, stopping, agentProgress, onSend, onRetryHistory, onStop, onSelectRun, onApprove, onReject }: ChatViewProps) {
   const empty = session.messages.length === 0
 
   // 待审批的工具调用（per_call_only，逐次审批）
@@ -82,14 +83,16 @@ export default function ChatView({ session, historyStatus, running, stopping, ag
         </div>
       ) : null}
       <div className="flex min-h-0 flex-1">
-        <RunTimeline
-          runs={session.runs ?? []}
-          activeRunId={session.activeRunId ?? session.lastRunId}
-          onSelectRun={onSelectRun}
-          inputs={session.messages
-            .filter((message) => message.role === 'user')
-            .map((message) => ({ id: message.id, content: message.content, createdAt: message.createdAt }))}
-        />
+        {!isMobile ? (
+          <RunTimeline
+            runs={session.runs ?? []}
+            activeRunId={session.activeRunId ?? session.lastRunId}
+            onSelectRun={onSelectRun}
+            inputs={session.messages
+              .filter((message) => message.role === 'user')
+              .map((message) => ({ id: message.id, content: message.content, createdAt: message.createdAt }))}
+          />
+        ) : null}
         <div className="flex min-w-0 min-h-0 flex-1">
         {historyStatus === 'loading' && !session.draft ? (
         <div id="run-scroll-container" className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-sm text-stone-500" role="status">

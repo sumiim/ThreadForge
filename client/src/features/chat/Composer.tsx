@@ -44,7 +44,7 @@ export default function Composer({ model, modelOptions, running, stopping = fals
   }
 
   return (
-    <div className="shrink-0 px-6 pb-6 lg:px-10">
+    <div className="shrink-0 px-3 pb-4 sm:px-6 sm:pb-6 lg:px-10">
       <div className="mx-auto max-w-4xl">
         <div className="rounded-2xl border border-stone-200 bg-white shadow-sm transition-shadow focus-within:border-blue-500 focus-within:ring-4 focus-within:ring-blue-100">
           <div className="px-4 pb-1 pt-3">
@@ -66,9 +66,9 @@ export default function Composer({ model, modelOptions, running, stopping = fals
               style={{ padding: 0, border: 'none', boxShadow: 'none', outline: 'none' }}
             />
           </div>
-          <div className="flex items-center justify-between border-t border-stone-100 px-4 py-2">
-            <span className="font-mono text-[11px] text-stone-500">Enter 发送 · Shift + Enter 换行</span>
-            <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 border-t border-stone-100 px-4 py-2">
+            <span className="hidden font-mono text-[11px] text-stone-500 sm:inline">Enter 发送 · Shift + Enter 换行</span>
+            <div className="ml-auto flex items-center gap-3">
               <div className="flex h-8 items-center gap-1">
                 <Select
                   size="small"

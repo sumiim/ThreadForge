@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Alert, Button, Modal, Progress, Radio, Spin, Tag } from 'antd'
+import { Alert, Button, Grid, Modal, Progress, Radio, Spin, Tag } from 'antd'
 import {
   CheckCircleOutlined,
   DownloadOutlined,
@@ -83,6 +83,8 @@ export default function NewSessionModal({
   const [connecting, setConnecting] = useState(false)
   const [refreshingWorkspaces, setRefreshingWorkspaces] = useState(false)
   const [updatingDeviceId, setUpdatingDeviceId] = useState('')
+  const screens = Grid.useBreakpoint()
+  const isMobile = screens.md === false
 
   const manuallyUpdate = async (device: Device) => {
     try {
@@ -476,7 +478,8 @@ export default function NewSessionModal({
       okText={intent === 'session' ? '创建' : '关闭'}
       cancelText="取消"
       okButtonProps={intent === 'session' ? { disabled: !value } : undefined}
-      width={560}
+      width={isMobile ? '100%' : 560}
+      styles={{ body: isMobile ? { padding: '16px 14px' } : undefined }}
     >
       {intent === 'host' ? renderDownloadPanel() : selectsNewWorkspace ? (
         devices === null ? (

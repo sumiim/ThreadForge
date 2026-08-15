@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Avatar, Button, ConfigProvider, Drawer, Dropdown, Input, Layout, Spin, Tag } from 'antd'
+import { Avatar, Button, ConfigProvider, Drawer, Dropdown, Grid, Input, Layout, Spin, Tag } from 'antd'
 import {
   AuditOutlined,
   FolderOpenOutlined,
   LogoutOutlined,
+  MenuOutlined,
   SafetyCertificateOutlined,
 } from '@ant-design/icons'
 import type { AuthStatus } from './api/types'
@@ -62,6 +63,21 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [traceOpen, setTraceOpen] = useState(false)
   const [view, setView] = useState<PanelView>('chat')
+  // 移动端断点：< md(768px) 时侧边栏收进 Drawer、Header 精简、隐藏运行轨迹左轨
+  const screens = Grid.useBreakpoint()
+  const isMobile = screens.md === false
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  const closeMobileNav = () => {
+    if (isMobile) setMobileNavOpen(false)
+  }
+  const handleSelect = (id: string) => {
+    select(id)
+    closeMobileNav()
+  }
+  const handleNavigate = (next: PanelView) => {
+    setView(next)
+    closeMobileNav()
+  }
   const hasRun = active?.lastRunId != null
   const pageTitle = view === 'chat' ? (active?.title ?? 'ThreadForge') : view === 'skills' ? 'Skills' : 'MCP'
   const activePath = active
@@ -93,43 +109,74 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
     void getLatestWorkerRelease().catch(() => undefined)
   }, [])
 
+  const sessionPanel = (
+    <SessionPanel
+      sessions={sessions}
+      activeId={activeId}
+      activeView={view}
+      workspaces={workspaces}
+      loading={loading}
+      onSelect={handleSelect}
+      onCreate={createSession}
+      onNavigate={handleNavigate}
+      onOpenSettings={() => setSettingsOpen(true)}
+      onWorkspacesChanged={refreshWorkspaces}
+      onRenameDevice={renameDevice}
+      onRenameWorkspace={renameWorkspace}
+      onRenameSession={renameSession}
+      onDeleteWorkspace={deleteWorkspace}
+      onDeleteSession={deleteSession}
+      themeMode={mode}
+      onToggleTheme={toggleTheme}
+    />
+  )
+
   return (
     // 主题 ConfigProvider：antd 组件随亮/暗切换；Tailwind 侧由 .dark 类变量色板接管
     <ConfigProvider theme={mode === 'dark' ? darkThemeConfig : themeConfig}>
       <Layout className="h-screen">
-        <Sider
-          width={280}
-          theme={mode === 'dark' ? 'dark' : 'light'}
-          className="border-r border-stone-200"
-        >
-          <SessionPanel
-            sessions={sessions}
-            activeId={activeId}
-            activeView={view}
-            workspaces={workspaces}
-            loading={loading}
-            onSelect={select}
-            onCreate={createSession}
-            onNavigate={setView}
-            onOpenSettings={() => setSettingsOpen(true)}
-            onWorkspacesChanged={refreshWorkspaces}
-            onRenameDevice={renameDevice}
-            onRenameWorkspace={renameWorkspace}
-            onRenameSession={renameSession}
-            onDeleteWorkspace={deleteWorkspace}
-            onDeleteSession={deleteSession}
-            themeMode={mode}
-            onToggleTheme={toggleTheme}
-          />
-        </Sider>
+        {isMobile ? (
+          <Drawer
+            placement="left"
+            width={280}
+            open={mobileNavOpen}
+            onClose={() => setMobileNavOpen(false)}
+            closable={false}
+            styles={{ body: { padding: 0, height: '100%', overflow: 'hidden' } }}
+          >
+            {sessionPanel}
+          </Drawer>
+        ) : (
+          <Sider
+            width={280}
+            theme={mode === 'dark' ? 'dark' : 'light'}
+            className="border-r border-stone-200"
+          >
+            {sessionPanel}
+          </Sider>
+        )}
 
         <Layout>
-          <Header className="flex items-center justify-between">
-            <div className="truncate text-sm font-medium text-stone-800">{pageTitle}</div>
+          <Header className={`flex items-center justify-between ${isMobile ? '!px-3' : ''}`}>
+            <div className="flex min-w-0 items-center gap-2">
+              {isMobile ? (
+                <button
+                  type="button"
+                  aria-label="打开导航"
+                  onClick={() => setMobileNavOpen(true)}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-stone-600 transition-colors hover:bg-stone-100"
+                >
+                  <MenuOutlined />
+                </button>
+              ) : null}
+              <div className="truncate text-sm font-medium text-stone-800">{pageTitle}</div>
+            </div>
             <div className="flex min-w-0 shrink-0 items-center gap-2 font-mono text-[11px]">
-              <Tag icon={<SafetyCertificateOutlined />} color={runtimeConfig?.container_sandbox_enabled ? 'green' : 'warning'}>
-                {executionLabel}
-              </Tag>
+              {!isMobile ? (
+                <Tag icon={<SafetyCertificateOutlined />} color={runtimeConfig?.container_sandbox_enabled ? 'green' : 'warning'}>
+                  {executionLabel}
+                </Tag>
+              ) : null}
               <Button
                 type="text"
                 size="small"
@@ -140,10 +187,12 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
               >
                 运行审计
               </Button>
-              <div className="flex min-w-0 items-center gap-1.5" title={activePath}>
-                <FolderOpenOutlined className="shrink-0 text-stone-400" />
-                <span className="max-w-[280px] truncate text-stone-500">{activePath}</span>
-              </div>
+              {!isMobile ? (
+                <div className="flex min-w-0 items-center gap-1.5" title={activePath}>
+                  <FolderOpenOutlined className="shrink-0 text-stone-400" />
+                  <span className="max-w-[280px] truncate text-stone-500">{activePath}</span>
+                </div>
+              ) : null}
               {auth.user ? (
                 <Dropdown
                   trigger={['click']}
@@ -179,6 +228,7 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
                   session={active}
                   historyStatus={historyStatus}
                   running={running}
+                  isMobile={isMobile}
                   agentProgress={agentProgress}
                   onSend={sendMessage}
                   onRetryHistory={retryHistory}
