@@ -34,6 +34,7 @@ class Task:
     device_id: str = ""
     status: TaskStatus = TaskStatus.QUEUED
     max_steps: int = 6
+    permission_mode: str = "default"
     model_id: str = ""
     reasoning_effort: str = "none"
     run_index: list[dict] = field(default_factory=list)

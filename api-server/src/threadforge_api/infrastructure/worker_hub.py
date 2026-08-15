@@ -741,6 +741,7 @@ class WorkerHub:
                         "workspace_id": task.workspace_id,
                         "input": task.input,
                         "max_steps": task.max_steps,
+                        "permission_mode": task.permission_mode,
                         "session": session,
                         "settings": {
                             "max_new_tokens": self._settings.max_new_tokens,

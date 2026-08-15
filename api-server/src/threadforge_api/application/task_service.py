@@ -65,6 +65,7 @@ class TaskService:
         *,
         model_id: str | None = None,
         reasoning_effort: str = "none",
+        permission_mode: str = "default",
     ) -> Task:
         owner_id = canonical_owner_id(owner_id)
         validate_session_id(session_id)
@@ -123,6 +124,7 @@ class TaskService:
             run_id=run_id,
             input=input_text,
             max_steps=max_steps,
+            permission_mode=str(permission_mode or "default").strip(),
             execution_environment=execution_environment,
             device_id=device_id,
             model_id=selected_model,
@@ -165,6 +167,7 @@ class TaskService:
                         owner_id=owner_id,
                         input=input_text,
                         max_steps=max_steps,
+                        permission_mode=str(permission_mode or "default").strip(),
                         session_data=session,
                     )
                 )

@@ -46,6 +46,7 @@ def create_task(
         actor.owner_id,
         model_id=body.model_id,
         reasoning_effort=body.reasoning_effort,
+        permission_mode=body.permission_mode,
     )
     return TaskQueuedResponse(
         task_id=task.task_id,
