@@ -1328,3 +1328,27 @@ def test_read_only_answer_merges_listed_dirs_into_parent_memory(tmp_path):
     assert result.task_state.stop_reason == "final_answer_returned"
     listed = [item["path"] for item in agent.memory.to_dict()["working"]["listed_dirs"]]
     assert "." in listed
+
+
+def test_explored_summary_renders_memory_and_checklist():
+    from types import SimpleNamespace
+
+    from langgraph_pico.graph import _explored_summary
+
+    class _Memory:
+        def render_memory_text(self):
+            return "Memory:\n- listed_dirs: src/, tests/"
+
+    agent = SimpleNamespace(
+        memory=_Memory(),
+        current_task_state=SimpleNamespace(
+            checklist=["list src", "read tests"],
+            completed_items=["list src"],
+        ),
+    )
+
+    summary = _explored_summary(agent)
+
+    assert "listed_dirs: src/, tests/" in summary
+    assert "[x] list src" in summary
+    assert "[ ] read tests" in summary

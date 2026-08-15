@@ -292,6 +292,7 @@ export default function RunTracePanel({ open, session, activeRunId, provider, on
                     <dt className="text-stone-400">Model</dt><dd className="break-all text-stone-700">{activeRun.modelId ?? session?.model ?? '未记录'}</dd>
                     <dt className="text-stone-400">Provider</dt><dd className="text-stone-700">{provider ?? '未记录'}</dd>
                     <dt className="text-stone-400">Reasoning</dt><dd className="text-stone-700">{activeRun.reasoningEffort ?? '未指定'}</dd>
+                    <dt className="text-stone-400">审批模式</dt><dd className="text-stone-700">{activeRun.permissionMode ?? 'default'}</dd>
                     <dt className="text-stone-400">Tool</dt><dd className="break-all text-stone-700">{selectedEvent.tool_name ?? '—'}</dd>
                     {selectedEvent.args_preview ? (
                       <>

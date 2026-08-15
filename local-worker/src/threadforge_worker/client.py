@@ -16,6 +16,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
+from pico.approval import strategy_for_mode
 from pico.security import redact_artifact
 from pico.session_store import SessionStore
 from websockets.exceptions import ConnectionClosed, InvalidMessage, InvalidStatus
@@ -762,7 +763,10 @@ class WorkerClient:
             updating = self._updating.is_set()
             if not updating:
                 token = CancellationToken()
-                approval = RemoteApprovalStrategy(self._send, str(task["task_id"]), token)
+                approval = strategy_for_mode(
+                    str(task.get("permission_mode", "default")),
+                    RemoteApprovalStrategy(self._send, str(task["task_id"]), token),
+                )
                 active = ActiveRun(
                     task_id=str(task["task_id"]),
                     token=token,

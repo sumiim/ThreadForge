@@ -6,7 +6,12 @@ import threading
 from copy import copy
 from dataclasses import dataclass
 
-from pico.approval import ApprovalOutcome, ApprovalRequest, ApprovalStrategy
+from pico.approval import (
+    ApprovalOutcome,
+    ApprovalRequest,
+    ApprovalStrategy,
+    strategy_for_mode,
+)
 from pico.run_store import RunStore
 from pico.security import redact_artifact
 from pico.task_state import (
@@ -45,6 +50,7 @@ class RunRequest:
     input: str
     max_steps: int
     session_data: dict
+    permission_mode: str = "default"
 
 
 class WebApprovalStrategy(ApprovalStrategy):
@@ -218,7 +224,10 @@ class TaskRunner:
                 gate=gate,
                 token=run.token,
             )
-            strategy = WebApprovalStrategy(self._approval_gate, run)
+            strategy = strategy_for_mode(
+                request.permission_mode,
+                WebApprovalStrategy(self._approval_gate, run),
+            )
             model_client = self._model_client_factory()
             fenced_store = FencedRunStore(
                 RunStore(self._settings.data_dir / "runs"),

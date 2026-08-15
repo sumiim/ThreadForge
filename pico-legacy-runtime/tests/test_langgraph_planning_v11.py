@@ -230,6 +230,23 @@ def test_v11_retry_prompt_explains_the_validation_failure_and_array_contract():
     assert "minimum_budgets" in prompt
 
 
+def test_v11_plan_prompt_injects_explored_summary_into_payload_and_prose():
+    prompt = build_plan_prompt(
+        "find the bug",
+        "",
+        {"read_file", "search"},
+        MAXIMUM_BUDGETS,
+        explored_summary="Memory:\n- listed_dirs: src/, tests/",
+    )
+
+    # explored_summary content lands in the trailing PAYLOAD (variable tail, not the stable prose).
+    assert "src/, tests/" in prompt
+    # prose carries the no-duplicate-exploration instruction for replan.
+    assert "do not plan duplicate exploration steps" in prompt
+    # the stable prose prefix is untouched and still present.
+    assert "Create a concise execution plan" in prompt
+
+
 def test_v11_agent_turn_requires_explicit_talk_tool_or_final():
     assert Pico.parse("I am still working.")[0] == "retry"
     assert Pico.parse('{"name":"list_files","args":{"path":"."}}') == (

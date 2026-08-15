@@ -61,6 +61,39 @@ def test_build_tool_registry_binds_runners_to_tool_context(tmp_path):
     assert "delegate" not in tools
 
 
+def test_tool_registry_register_and_build_preserve_legacy_shape(tmp_path):
+    from pico.tools import TOOL_SCHEMA_VERSION, ToolRegistry
+
+    registry = ToolRegistry()
+    assert registry.version == TOOL_SCHEMA_VERSION
+    assert "read_file" in registry.names()
+    assert "delegate" in registry.names()
+
+    def _noop(context, args):
+        return "ok"
+
+    registry.register(
+        "ping",
+        {"schema": {"x": "str"}, "risky": False, "description": "noop"},
+        _noop,
+    )
+    assert "ping" in registry.names()
+
+    context = ToolContext(
+        root=tmp_path,
+        path_resolver=lambda raw_path: Path(tmp_path / raw_path),
+        shell_env_provider=lambda: {"PWD": str(tmp_path)},
+        depth=1,
+        max_depth=1,
+        spawn_delegate=lambda args: "unused",
+    )
+    tools = registry.build(context)
+
+    assert "ping" in tools
+    assert "delegate" not in tools  # depth == max_depth
+    assert callable(tools["ping"]["run"])
+
+
 def test_provider_tool_definitions_are_strict_responses_functions(tmp_path):
     context = ToolContext(
         root=tmp_path,

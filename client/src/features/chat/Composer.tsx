@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react'
-import { Button, Input, Select } from 'antd'
+import { Button, Input, Modal, Select } from 'antd'
 import { SendOutlined, StopOutlined } from '@ant-design/icons'
 
-import type { ModelCapability, ReasoningEffort } from '../../api/types'
+import type { ModelCapability, PermissionMode, ReasoningEffort } from '../../api/types'
 
 interface ComposerProps {
   model: string
@@ -10,7 +10,7 @@ interface ComposerProps {
   running: boolean
   stopping?: boolean
   disabled?: boolean
-  onSend: (content: string, modelId?: string, reasoningEffort?: ReasoningEffort) => void
+  onSend: (content: string, modelId?: string, reasoningEffort?: ReasoningEffort, permissionMode?: PermissionMode) => void
   onStop: () => void
 }
 
@@ -22,6 +22,13 @@ const effortLabels: Record<ReasoningEffort, string> = {
   medium: '中',
   high: '高',
   xhigh: '极高',
+}
+
+const permissionModeLabels: Record<PermissionMode, string> = {
+  plan: '只读规划',
+  acceptEdits: '接受编辑',
+  default: '逐次审批',
+  bypass: '免审批',
 }
 
 export default function Composer({ model, modelOptions, running, stopping = false, disabled = false, onSend, onStop }: ComposerProps) {
@@ -36,10 +43,11 @@ export default function Composer({ model, modelOptions, running, stopping = fals
     : ['none']
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(efforts[0])
   const activeReasoningEffort = efforts.includes(reasoningEffort) ? reasoningEffort : efforts[0]
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
 
   const handleSend = () => {
     if (!value.trim() || running || disabled) return
-    onSend(value, activeModel?.id ?? model, activeReasoningEffort)
+    onSend(value, activeModel?.id ?? model, activeReasoningEffort, permissionMode)
     setValue('')
   }
 
@@ -87,6 +95,29 @@ export default function Composer({ model, modelOptions, running, stopping = fals
                   options={efforts.map((effort) => ({ value: effort, label: effortLabels[effort] }))}
                   className="w-20"
                   aria-label="推理强度"
+                />
+                <Select
+                  size="small"
+                  value={permissionMode}
+                  disabled={running || disabled}
+                  onChange={(value) => {
+                    const mode = value as PermissionMode
+                    if (mode === 'bypass') {
+                      Modal.confirm({
+                        title: '确认免审批？',
+                        content: '免审批模式下，所有危险工具（写文件 / Shell）将不再逐次请求批准。',
+                        okText: '确认免审批',
+                        okButtonProps: { danger: true },
+                        cancelText: '取消',
+                        onOk: () => setPermissionMode('bypass'),
+                      })
+                    } else {
+                      setPermissionMode(mode)
+                    }
+                  }}
+                  options={(Object.keys(permissionModeLabels) as PermissionMode[]).map((mode) => ({ value: mode, label: permissionModeLabels[mode] }))}
+                  className="w-24"
+                  aria-label="审批模式"
                 />
               </div>
               {running ? (
