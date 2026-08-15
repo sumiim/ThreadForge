@@ -26,6 +26,7 @@ import type {
   Message,
   ModelCapability,
   PendingApproval,
+  PermissionMode,
   RunEventEnvelope,
   RuntimeConfig,
   Session,
@@ -168,7 +169,7 @@ export interface UseSessions {
   retryHistory: () => void
   select: (id: string) => void
   createSession: (workspaceId: string, deviceId?: string) => void
-  sendMessage: (content: string, modelId?: string, reasoningEffort?: ReasoningEffort) => void
+  sendMessage: (content: string, modelId?: string, reasoningEffort?: ReasoningEffort, permissionMode?: PermissionMode) => void
   renameDevice: (deviceId: string, displayName: string) => Promise<void>
   renameWorkspace: (deviceId: string, workspaceId: string, displayName: string) => Promise<void>
   renameSession: (sessionId: string, displayName: string) => Promise<void>
@@ -1270,7 +1271,7 @@ export function useSessions(): UseSessions {
   )
 
   const sendMessage = useCallback(
-    (content: string, modelId?: string, reasoningEffort: ReasoningEffort = 'none') => {
+    (content: string, modelId?: string, reasoningEffort: ReasoningEffort = 'none', permissionMode: PermissionMode = 'default') => {
       const sessionId = activeId
       if (!sessionId || !content.trim() || runningSessionIds.has(sessionId)) return
       const activeSession = sessionsRef.current.find((session) => session.id === sessionId)
@@ -1311,6 +1312,7 @@ export function useSessions(): UseSessions {
             undefined,
             modelId,
             reasoningEffort,
+            permissionMode,
           )
           queuedTaskId = queued.task_id
           activeRunByTaskRef.current.set(queued.task_id, {
@@ -1334,6 +1336,7 @@ export function useSessions(): UseSessions {
                 updatedAt: now,
                 modelId: modelId ?? activeSession.model,
                 reasoningEffort,
+                permissionMode,
                 items: [],
               },
             ],

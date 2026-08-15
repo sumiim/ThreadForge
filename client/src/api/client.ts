@@ -414,6 +414,7 @@ export function createTask(
   maxSteps?: number,
   modelId?: string,
   reasoningEffort: string = 'none',
+  permissionMode: string = 'default',
 ): Promise<TaskQueued> {
   return request('/api/v1/tasks', {
     method: 'POST',
@@ -423,6 +424,7 @@ export function createTask(
       max_steps: maxSteps ?? null,
       model_id: modelId ?? null,
       reasoning_effort: reasoningEffort,
+      permission_mode: permissionMode,
     }),
   })
 }

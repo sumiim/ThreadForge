@@ -25,6 +25,7 @@ export interface Workspace {
 }
 
 export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+export type PermissionMode = 'plan' | 'acceptEdits' | 'default' | 'bypass'
 
 export interface ModelCapability {
   id: string
@@ -321,6 +322,7 @@ export interface SessionRun {
   updatedAt: string
   modelId?: string
   reasoningEffort?: ReasoningEffort
+  permissionMode?: PermissionMode
   items: RunIndexItem[]
 }
 
