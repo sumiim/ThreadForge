@@ -121,6 +121,7 @@ class AgentState(TypedDict):
     terminal_reason: str
     delegate_failures: int
     final_result: str
+    budget_exhausted_convergence: bool
     planning_enabled: bool
     plan: dict
     plan_attempts: int
@@ -1722,10 +1723,24 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 stage="review",
             )
             review = normalize_review_result(raw)
+        # §7.8.6：review 预算感知——步数预算耗尽时不再 needs_fix（否则再开一轮
+        # replan/execute 只会烧光预算后裸 blocked），改为自动 pass 收敛，由 finalize
+        # 输出 best-effort 结论并明确告知「预算已用尽」。
+        remaining_budget = int(state["step_budget"]) - int(state["coordinator_steps_used"])
+        budget_exhausted_convergence = False
+        if review["status"] == "needs_fix" and remaining_budget < 1:
+            review = {
+                "status": "pass",
+                "text": review["text"],
+                "issue_codes": list(review.get("issue_codes", [])),
+                "recovered": False,
+            }
+            budget_exhausted_convergence = True
         updated = {
             **state,
             "review_status": review["status"],
             "review_issues": review["text"],
+            "budget_exhausted_convergence": budget_exhausted_convergence,
         }
         task_state.review_status = review["status"]
         if review["recovered"]:
@@ -1851,10 +1866,19 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
 
 def finalize_node(state: AgentState) -> AgentState:
     if state["completion_status"] == "success":
+        result = state["execution_result"]
+        if state["budget_exhausted_convergence"]:
+            issues = state["review_issues"] or ""
+            result = (
+                "⚠️ 预算已用尽（budget_exhausted）：以下为已确认的部分结论。\n\n"
+                + (result or "（本轮未产出可用的最终结论）")
+            )
+            if issues:
+                result += "\n\n未能确认：\n" + issues
         return {
             **state,
             "terminal_reason": "",
-            "final_result": state["execution_result"],
+            "final_result": result,
         }
     if state["completion_status"] != "failed" or not state["terminal_reason"]:
         raise RuntimeError("finalize received a non-terminal graph state")

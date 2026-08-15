@@ -372,6 +372,7 @@ def run_agent(
             "fix_attempts": 0,
             "terminal_reason": "",
             "final_result": "",
+            "budget_exhausted_convergence": False,
             "planning_enabled": bool(enable_planning),
             "plan": {},
             "plan_attempts": 0,
