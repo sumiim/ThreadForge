@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     auth_cookie_secure: bool = False
     worker_pairing_ttl_seconds: int = 600
     worker_message_max_bytes: int = 2 * 1024 * 1024
+    worker_max_concurrent_tasks: int = 2
     worker_release_dir: Path = Path("worker-releases")
     worker_release_max_bytes: int = 128 * 1024 * 1024
     sandbox_enabled: bool = False
@@ -153,6 +154,13 @@ class Settings(BaseSettings):
     def _validate_worker_release_max_bytes(cls, value: int) -> int:
         if not 1024 * 1024 <= value <= 512 * 1024 * 1024:
             raise ValueError("worker_release_max_bytes must be in 1-512 MiB")
+        return value
+
+    @field_validator("worker_max_concurrent_tasks")
+    @classmethod
+    def _validate_worker_max_concurrent_tasks(cls, value: int) -> int:
+        if not 1 <= value <= 64:
+            raise ValueError("worker_max_concurrent_tasks must be in 1-64")
         return value
 
     @model_validator(mode="after")
