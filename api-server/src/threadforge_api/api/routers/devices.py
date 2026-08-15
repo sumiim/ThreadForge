@@ -7,9 +7,9 @@ import json
 
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, status
 
+from ...application.session_service import SessionService
 from ...domain.errors import AppError, AuthorizationDeniedError, WorkerProtocolError
 from ...domain.identity import Actor
-from ...application.session_service import SessionService
 from ...infrastructure.device_store import DeviceStore, PairingCodeStore
 from ...infrastructure.worker_hub import WorkerHub
 from ..dependencies import (
