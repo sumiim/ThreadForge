@@ -183,6 +183,20 @@ def _run_budget_usage(state, config):
     }
 
 
+def _verify_budget_accounting(task_state, node_child_states, coordinator_steps_used):
+    """校验图协调器的手动步数计数与实际子 agent tool_steps 之和一致。
+
+    这是「两层预算计数」的安全网：``coordinator_steps_used`` 是图的手动计数，
+    实测 ``tool_steps`` 之和是实际消耗；两者不一致即计数漂移（会跑飞预算）。
+    返回实测步数，供调用方复用（逐步向单一计数来源收敛）。
+    """
+    budget_task_states = [task_state, *node_child_states]
+    measured_steps = sum(state.tool_steps for state in budget_task_states)
+    if measured_steps != int(coordinator_steps_used):
+        raise RuntimeError("graph budget counter drift")
+    return measured_steps
+
+
 def _plan_minimum_budgets(state, config, maximum):
     """Reserve budget for the current plan and mandatory downstream stages."""
     usage = _run_budget_usage(state, config)
