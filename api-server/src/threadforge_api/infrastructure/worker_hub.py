@@ -1710,6 +1710,17 @@ class WorkerHub:
 
         self._loop.call_soon_threadsafe(enqueue)
 
+    def send_task_message(self, device_id: str, task_id: str, content: str, wake: bool) -> None:
+        self._send(
+            device_id,
+            {
+                "type": "task.message",
+                "task_id": task_id,
+                "content": content,
+                "wake": wake,
+            },
+        )
+
 
 def _parse_workspaces(raw_workspaces) -> list[WorkerWorkspace]:
     if not isinstance(raw_workspaces, list):

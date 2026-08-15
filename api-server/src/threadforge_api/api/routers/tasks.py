@@ -19,7 +19,7 @@ from ..dependencies import (
     get_task_service,
     require_csrf,
 )
-from ..models import ApprovalDecisionRequest, CreateTaskRequest, TaskQueuedResponse
+from ..models import AppendMessageRequest, ApprovalDecisionRequest, CreateTaskRequest, TaskQueuedResponse
 
 router = APIRouter()
 
@@ -93,6 +93,22 @@ def resolve_approval(
     validate_task_id(task_id)
     validate_approval_id(approval_id)
     return task_service.resolve_approval(task_id, approval_id, body.decision, actor.owner_id)
+
+
+@router.post(
+    "/api/v1/tasks/{task_id}/messages",
+    status_code=202,
+    dependencies=[Depends(require_csrf)],
+)
+def append_message(
+    task_id: str,
+    body: AppendMessageRequest,
+    actor: Actor = Depends(get_actor),
+    task_service: TaskService = Depends(get_task_service),
+) -> JSONResponse:
+    validate_task_id(task_id)
+    result = task_service.append_message(task_id, body.content, body.wake, actor.owner_id)
+    return JSONResponse(status_code=202, content=result)
 
 
 @router.get(

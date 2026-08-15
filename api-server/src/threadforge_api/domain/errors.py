@@ -57,6 +57,14 @@ class ActiveTaskExistsError(AppError):
         super().__init__("another root task is active", {"task_id": task_id})
 
 
+class TaskTerminalError(AppError):
+    http_status = 409
+    code = "task_terminal"
+
+    def __init__(self, task_id: str):
+        super().__init__("task has already reached a terminal state", {"task_id": task_id})
+
+
 class RenameConflictError(AppError):
     http_status = 409
     code = "rename_conflict"

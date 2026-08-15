@@ -16,6 +16,7 @@ from ..domain.errors import (
     InputTooLongError,
     ModelNotConfiguredError,
     TaskRunnerUnavailableError,
+    TaskTerminalError,
     WorkerCapabilityUnavailableError,
     WorkerOfflineError,
 )
@@ -235,6 +236,17 @@ class TaskService:
             "status": resolved.status.value,
             "decision": resolved.decision,
         }
+
+    def append_message(self, task_id: str, content: str, wake: bool, owner_id: str) -> dict:
+        owner_id = canonical_owner_id(owner_id)
+        task = self._task_repo.get_for_owner(task_id, owner_id)
+        if task.status.terminal:
+            raise TaskTerminalError(task_id)
+        if task.execution_environment != "local_worker":
+            # backend_process（原生）路径已降级为 CLI/评测兼容，运行中追加未接线。
+            raise TaskTerminalError(task_id)
+        self._worker_hub.send_task_message(task.device_id, task_id, content, wake)
+        return {"task_id": task_id, "status": "queued"}
 
     # ---- snapshot -------------------------------------------------------------
 

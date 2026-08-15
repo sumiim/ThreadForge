@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from langgraph_pico import run_agent
+from langgraph_pico.inbox import InboxSource
 from pico import Pico
 from pico.approval import ApprovalOutcome, ApprovalRequest, ApprovalStrategy
 from pico.event_sink import CompositeSink, EventCollector, EventSink, JsonlSink
@@ -508,6 +509,7 @@ class ActiveRun:
     pico: Pico | None = None
     session_id: str = ""
     workspace_id: str = ""
+    inbox: InboxSource | None = None
 
     def cancel(self, cleanup_grace: float) -> None:
         self.token.cancel()
@@ -644,6 +646,7 @@ def run_task(
         shell_factory=shell_factory,
     )
     active.pico = pico
+    active.inbox = InboxSource()
     started = time.monotonic()
     try:
         run_agent(
@@ -656,6 +659,7 @@ def run_task(
             run_id=task["run_id"],
             workspace_id=task.get("workspace_id", ""),
             planning_deadline_seconds=float(settings.get("planning_deadline_seconds", 75)),
+            inbox=active.inbox,
         )
     except Exception as exc:
         if pico.current_task_state is not None and pico.current_task_state.status == STATUS_RUNNING:

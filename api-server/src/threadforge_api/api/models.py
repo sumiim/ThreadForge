@@ -88,6 +88,18 @@ class ApprovalDecisionRequest(BaseModel):
     decision: Literal["approved", "rejected"]
 
 
+class AppendMessageRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=100000)
+    wake: bool = True
+
+    @field_validator("content")
+    @classmethod
+    def _content_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("content must not be blank")
+        return value
+
+
 class RenameEntityRequest(BaseModel):
     display_name: str = Field(min_length=1, max_length=200)
     expected_updated_at: str | None = Field(default=None, max_length=64)
