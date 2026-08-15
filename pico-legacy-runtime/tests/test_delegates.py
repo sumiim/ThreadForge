@@ -105,6 +105,22 @@ def test_role_delegate_failure_finalizes_child_and_preserves_failure_event(tmp_p
     assert "ran out of outputs" not in json.dumps(event)
 
 
+def test_role_delegate_spec_defaults_to_read_only_and_never_approval(tmp_path):
+    parent, _ = build_parent(tmp_path, ["<final>ok</final>"])
+    spec = RoleDelegateSpec(
+        role="research",
+        task="inspect README",
+        allowed_tools=RESEARCH_ALLOWED_TOOLS,
+    )
+
+    child, _ = create_role_delegate(parent, spec)
+
+    assert spec.read_only is True
+    assert spec.approval_policy == "never"
+    assert child.read_only is True
+    assert child.approval_policy == "never"
+
+
 def test_role_delegate_rejects_privilege_widening():
     spec = RoleDelegateSpec(
         role="review",
