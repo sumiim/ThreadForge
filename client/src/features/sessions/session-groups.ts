@@ -27,6 +27,14 @@ function workspaceForSession(session: Session, workspaces: Workspace[]): Workspa
   )
 }
 
+/** 只保留能对应到当前工作区目录的会话；已解绑设备的孤儿会话从 state 中剔除。 */
+export function filterNavigableSessions(
+  sessions: Session[],
+  workspaces: Workspace[],
+): Session[] {
+  return sessions.filter((session) => workspaceForSession(session, workspaces) !== undefined)
+}
+
 export function selectInitialNavigableSession(
   sessions: Session[],
   workspaces: Workspace[],
