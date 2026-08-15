@@ -1340,6 +1340,7 @@ class WorkerHub:
         connection.device = self._devices.update_presence(
             connection.device.device_id,
             model=connection.device.model,
+            model_provider=connection.device.model_provider,
             model_configured=connection.device.model_configured,
             version=connection.device.version,
             protocol_version=connection.device.protocol_version,

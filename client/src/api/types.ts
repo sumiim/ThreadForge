@@ -50,6 +50,7 @@ export interface Device {
   name: string
   online: boolean
   model: string
+  model_provider?: string
   model_configured: boolean
   version: string
   protocol_version: number
