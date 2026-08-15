@@ -7,27 +7,37 @@
  */
 
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
-import type { HighlighterGeneric } from 'shiki'
+import type { BundledLanguage, BundledTheme, HighlighterGeneric } from 'shiki'
+
+const SHIKI_LANGUAGES = [
+  'javascript', 'typescript', 'jsx', 'tsx', 'html', 'css', 'json',
+  'bash', 'shell', 'python', 'rust', 'go', 'java', 'yaml', 'xml',
+  'sql', 'markdown', 'diff', 'docker',
+] as const satisfies readonly BundledLanguage[]
+const SHIKI_THEMES = ['github-light', 'github-dark'] as const satisfies readonly BundledTheme[]
+
+type ShikiLanguage = (typeof SHIKI_LANGUAGES)[number]
+type ThreadForgeHighlighter = HighlighterGeneric<BundledLanguage, BundledTheme>
+
+function isShikiLanguage(value: string): value is ShikiLanguage {
+  return (SHIKI_LANGUAGES as readonly string[]).includes(value)
+}
 
 /** 单例 highlighter（懒加载） */
-let highlighterPromise: Promise<HighlighterGeneric<any, any>> | null = null
-let highlighter: HighlighterGeneric<any, any> | null = null
+let highlighterPromise: Promise<ThreadForgeHighlighter> | null = null
+let highlighter: ThreadForgeHighlighter | null = null
 
-async function getHighlighter(): Promise<HighlighterGeneric<any, any>> {
+async function getHighlighter(): Promise<ThreadForgeHighlighter> {
   if (highlighter) return highlighter
   if (!highlighterPromise) {
     highlighterPromise = (async () => {
       const { createHighlighter } = await import('shiki')
       const hl = await createHighlighter({
-        langs: [
-          'javascript', 'typescript', 'jsx', 'tsx', 'html', 'css', 'json',
-          'bash', 'shell', 'python', 'rust', 'go', 'java', 'yaml', 'xml',
-          'sql', 'markdown', 'diff', 'docker',
-        ],
-        themes: ['github-light', 'github-dark'],
+        langs: [...SHIKI_LANGUAGES],
+        themes: [...SHIKI_THEMES],
       })
-      highlighter = hl as unknown as HighlighterGeneric<any, any>
-      return highlighter
+      highlighter = hl
+      return hl
     })()
   }
   return highlighterPromise
@@ -36,8 +46,11 @@ async function getHighlighter(): Promise<HighlighterGeneric<any, any>> {
 /** 预热 highlighter（不影响渲染，提前加载） */
 if (typeof window !== 'undefined') {
   // 空闲时启动，不阻塞关键渲染路径
-  if ('requestIdleCallback' in window) {
-    ;(window as any).requestIdleCallback(() => { void getHighlighter() })
+  const idleWindow = window as Window & {
+    requestIdleCallback?: (callback: () => void) => number
+  }
+  if (idleWindow.requestIdleCallback) {
+    idleWindow.requestIdleCallback(() => { void getHighlighter() })
   } else {
     setTimeout(() => { void getHighlighter() }, 200)
   }
@@ -65,12 +78,17 @@ export default function CodeBlock({ code, lang, className }: CodeBlockProps) {
   useEffect(() => {
     let cancelled = false
     void (async () => {
+      const language = lang?.toLowerCase()
+      if (!language || !isShikiLanguage(language)) {
+        setHighlighted(null)
+        return
+      }
       try {
         const hl = await getHighlighter()
         if (cancelled) return
         const theme = isDark ? 'github-dark' : 'github-light'
         const html = hl.codeToHtml(trimmed, {
-          lang: lang ?? 'text',
+          lang: language,
           theme,
         })
         if (!cancelled) setHighlighted(html)
