@@ -11,7 +11,7 @@ import logging
 from collections.abc import Callable
 
 from .config import ConfigStore
-from .updater import UpdateStatusCallback, apply_update
+from .updater import UpdateStatusCallback, apply_update, update_available
 
 DEFAULT_CHECK_INTERVAL_SECONDS = 5 * 60
 DEFAULT_RETRY_INTERVAL_SECONDS = 30
@@ -25,18 +25,29 @@ def run_auto_update_loop(
     check_interval_seconds: float = DEFAULT_CHECK_INTERVAL_SECONDS,
     retry_interval_seconds: float = DEFAULT_RETRY_INTERVAL_SECONDS,
     apply_update_fn: Callable[[ConfigStore, UpdateStatusCallback | None], bool] = apply_update,
+    check_update_fn: Callable[[ConfigStore], tuple[bool, dict]] = update_available,
     status_callback: UpdateStatusCallback | None = None,
 ) -> None:
     """Check for signed updates until the Worker stops or updates itself.
 
-    ``client.wait_for_stop(0)`` is used for the first immediate check.  Later
-    waits are interruptible, so stopping the service never has to wait for the
-    next scheduled check.  ``apply_update_fn`` is injectable for unit tests.
+    The availability check runs WITHOUT the update lock: a manifest fetch never
+    replaces the running Worker, so it must not reject concurrent tasks. Only
+    once an update is actually available does the loop acquire the update lock
+    (``begin_update``, which also rejects new tasks) and download + install.
+    ``check_update_fn`` and ``apply_update_fn`` are injectable for unit tests.
     """
 
     next_wait = 0.0
     while not client.wait_for_stop(next_wait):
         next_wait = max(1.0, check_interval_seconds)
+        try:
+            available, _ = check_update_fn(store)
+        except Exception as exc:
+            LOGGER.warning("Worker update check skipped: %s", exc)
+            next_wait = max(1.0, retry_interval_seconds)
+            continue
+        if not available:
+            continue
         if not client.begin_update():
             # A task is active; try again on the normal interval.
             continue
