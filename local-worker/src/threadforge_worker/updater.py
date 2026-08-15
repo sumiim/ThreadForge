@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -46,6 +47,10 @@ UpdateStatusCallback = Callable[[dict], None]
 
 class UpdateAlreadyRunningError(RuntimeError):
     pass
+
+
+class DeviceUnauthorizedError(RuntimeError):
+    """Worker 的设备令牌已被服务器拒绝（401/403），属永久鉴权失败。"""
 
 
 def update_available(store: ConfigStore) -> tuple[bool, dict]:
@@ -132,7 +137,7 @@ def _apply_update_locked(
         _publish_status(
             store,
             status_callback,
-            status="failed",
+            status="auth_failed" if isinstance(exc, DeviceUnauthorizedError) else "failed",
             target_version=target_version,
             downloaded_bytes=partial_size,
             total_bytes=target_size,
@@ -477,8 +482,15 @@ def _get_json(url: str, token: str) -> dict:
             "User-Agent": f"ThreadForge-Worker/{__version__}",
         },
     )
-    with urllib.request.urlopen(request, timeout=15) as response:
-        raw = response.read(64 * 1024 + 1)
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            raw = response.read(64 * 1024 + 1)
+    except urllib.error.HTTPError as exc:
+        if exc.code in {401, 403}:
+            raise DeviceUnauthorizedError(
+                f"device token was rejected (HTTP {exc.code})"
+            ) from exc
+        raise
     if len(raw) > 64 * 1024:
         raise RuntimeError("Worker release manifest is too large")
     result = json.loads(raw)

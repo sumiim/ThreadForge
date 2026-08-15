@@ -70,7 +70,7 @@ export interface Device {
 }
 
 export interface WorkerUpdateStatus {
-  status: 'checking' | 'downloading' | 'retrying' | 'installing' | 'current' | 'failed' | 'unsupported' | ''
+  status: 'checking' | 'downloading' | 'retrying' | 'installing' | 'current' | 'failed' | 'auth_failed' | 'unsupported' | ''
   current_version: string
   target_version: string
   downloaded_bytes: number
