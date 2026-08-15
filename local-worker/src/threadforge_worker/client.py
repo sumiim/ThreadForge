@@ -16,12 +16,11 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
+from pico.approval import strategy_for_mode
 from pico.security import redact_artifact
 from pico.session_store import SessionStore
 from websockets.exceptions import ConnectionClosed, InvalidMessage, InvalidStatus
 from websockets.sync.client import connect
-
-from pico.approval import strategy_for_mode
 
 from . import __version__
 from .config import (
