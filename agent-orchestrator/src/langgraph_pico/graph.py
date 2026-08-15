@@ -386,6 +386,23 @@ def _successful_read_tool_names(agent, config):
     return names
 
 
+def _merge_child_exploration(agent, task_state):
+    """把子 agent 本轮探索（list 目录 / 读文件）回写进父 memory，跨 replan 轮次继承。"""
+    for item in getattr(task_state, "evidence", ()) or ():
+        if item.get("status") not in {"ok", "partial_success"}:
+            continue
+        tool = str(item.get("tool_name", ""))
+        for raw_path in item.get("relative_paths", []) or []:
+            path = str(raw_path).strip()
+            if not path:
+                continue
+            if tool == "list_files":
+                agent.memory.remember_listing(path)
+            elif tool == "read_file":
+                agent.memory.remember_file(path)
+    agent.session["memory"] = agent.memory.to_dict()
+
+
 def _planned_read_tools(state, agent):
     if not state["planning_enabled"]:
         return ()
@@ -681,6 +698,7 @@ def _run_isolated_executor(executor, prompt, config, *, collect_answer_attempts=
         if task_state is not None:
             configurable = config["configurable"]
             configurable["node_child_states"].append(task_state)
+            _merge_child_exploration(configurable["agent"], task_state)
             if collect_answer_attempts:
                 configurable["run_metadata_collector"]["answer_attempts"] = task_state.attempts
 

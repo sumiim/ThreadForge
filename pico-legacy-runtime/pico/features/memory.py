@@ -15,6 +15,7 @@ from ..workspace import clip, now
 WORKING_FILE_LIMIT = 8
 EPISODIC_NOTE_LIMIT = 12
 FILE_SUMMARY_LIMIT = 6
+LISTED_DIR_LIMIT = 12
 
 DURABLE_TOPIC_DEFAULTS = {
     "project-conventions": {
@@ -46,6 +47,7 @@ def default_memory_state():
         "working": {
             "task_summary": "",
             "recent_files": [],
+            "listed_dirs": [],
         },
         "episodic_notes": [],
         "file_summaries": {},
@@ -279,6 +281,17 @@ def file_freshness(raw_path, workspace_root=None):
     return hashlib.sha256(resolved.read_bytes()).hexdigest()
 
 
+def directory_freshness(raw_path, workspace_root=None):
+    """目录条目的轻量哈希：只列 (名字, mtime)，不读文件内容。"""
+    resolved = resolve_workspace_path(raw_path, workspace_root)
+    if resolved is None or not resolved.exists() or not resolved.is_dir():
+        return None
+    entries = sorted(
+        (entry.name, entry.stat().st_mtime_ns) for entry in resolved.iterdir()
+    )
+    return hashlib.sha256(repr(entries).encode("utf-8")).hexdigest()
+
+
 def _tokenize(text):
     return {token.lower() for token in re.findall(r"[A-Za-z0-9_]+", str(text))}
 
@@ -344,6 +357,7 @@ def normalize_memory_state(state, workspace_root=None):
         working = {}
     working.setdefault("task_summary", "")
     working.setdefault("recent_files", [])
+    working.setdefault("listed_dirs", [])
     working["task_summary"] = clip(str(working.get("task_summary", "")).strip(), 300)
     working["recent_files"] = _dedupe_preserve_order(
         [
@@ -352,6 +366,20 @@ def normalize_memory_state(state, workspace_root=None):
             if str(path).strip()
         ]
     )[-WORKING_FILE_LIMIT:]
+    normalized_listed = []
+    seen_listed = set()
+    for item in _ensure_list(working.get("listed_dirs", [])):
+        if isinstance(item, dict):
+            path = canonicalize_path(item.get("path"), workspace_root).strip()
+            freshness = item.get("freshness")
+        else:
+            path = canonicalize_path(item, workspace_root).strip()
+            freshness = None
+        if not path or path in seen_listed:
+            continue
+        seen_listed.add(path)
+        normalized_listed.append({"path": path, "freshness": freshness})
+    working["listed_dirs"] = normalized_listed[-LISTED_DIR_LIMIT:]
     state["working"] = working
 
     if not str(working["task_summary"]).strip() and state.get("task"):
@@ -440,6 +468,21 @@ def remember_file(state, path, workspace_root=None):
     files.append(path)
     state["working"]["recent_files"] = files[-WORKING_FILE_LIMIT:]
     state["files"] = list(state["working"]["recent_files"])
+    return state
+
+
+def remember_listing(state, path, workspace_root=None):
+    state = normalize_memory_state(state, workspace_root)
+    path = canonicalize_path(path, workspace_root).strip()
+    if not path:
+        return state
+    freshness = directory_freshness(path, workspace_root)
+    listed = [
+        item for item in state["working"]["listed_dirs"]
+        if not isinstance(item, dict) or item.get("path") != path
+    ]
+    listed.append({"path": path, "freshness": freshness})
+    state["working"]["listed_dirs"] = listed[-LISTED_DIR_LIMIT:]
     return state
 
 
@@ -567,6 +610,12 @@ def render_memory_text(state, workspace_root=None):
         f"- task: {state['working']['task_summary'] or '-'}",
         f"- recent_files: {', '.join(state['working']['recent_files']) or '-'}",
     ]
+    fresh_listed = [
+        entry["path"]
+        for entry in state["working"]["listed_dirs"]
+        if directory_freshness(entry["path"], workspace_root) == entry.get("freshness")
+    ]
+    lines.append(f"- listed_dirs: {', '.join(fresh_listed) or '-'}")
 
     summaries = []
     for path in state["working"]["recent_files"][:FILE_SUMMARY_LIMIT]:
@@ -615,6 +664,10 @@ class LayeredMemory:
 
     def remember_file(self, path):
         self.state = remember_file(self.state, path, self.workspace_root)
+        return self
+
+    def remember_listing(self, path):
+        self.state = remember_listing(self.state, path, self.workspace_root)
         return self
 
     def append_note(self, text, tags=(), source="", created_at=None, kind="episodic"):

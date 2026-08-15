@@ -67,6 +67,20 @@ def test_file_summaries_use_canonical_paths_and_freshness(tmp_path):
     assert "sample.txt" not in memory.to_dict()["file_summaries"]
 
 
+def test_listed_dirs_track_freshness_and_drop_stale_entries(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.py").write_text("a", encoding="utf-8")
+    memory = LayeredMemory(workspace_root=tmp_path)
+
+    memory.remember_listing("src")
+    assert "src" in memory.render_memory_text()
+
+    # 目录内容变化后 freshness 失效，渲染时不再显示，下一轮 agent 会重新 list。
+    (src / "b.py").write_text("b", encoding="utf-8")
+    assert "src" not in memory.render_memory_text()
+
+
 def test_process_notes_keep_kind_and_latest_duplicate_wins():
     memory = LayeredMemory()
 
