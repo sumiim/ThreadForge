@@ -426,6 +426,51 @@ def _explored_summary(agent):
     return "\n".join(parts)
 
 
+def _drain_inbox(state, configurable):
+    """在循环边界（intent_router 入口）消费下一条 inbox 唤醒项。
+
+    返回 ``(new_state, consumed)``。有新唤醒项时，把 routing 相关字段重置成
+    「全新请求」状态，并把上一轮 task 记进 ``continuation_context`` 供 planner
+    识别为继续；无唤醒项时原样返回。
+    """
+    inbox = configurable.get("inbox")
+    if inbox is None:
+        return state, False
+    item = inbox.pop_wake()
+    if item is None or not str(item.message).strip():
+        return state, False
+    new_task = str(item.message).strip()
+    prior = str(state.get("task", "")).strip()
+    continuation = state.get("continuation_context", "")
+    if prior:
+        continuation = "\n".join(
+            part for part in (str(continuation).strip(), f"Earlier task: {prior}")
+            if part
+        )
+    return (
+        {
+            **state,
+            "task": new_task,
+            "continuation_context": continuation,
+            "resolved_intent": "",
+            "intent_source": "",
+            "plan": {},
+            "plan_attempts": 0,
+            "replan_requested": False,
+            "replan_reason": "",
+            "replan_attempts": 0,
+            "router_direct_answer": False,
+            "requires_research": None,
+            "research_result": "",
+            "execution_result": "",
+            "review_status": "",
+            "review_issues": "",
+            "terminal_reason": "",
+        },
+        True,
+    )
+
+
 def _planned_read_tools(state, agent):
     if not state["planning_enabled"]:
         return ()
@@ -1129,6 +1174,13 @@ def intent_router_node(state: AgentState, config: RunnableConfig) -> AgentState:
         route = route_after_intent(state)
         _emit_route(agent, "intent_router", route, state["terminal_reason"])
         return state
+
+    # 循环边界：消费下一条 inbox 唤醒项（1.5 运行中追加）。终态/预算耗尽已在上方
+    # 提前返回，不会消费到新消息；只有仍在 replan 循环时才在此排空 inbox。
+    state, inbox_consumed = _drain_inbox(state, configurable)
+    if inbox_consumed:
+        _emit_route(agent, "intent_router", "inbox_consumed", state["task"])
+
     if state["planning_enabled"]:
         if not (state["plan"] and state["replan_attempts"]):
             next_state = _route_and_plan_initial_task(state, config)
