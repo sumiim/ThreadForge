@@ -134,6 +134,7 @@ export interface WorkerReleaseManifest {
 
 export interface RuntimeConfig {
   model: string
+  model_provider?: string
   model_configured: boolean
   execution_environment: string
   container_sandbox_enabled: boolean

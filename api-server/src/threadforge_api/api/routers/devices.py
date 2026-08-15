@@ -64,6 +64,7 @@ def list_devices(
                 "display_name": device.name,
                 "online": device.device_id in online,
                 "model": device.model,
+                "model_provider": device.model_provider,
                 "model_configured": device.model_configured,
                 "version": device.version,
                 "protocol_version": device.protocol_version,
