@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import Markdown from '../../components/Markdown'
 import type { Message } from '../../api/types'
 import ToolCallCard from './ToolCallCard'
@@ -12,6 +13,46 @@ function formatTime(iso: string): string {
   const d = new Date(iso)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** 格式化毫秒为 mm:ss */
+function formatElapsed(ms: number): string {
+  const total = Math.floor(ms / 1000)
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
+/** 流式输出状态指示器：ping 点 + "Deep diving..." 扫光文字 + 15s 后显示时常 */
+function StreamingStatus() {
+  const [mountedAt] = useState(() => Date.now())
+  const [elapsedMs, setElapsedMs] = useState(0)
+
+  useEffect(() => {
+    const tick = () => { setElapsedMs(Math.max(0, Date.now() - mountedAt)) }
+    tick()
+    const id = setInterval(tick, 1000)
+    return () => { clearInterval(id) }
+  }, [mountedAt])
+
+  const showClock = elapsedMs >= 15_000
+
+  return (
+    <span className="turn-status flex items-center gap-2 text-stone-400">
+      <span className="relative inline-flex h-2 w-2">
+        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-75" />
+        <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" />
+      </span>
+      <span className="bg-gradient-to-r from-blue-500 via-blue-400 to-blue-500 bg-[length:200%_100%] bg-clip-text text-transparent animate-shimmer">
+        Deep diving...
+      </span>
+      {showClock && (
+        <span className="font-mono text-stone-400 tabular-nums" aria-hidden>
+          {formatElapsed(elapsedMs)}
+        </span>
+      )}
+    </span>
+  )
 }
 
 // 无头像设计：靠对齐与底色区分角色，时间戳为 mono 元信息
@@ -69,10 +110,7 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
         ))}
         <div className="mt-1 font-mono text-[11px] text-stone-500">
           {message.status === 'streaming' ? (
-            <span className="flex items-center gap-1.5 text-stone-500">
-              <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-blue-600" />
-              agent working
-            </span>
+            <StreamingStatus />
           ) : (
             formatTime(message.createdAt)
           )}

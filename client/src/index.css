@@ -82,6 +82,18 @@ body {
   font-family: 'Geist Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
+/* ---- 动效关键帧 ---- */
+
+/* "Deep diving..." 扫光文字 */
+@keyframes shimmer {
+  0% { background-position: 200% 50%; }
+  100% { background-position: -200% 50%; }
+}
+
+.animate-shimmer {
+  animation: shimmer 3s ease-in-out infinite;
+}
+
 /* 消息进场动效：仅反馈性（新消息出现），prefers-reduced-motion 兜底 */
 @keyframes msg-in {
   from {
@@ -124,6 +136,8 @@ body {
 @layer components {
   .md-body {
     @apply text-sm leading-relaxed text-stone-800;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .md-body > :first-child {
@@ -147,10 +161,12 @@ body {
 
   .md-body h1 {
     @apply text-lg;
+    letter-spacing: -0.02em;
   }
 
   .md-body h2 {
     @apply text-base;
+    letter-spacing: -0.01em;
   }
 
   .md-body h3 {
@@ -169,12 +185,19 @@ body {
     @apply my-1;
   }
 
-  .md-body code {
-    @apply rounded bg-stone-100 px-1 py-0.5 font-mono text-[12px] text-stone-800;
+  .md-body li > p {
+    @apply my-1;
   }
 
-  .md-body pre {
-    @apply my-3 overflow-x-auto rounded-lg bg-stone-900 p-3;
+  /* 内联代码 */
+  .md-body code:not(pre code) {
+    @apply inline-flex items-center rounded-md bg-stone-100 px-1.5 py-0.5 font-mono text-[12px] text-stone-800;
+    font-size: 0.875em !important;
+  }
+
+  /* 代码围栏（仅当没有被 CodeBlock 组件接管时的 fallback） */
+  .md-body pre:not([class]) {
+    @apply my-3 overflow-x-auto rounded-lg bg-stone-900 p-4 text-sm leading-relaxed;
   }
 
   .md-body pre code {
@@ -183,32 +206,86 @@ body {
 
   .md-body a {
     @apply text-blue-700 underline decoration-blue-200 underline-offset-2 hover:decoration-blue-600;
+    transition: text-decoration-color 150ms;
   }
 
   .md-body blockquote {
-    @apply my-2 border-l-2 border-blue-300 pl-3 text-stone-500;
+    @apply my-2 border-l-2 border-stone-300 pl-4 text-stone-500;
+  }
+
+  /* 表格 */
+  .md-body .table-wrapper {
+    @apply my-3 max-w-full overflow-x-auto;
+    overscroll-behavior-x: contain;
   }
 
   .md-body table {
-    @apply my-3 w-full border-collapse;
-  }
-
-  /* 暗色特例:代码块不随 stone-900 反转(浅底深字突兀),固定为深色块 */
-  .dark .md-body pre {
-    background-color: #0f0e0d;
-  }
-
-  .dark .md-body pre code {
-    color: #e7e5e4;
+    @apply w-max max-w-max border-collapse;
   }
 
   .md-body th {
-    @apply border border-stone-200 bg-stone-50 px-2.5 py-1.5 text-left font-medium text-stone-700;
+    @apply border-b border-stone-200 px-4 py-2 text-left font-medium text-stone-700;
+    max-width: min(30vw, 320px);
+    min-width: 100px;
+  }
+
+  .md-body th:first-child {
+    padding-left: 0;
+  }
+
+  .md-body th:last-child {
+    padding-right: 0;
   }
 
   .md-body td {
-    @apply border border-stone-200 px-2.5 py-1.5;
+    @apply border-b border-stone-100 px-4 py-2;
+    max-width: min(30vw, 320px);
+    min-width: 100px;
   }
+
+  .md-body td:first-child {
+    padding-left: 0;
+  }
+
+  .md-body td:last-child {
+    padding-right: 0;
+  }
+
+  /* 暗色适配 */
+  .dark .md-body {
+    @apply text-stone-700;
+  }
+
+  .dark .md-body h1,
+  .dark .md-body h2,
+  .dark .md-body h3,
+  .dark .md-body h4 {
+    @apply text-stone-900;
+  }
+
+  .dark .md-body code:not(pre code) {
+    background-color: rgba(255, 255, 255, 0.08);
+    @apply text-stone-800;
+  }
+
+  .dark .md-body a {
+    @apply text-blue-400 decoration-blue-700;
+  }
+
+  .dark .md-body blockquote {
+    @apply border-stone-600 text-stone-500;
+  }
+
+  .dark .md-body th {
+    @apply border-stone-600 text-stone-700;
+  }
+
+  .dark .md-body td {
+    @apply border-stone-700;
+  }
+
+  /* 已删除的代码围栏旧样式（CodeBlock 组件接管后不再需要） */
+  /* .dark .md-body pre 已被 CodeBlock 组件覆盖 */
 }
 
 /* 细滚动条，贴合白色调 */

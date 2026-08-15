@@ -23,6 +23,12 @@ node_modules/
 coverage/
 client/dev-*.log
 
+# PyInstaller spec files
+*.spec
+
+# Worker NSIS installer artifact
+/threadforge-worker-windows-x86_64.exe
+
 # Runtime artifacts
 .pico/
 artifacts/
@@ -55,3 +61,5 @@ release/
 
 # Unrelated project artifacts
 /pi-main/
+/deepseek-harness-master/
+/workspaces.json
