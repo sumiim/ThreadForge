@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Button, Input, Select } from 'antd'
+import { Button, Input, Modal, Select } from 'antd'
 import { SendOutlined, StopOutlined } from '@ant-design/icons'
 
 import type { ModelCapability, PermissionMode, ReasoningEffort } from '../../api/types'
@@ -100,7 +100,21 @@ export default function Composer({ model, modelOptions, running, stopping = fals
                   size="small"
                   value={permissionMode}
                   disabled={running || disabled}
-                  onChange={(value) => setPermissionMode(value as PermissionMode)}
+                  onChange={(value) => {
+                    const mode = value as PermissionMode
+                    if (mode === 'bypass') {
+                      Modal.confirm({
+                        title: '确认免审批？',
+                        content: '免审批模式下，所有危险工具（写文件 / Shell）将不再逐次请求批准。',
+                        okText: '确认免审批',
+                        okButtonProps: { danger: true },
+                        cancelText: '取消',
+                        onOk: () => setPermissionMode('bypass'),
+                      })
+                    } else {
+                      setPermissionMode(mode)
+                    }
+                  }}
                   options={(Object.keys(permissionModeLabels) as PermissionMode[]).map((mode) => ({ value: mode, label: permissionModeLabels[mode] }))}
                   className="w-24"
                   aria-label="审批模式"
