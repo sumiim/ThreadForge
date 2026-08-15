@@ -206,6 +206,9 @@ export function useSessions(): UseSessions {
   const esByTaskRef = useRef<Map<string, EventSource>>(new Map())
   const postToolWatchdogByTaskRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   const reconcileTimerByTaskRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map())
+  // 本窗口刚结束运行的会话：轮询看到其 updatedAt 变化时不要清 loadedRef 去重载，
+  // 否则失败任务（本地未持久化）会把刚收尾的请求/回答重新加载成空。
+  const recentlyFinishedRef = useRef<Set<string>>(new Set())
   // approval_id -> tool call（approval.required 建立，resolved 时回查）
   const approvalMapRef = useRef<Map<string, string>>(new Map())
   // 事件回调里需要读到最新 sessions（在 effect 中同步，避免 render 期间改 ref）
@@ -367,6 +370,7 @@ export function useSessions(): UseSessions {
     setStoppingForSession(run.sessionId, false)
     updateProgress(run.sessionId, null)
     cancelRequestedRef.current.delete(run.sessionId)
+    recentlyFinishedRef.current.add(run.sessionId)
     const es = esByTaskRef.current.get(taskId)
     if (es) {
       es.close()
@@ -1150,7 +1154,8 @@ export function useSessions(): UseSessions {
             if (currentSession?.displayNameUpdatedAt === displayNameUpdatedAt && currentSession?.createdAt === item.created_at && currentSession?.title === title && currentSession.updatedAt === updatedAt) {
               return currentSession
             }
-            if (currentSession && !findActiveRun(item.session_id)) {
+            const recentlyFinished = recentlyFinishedRef.current.delete(item.session_id)
+            if (currentSession && !findActiveRun(item.session_id) && !recentlyFinished) {
               loadedRef.current.delete(item.session_id)
             }
             return {
