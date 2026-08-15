@@ -205,6 +205,7 @@ class WorkerClient:
                     "architecture": platform.machine().lower(),
                     "model": os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4"),
                     "model_configured": bool(os.environ.get("PICO_OPENAI_API_KEY", "").strip()),
+                    "model_provider": os.environ.get("PICO_MODEL_PROVIDER", ""),
                     "orchestration_backend": "langgraph-v1.1",
                     "update_status": load_update_status(self.store),
                     "model_capabilities": _model_capabilities(),
@@ -432,12 +433,14 @@ class WorkerClient:
                 base_url=str(message.get("base_url", "")),
                 api_key=str(message.get("api_key", "")),
                 model=str(message.get("model", "")),
+                model_provider=str(message.get("model_provider", "")),
             )
             response = {
                 "type": "model.configuration.completed",
                 "request_id": request_id,
                 "status": "completed",
                 "model": os.environ.get("PICO_OPENAI_MODEL", ""),
+                "model_provider": os.environ.get("PICO_MODEL_PROVIDER", ""),
                 "model_capabilities": _model_capabilities(),
             }
         except Exception:
@@ -901,7 +904,7 @@ def _runtime_reasoning_efforts() -> tuple[str, ...]:
 
 
 def _model_capabilities() -> dict:
-    """Worker-level model capability report for the OpenAI-compatible path.
+    """Worker-level model capability report.
 
     ``max_output_tokens`` mirrors the runtime's default output budget
     (``runtime.py`` ``max_new_tokens`` default 512) rather than a probed
@@ -909,9 +912,16 @@ def _model_capabilities() -> dict:
     ``usage_fields`` are the completion-metadata fields the client reports.
     """
     model = os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4")
+    model_provider = os.environ.get("PICO_MODEL_PROVIDER", "").strip().lower()
     efforts = list(_runtime_reasoning_efforts())
+    if model_provider == "chat_completions":
+        provider_label = "chat-completions"
+    elif model_provider == "anthropic":
+        provider_label = "anthropic"
+    else:
+        provider_label = "openai-compatible"
     return {
-        "provider": "openai-compatible",
+        "provider": provider_label,
         "models": [
             {
                 "id": model,

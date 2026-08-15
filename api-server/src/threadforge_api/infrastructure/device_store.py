@@ -54,6 +54,7 @@ class Device:
     display_name_source: str = "auto"
     display_name_updated_at: str = ""
     model: str = ""
+    model_provider: str = ""
     model_configured: bool = False
     version: str = ""
     protocol_version: int = 0
@@ -77,6 +78,7 @@ class Device:
             "display_name_source": self.display_name_source,
             "display_name_updated_at": self.display_name_updated_at,
             "model": self.model,
+            "model_provider": self.model_provider,
             "model_configured": self.model_configured,
             "version": self.version,
             "protocol_version": self.protocol_version,
@@ -103,6 +105,7 @@ class Device:
                 payload.get("display_name_updated_at", payload.get("created_at", ""))
             ),
             model=str(payload.get("model", "")),
+            model_provider=str(payload.get("model_provider", "")),
             model_configured=bool(payload.get("model_configured", False)),
             version=str(payload.get("version", ""))[:32],
             protocol_version=int(payload.get("protocol_version", 0)),
@@ -244,6 +247,7 @@ class DeviceStore:
         device_id: str,
         *,
         model: str,
+        model_provider: str = "",
         model_configured: bool,
         version: str,
         protocol_version: int,
@@ -292,6 +296,7 @@ class DeviceStore:
             ]
             device.last_seen_at = utc_now()
             device.model = model[:200]
+            device.model_provider = model_provider[:40]
             device.model_configured = bool(model_configured)
             device.version = version[:32]
             device.protocol_version = protocol_version

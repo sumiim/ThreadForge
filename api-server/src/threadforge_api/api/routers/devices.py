@@ -245,6 +245,7 @@ async def configure_worker_model(
         base_url=body.base_url,
         api_key=body.api_key,
         model=body.model,
+        model_provider=body.model_provider,
     )
 
 

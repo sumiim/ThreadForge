@@ -197,10 +197,11 @@ class ConfigStore:
     def model_env_path(self) -> Path:
         return self.root / ".env"
 
-    def save_model_env(self, *, base_url: str, api_key: str, model: str) -> None:
+    def save_model_env(self, *, base_url: str, api_key: str, model: str, model_provider: str = "") -> None:
         base_url = _validate_model_value("base_url", base_url, 2048)
         api_key = _validate_model_value("api_key", api_key, 8192)
         model = _validate_model_value("model", model, 200)
+        model_provider = _validate_model_provider(model_provider)
         parsed = urllib.parse.urlsplit(base_url)
         loopback = parsed.hostname in {"127.0.0.1", "::1", "localhost"}
         if (
@@ -216,6 +217,7 @@ class ConfigStore:
             )
         payload = (
             "# Managed by ThreadForge Worker Companion. Do not commit this file.\n"
+            f"PICO_MODEL_PROVIDER={model_provider}\n"
             f"PICO_OPENAI_API_BASE={base_url}\n"
             f"PICO_OPENAI_API_KEY={api_key}\n"
             f"PICO_OPENAI_MODEL={model}\n"
@@ -256,6 +258,16 @@ def _validate_model_value(name: str, value: str, max_length: int) -> str:
     value = str(value).strip()
     if not value or len(value) > max_length or "\n" in value or "\r" in value:
         raise ValueError(f"invalid model {name}")
+    return value
+
+
+_ALLOWED_MODEL_PROVIDERS = frozenset({"", "openai", "chat_completions", "anthropic"})
+
+
+def _validate_model_provider(value: str) -> str:
+    value = str(value).strip().lower()
+    if value not in _ALLOWED_MODEL_PROVIDERS:
+        raise ValueError(f"invalid model_provider: {value!r}")
     return value
 
 
