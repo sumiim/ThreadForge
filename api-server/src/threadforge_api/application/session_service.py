@@ -319,6 +319,25 @@ class SessionService:
                 session_ids.append(session_id)
         return session_ids
 
+    def delete_sessions_for_device(self, device_id: str, owner_id: str) -> dict:
+        """解绑设备时级联删除该设备名下全部会话，清理孤儿会话索引。"""
+        owner_id = canonical_owner_id(owner_id)
+        session_ids: list[str] = []
+        for session_id in self._session_store.list_ids():
+            try:
+                session = self._load(session_id)
+            except SessionNotFoundError:
+                continue
+            if (
+                session.get("owner_id") == owner_id
+                and session.get("device_id") == device_id
+                and session.get("execution_environment") == "local_worker"
+            ):
+                session_ids.append(session_id)
+        if not session_ids:
+            return {"status": "deleted", "deleted_session_ids": []}
+        return self.delete_sessions(session_ids, owner_id)
+
     def ensure_sessions_deletable(self, session_ids: list[str], owner_id: str) -> None:
         if self._task_repo is None or not session_ids:
             return

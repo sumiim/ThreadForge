@@ -363,6 +363,15 @@ export default function WorkerDevices() {
                 {updateStatus?.status === 'installing' ? (
                   <Alert className="mt-2" type="info" showIcon message="正在安装更新，Worker 将自动重启" />
                 ) : null}
+                {updateStatus?.status === 'auth_failed' ? (
+                  <Alert
+                    className="mt-2"
+                    type="error"
+                    showIcon
+                    message="设备令牌失效，请重新配对"
+                    description="该 Worker 的配对凭据已被服务器拒绝（401/403），自动更新已暂停。请解绑本设备后重新配对。"
+                  />
+                ) : null}
                 {updateStatus?.status === 'failed' ? (
                   <Alert
                     className="mt-2"

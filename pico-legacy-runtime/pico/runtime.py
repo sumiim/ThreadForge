@@ -70,6 +70,20 @@ DURABLE_MEMORY_LINE_PATTERNS = (
 )
 SECRET_SHAPED_TEXT_PATTERN = re.compile(r"(?i)(\b(api[_ -]?key|token|secret|password)\b|sk-[A-Za-z0-9_-]{6,})")
 
+_READ_ONLY_TOOL_NAMES = frozenset({"list_files", "read_file", "search"})
+
+
+def _normalize_tool_args(name, args):
+    """把语义相同但字符串不同的路径参数（`.` / `./` / 空 / 结尾斜杠）归一化。"""
+    if not isinstance(args, dict):
+        return args
+    normalized = dict(args)
+    if name in _READ_ONLY_TOOL_NAMES and "path" in normalized:
+        path = str(normalized.get("path", "")).strip().replace("\\", "/")
+        normalized["path"] = path.rstrip("/") or "."
+    return normalized
+
+
 __all__ = ["Pico", "SessionStore"]
 
 
@@ -633,12 +647,23 @@ class Pico:
 
     def repeated_tool_call(self, name, args):
         # agent 很常见的一种坏循环，是在没有新信息的情况下反复发起同一调用。
-        # 这里提前挡掉最简单的这种循环。
+        # 只读工具在「最近 6 条、且该重复之后没有写工具」的窗口内同名同参才算坏循环；
+        # 写工具会改变工作区，之后重新 list/read 是合理的。
         tool_events = [item for item in self.session["history"] if item["role"] == "tool"]
         if len(tool_events) < 2:
             return False
-        recent = tool_events[-2:]
-        return all(item["name"] == name and item["args"] == args for item in recent)
+        normalized = _normalize_tool_args(name, args)
+        recent = tool_events[-6:]
+        for index, item in enumerate(recent):
+            if item.get("name") != name:
+                continue
+            if _normalize_tool_args(name, item.get("args")) != normalized:
+                continue
+            tail = recent[index + 1:]
+            if any(item.get("name") not in _READ_ONLY_TOOL_NAMES for item in tail):
+                continue  # 匹配之后有写工具，工作区已变，不算重复；继续找下一个匹配
+            return True
+        return False
 
     @staticmethod
     def new_task_id():

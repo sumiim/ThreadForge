@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Session, Workspace } from '../../api/types.ts'
-import { buildDeviceGroups, selectInitialNavigableSession } from './session-groups.ts'
+import { buildDeviceGroups, filterNavigableSessions, selectInitialNavigableSession } from './session-groups.ts'
 
 function workspace(overrides: Partial<Workspace> = {}): Workspace {
   return {
@@ -76,4 +76,15 @@ test('selects the first current session instead of an earlier unbound history it
 
   assert.equal(selectInitialNavigableSession([unbound, current], [workspace()])?.id, 'session_current')
   assert.equal(selectInitialNavigableSession([unbound], [workspace()]), undefined)
+})
+
+test('filterNavigableSessions drops unbound-device sessions from state', () => {
+  const unbound = session({ id: 'session_unbound', workspaceId: 'ws_unbound', deviceId: 'dev_unbound' })
+  const current = session({ id: 'session_current' })
+
+  assert.deepEqual(
+    filterNavigableSessions([unbound, current], [workspace()]).map((item) => item.id),
+    ['session_current'],
+  )
+  assert.deepEqual(filterNavigableSessions([unbound], [workspace()]), [])
 })

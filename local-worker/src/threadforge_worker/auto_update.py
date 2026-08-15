@@ -11,7 +11,12 @@ import logging
 from collections.abc import Callable
 
 from .config import ConfigStore
-from .updater import UpdateStatusCallback, apply_update, update_available
+from .updater import (
+    DeviceUnauthorizedError,
+    UpdateStatusCallback,
+    apply_update,
+    update_available,
+)
 
 DEFAULT_CHECK_INTERVAL_SECONDS = 5 * 60
 DEFAULT_RETRY_INTERVAL_SECONDS = 30
@@ -42,6 +47,11 @@ def run_auto_update_loop(
         next_wait = max(1.0, check_interval_seconds)
         try:
             available, _ = check_update_fn(store)
+        except DeviceUnauthorizedError as exc:
+            # 永久鉴权失败：令牌失效后重试无意义，退到正常检查间隔，避免每 30s 打一次 401。
+            LOGGER.warning("Worker device token is no longer authorized: %s", exc)
+            next_wait = max(1.0, check_interval_seconds)
+            continue
         except Exception as exc:
             LOGGER.warning("Worker update check skipped: %s", exc)
             next_wait = max(1.0, retry_interval_seconds)

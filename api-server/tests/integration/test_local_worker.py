@@ -835,3 +835,21 @@ def test_single_worker_runs_concurrent_tasks_up_to_quota(client):
         )
         assert third.status_code == 409
         assert third.json()["error"]["code"] == "worker_concurrency_limit"
+
+
+def test_revoke_device_cascades_to_sessions(client):
+    paired = _pair(client)
+    headers = {"Authorization": f"Bearer {paired['device_token']}"}
+    with client.websocket_connect("/api/v1/workers/connect", headers=headers) as socket:
+        workspace_id = _hello(socket)
+        session = client.post(
+            "/api/v1/sessions", json={"workspace_id": workspace_id, "title": "orphan"}
+        ).json()
+        assert any(
+            item["session_id"] == session["session_id"]
+            for item in client.get("/api/v1/sessions").json()["items"]
+        )
+
+    assert client.delete(f"/api/v1/devices/{paired['device_id']}").status_code == 200
+    remaining = client.get("/api/v1/sessions").json()["items"]
+    assert all(item["session_id"] != session["session_id"] for item in remaining)

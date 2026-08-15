@@ -49,7 +49,7 @@ import {
   terminalFailureMessage,
 } from './session-state.ts'
 import type { HistoryStatus } from './session-state.ts'
-import { selectInitialNavigableSession } from '../features/sessions/session-groups'
+import { filterNavigableSessions, selectInitialNavigableSession } from '../features/sessions/session-groups'
 import { workspaceKey } from '../features/sessions/workspaceIdentity'
 import { mergeRunIndex } from './run-events'
 
@@ -548,6 +548,9 @@ export function useSessions(): UseSessions {
           phase: envelope.phase ? String(envelope.phase) : undefined,
           tool_name: envelope.data.tool_name ? String(envelope.data.tool_name) : undefined,
           tool_call_id: envelope.data.tool_call_id ? String(envelope.data.tool_call_id) : undefined,
+          args_preview: envelope.data.args_preview && typeof envelope.data.args_preview === 'object'
+            ? envelope.data.args_preview as Record<string, unknown>
+            : undefined,
           intent: envelope.data.intent ? String(envelope.data.intent) : undefined,
           step_count: envelope.data.step_count == null ? undefined : Number(envelope.data.step_count),
           status: envelope.status ? String(envelope.status) : envelope.data.status ? String(envelope.data.status) : undefined,
@@ -992,8 +995,9 @@ export function useSessions(): UseSessions {
             ),
             messages: [],
           }))
-        setSessions(items)
-        const initialSession = selectInitialNavigableSession(items, wsRes.items)
+        const navigable = filterNavigableSessions(items, wsRes.items)
+        setSessions(navigable)
+        const initialSession = selectInitialNavigableSession(navigable, wsRes.items)
         if (initialSession) {
           setHistoryStatus('loading')
           activeIdRef.current = initialSession.id
@@ -1181,7 +1185,7 @@ export function useSessions(): UseSessions {
               updatedAt,
             } as Session & { updatedAt?: string }
           })
-          return next
+          return filterNavigableSessions(next, workspaces)
         })
         setSyncVersion((value) => value + 1)
       } catch {
@@ -1198,7 +1202,7 @@ export function useSessions(): UseSessions {
       window.removeEventListener('focus', onFocus)
       window.clearInterval(timer)
     }
-  }, [findActiveRun, runtimeConfig?.model])
+  }, [findActiveRun, runtimeConfig?.model, workspaces])
 
   // ---- 用户操作 ---------------------------------------------------------------
 

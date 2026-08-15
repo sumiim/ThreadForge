@@ -1754,6 +1754,7 @@ def _parse_update_status(raw) -> dict:
         "installing",
         "current",
         "failed",
+        "auth_failed",
         "unsupported",
     }
     if status not in allowed:

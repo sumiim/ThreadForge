@@ -7,6 +7,7 @@ import json
 
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, status
 
+from ...application.session_service import SessionService
 from ...domain.errors import AppError, AuthorizationDeniedError, WorkerProtocolError
 from ...domain.identity import Actor
 from ...infrastructure.device_store import DeviceStore, PairingCodeStore
@@ -279,8 +280,11 @@ def revoke_device(
     device_id: str,
     actor: Actor = Depends(get_actor),
     worker_hub: WorkerHub = Depends(get_worker_hub),
+    session_service: SessionService = Depends(get_session_service),
 ) -> dict:
     worker_hub.revoke(device_id, actor.owner_id)
+    # 解绑后级联删除该设备的孤儿会话索引，避免前端残留「本地 Worker 不存在」。
+    session_service.delete_sessions_for_device(device_id, actor.owner_id)
     return {"status": "revoked", "device_id": device_id}
 
 
