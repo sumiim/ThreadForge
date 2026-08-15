@@ -38,6 +38,7 @@ _SESSION_SYNC_CHUNK_SIZE = 100
 _MESSAGE_CONTENT_MAX = 4000
 _HISTORY_PAYLOAD_CONTENT_BUDGET = 1700 * 1024
 WORKER_PROTOCOL_VERSION = 1
+_UPDATE_RETRY_COOLDOWN_SECONDS = 300
 LOGGER = logging.getLogger(__name__)
 
 
@@ -88,6 +89,7 @@ class WorkerClient:
         self._stop_event = threading.Event()
         self._updating = threading.Event()
         self._ready_event = threading.Event()
+        self._last_update_failure_at = 0.0
 
     @property
     def connected(self) -> bool:
@@ -611,6 +613,8 @@ class WorkerClient:
         }
         if not request_id:
             response.update(status="failed", error="update_unavailable")
+        elif self._update_backoff_active():
+            response.update(status="failed", error="update_backoff")
         elif not self.begin_update():
             response.update(status="failed", error="worker_busy")
         else:
@@ -624,6 +628,11 @@ class WorkerClient:
             return
         self._send(response)
 
+    def _update_backoff_active(self) -> bool:
+        if self._last_update_failure_at <= 0:
+            return False
+        return time.monotonic() - self._last_update_failure_at < _UPDATE_RETRY_COOLDOWN_SECONDS
+
     def _run_manual_update(self) -> None:
         try:
             updated = apply_update(self.store, self.report_update_status)
@@ -631,6 +640,8 @@ class WorkerClient:
                 # The installer replaces the binaries after this process exits.
                 self.stop()
         except Exception as exc:
+            # 失败后进入冷却期，避免服务器反复下发 worker.update 把设备卡在 updating。
+            self._last_update_failure_at = time.monotonic()
             LOGGER.warning("Manual Worker update failed: %s", exc)
         finally:
             self.end_update()

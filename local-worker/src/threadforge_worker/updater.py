@@ -36,6 +36,7 @@ _DOWNLOAD_READ_BYTES = 64 * 1024
 _DOWNLOAD_TIMEOUT_SECONDS = 30
 _DOWNLOAD_RETRY_LIMIT = 5
 _DOWNLOAD_RETRY_DELAY_SECONDS = 1.0
+_DOWNLOAD_RETRY_MAX_DELAY_SECONDS = 30.0
 _STALL_CHECK_SECONDS = 30.0
 _MIN_DOWNLOAD_BYTES_PER_SECOND = 8 * 1024
 _PROGRESS_STEP_BYTES = 256 * 1024
@@ -206,6 +207,21 @@ def load_update_status(store: ConfigStore) -> dict:
         return {}
 
 
+_PERMANENT_DOWNLOAD_ERROR_MARKERS = (
+    "exceeded its signed size",
+    "does not support resumable downloads",
+    "invalid byte range",
+)
+
+
+def _download_error_is_permanent(exc) -> bool:
+    """永久失败（鉴权 / 超限 / 服务器不支持续传）不应重试，应立即停止。"""
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in {401, 403}
+    message = str(exc)
+    return any(marker in message for marker in _PERMANENT_DOWNLOAD_ERROR_MARKERS)
+
+
 def _download_installer(
     store: ConfigStore,
     artifact: dict,
@@ -319,6 +335,14 @@ def _download_installer(
                             )
             consecutive_failures = 0
         except Exception as exc:
+            # 401/403 属永久鉴权失败，转为 auth_failed 语义，立即停止（不重试）。
+            if isinstance(exc, urllib.error.HTTPError) and exc.code in {401, 403}:
+                raise DeviceUnauthorizedError(
+                    f"device token was rejected (HTTP {exc.code})"
+                ) from exc
+            # 超限 / 服务器不支持续传 / 字节范围非法等永久失败不重试，立即停止。
+            if _download_error_is_permanent(exc):
+                raise
             if total > range_start:
                 consecutive_failures = 0
             else:
@@ -328,6 +352,10 @@ def _download_installer(
                     f"Worker update download failed after {_DOWNLOAD_RETRY_LIMIT} retries: {exc}"
                 ) from exc
             retry_number = max(1, consecutive_failures)
+            delay = min(
+                _DOWNLOAD_RETRY_MAX_DELAY_SECONDS,
+                _DOWNLOAD_RETRY_DELAY_SECONDS * (2 ** (retry_number - 1)),
+            )
             _publish_status(
                 store,
                 status_callback,
@@ -343,7 +371,7 @@ def _download_installer(
                 retry_count=retry_number,
                 error=str(exc)[:500],
             )
-            time.sleep(_DOWNLOAD_RETRY_DELAY_SECONDS * retry_number)
+            time.sleep(delay)
             _publish_status(
                 store,
                 status_callback,
