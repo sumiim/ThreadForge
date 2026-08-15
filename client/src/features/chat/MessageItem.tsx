@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import Markdown from '../../components/Markdown'
 import type { Message } from '../../api/types'
 import ToolCallCard from './ToolCallCard'
