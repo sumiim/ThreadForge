@@ -6,7 +6,12 @@ import threading
 from copy import copy
 from dataclasses import dataclass
 
-from pico.approval import ApprovalOutcome, ApprovalRequest, ApprovalStrategy, strategy_for_mode
+from pico.approval import (
+    ApprovalOutcome,
+    ApprovalRequest,
+    ApprovalStrategy,
+    strategy_for_mode,
+)
 from pico.run_store import RunStore
 from pico.security import redact_artifact
 from pico.task_state import (
