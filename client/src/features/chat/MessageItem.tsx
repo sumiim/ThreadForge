@@ -94,6 +94,11 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
             </div>
           </details>
         ) : null}
+        {message.commentary && (
+          <div className="py-1 whitespace-pre-wrap text-sm italic text-stone-500">
+            {message.commentary}
+          </div>
+        )}
         {message.toolCalls?.map((toolCall) => (
           <div key={toolCall.id} className="mt-3 max-w-full">
             <ToolCallCard

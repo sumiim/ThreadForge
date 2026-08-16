@@ -2495,6 +2495,7 @@ def _sanitize_terminal_error(value) -> dict:
         "error_code": code,
         "error_retryable": bool(value.get("retryable", False)),
         "error_attempts": min(10, _nonnegative_int(value.get("attempts", 0))),
+        "error_detail": str(value.get("detail", ""))[:500],
     }
 
 
