@@ -136,6 +136,16 @@ class AppendMessageRequest(BaseModel):
         return value
 
 
+class ConfigureProviderRequest(BaseModel):
+    # api_key 只经 Worker socket 转发到 device 本地，中央不落。
+    device_id: str = Field(min_length=1, max_length=200)
+    base_url: str = Field(min_length=1, max_length=2048)
+    api_key: str = Field(min_length=1, max_length=8192)
+    model: str = Field(min_length=1, max_length=200)
+    protocol: _PROVIDER_PROTOCOLS
+    reasoning_efforts: list[str] = []
+
+
 class RenameEntityRequest(BaseModel):
     display_name: str = Field(min_length=1, max_length=200)
     expected_updated_at: str | None = Field(default=None, max_length=64)

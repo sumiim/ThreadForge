@@ -254,7 +254,7 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
             ) : view === 'mcp' ? (
               <McpView items={mcpServers} />
             ) : (
-              <ProviderView />
+              <ProviderView deviceId={active?.deviceId} />
             )}
           </Content>
         </Layout>

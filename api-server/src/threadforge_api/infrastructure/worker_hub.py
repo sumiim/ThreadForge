@@ -140,6 +140,7 @@ class WorkerHub:
         self._workspace_requests: dict[str, WorkspaceSelectionRequest] = {}
         self._history_requests: dict[str, PendingWorkerRequest] = {}
         self._model_requests: dict[str, PendingWorkerRequest] = {}
+        self._provider_requests: dict[str, PendingWorkerRequest] = {}
         self._rename_requests: dict[str, PendingWorkerRequest] = {}
         self._delete_requests: dict[str, PendingWorkerRequest] = {}
         self._uninstall_requests: dict[str, PendingWorkerRequest] = {}
@@ -364,6 +365,57 @@ class WorkerHub:
                 "local model configuration was rejected",
                 {"reason": result.get("error", "model_configuration_failed")},
             )
+
+    async def configure_provider(
+        self,
+        *,
+        device_id: str,
+        owner_id: str,
+        provider_id: str,
+        base_url: str,
+        api_key: str,
+        model: str,
+        protocol: str,
+        reasoning_efforts: list[str] | None = None,
+    ) -> dict:
+        self._devices.get_for_owner(device_id, owner_id)
+        request_id = "provider_" + uuid.uuid4().hex
+        future = self._register_pending_request(
+            self._provider_requests,
+            request_id=request_id,
+            device_id=device_id,
+            owner_id=owner_id,
+            capability="model_configuration",
+        )
+        timed_out = False
+        try:
+            self._send(
+                device_id,
+                {
+                    "type": "provider.configure",
+                    "request_id": request_id,
+                    "provider_id": provider_id,
+                    "base_url": base_url,
+                    "api_key": api_key,
+                    "model": model,
+                    "protocol": protocol,
+                    "reasoning_efforts": reasoning_efforts or [],
+                },
+            )
+            result = await asyncio.wait_for(future, timeout=10)
+        except asyncio.TimeoutError as exc:
+            timed_out = True
+            raise WorkerOfflineError("provider configuration request timed out") from exc
+        finally:
+            if not timed_out:
+                with self._lock:
+                    self._provider_requests.pop(request_id, None)
+        if result.get("status") != "completed":
+            raise WorkerCommandFailedError(
+                "local provider configuration was rejected",
+                {"reason": result.get("error", "provider_configuration_failed")},
+            )
+        return {"provider_id": provider_id, "status": "completed"}
         return {"status": "completed", "model": result.get("model", "")}
 
     async def rename_entity(
@@ -610,6 +662,7 @@ class WorkerHub:
         for requests in (
             self._history_requests,
             self._model_requests,
+            self._provider_requests,
             self._rename_requests,
             self._delete_requests,
             self._uninstall_requests,
@@ -867,6 +920,8 @@ class WorkerHub:
             self._handle_history_result(connection, message)
         elif message_type == "model.configuration.completed":
             self._handle_model_configuration_completed(connection, message)
+        elif message_type == "provider.configuration.completed":
+            self._handle_provider_configuration_completed(connection, message)
         elif message_type == "entity.rename.completed":
             self._handle_rename_completed(connection, message)
         elif message_type == "entity.delete.completed":
@@ -1136,6 +1191,39 @@ class WorkerHub:
             {"type": "model.configuration.ack", "request_id": request_id},
         )
 
+    def _handle_provider_configuration_completed(
+        self, connection: WorkerConnection, message: dict
+    ) -> None:
+        request_id = str(message.get("request_id", ""))
+        with self._lock:
+            request = self._provider_requests.get(request_id)
+            if (
+                request is None
+                or request.device_id != connection.device.device_id
+                or request.owner_id != connection.device.owner_id
+            ):
+                raise WorkerProtocolError("provider configuration request is not pending")
+        status = str(message.get("status", ""))
+        if status == "completed":
+            result = {"status": "completed", "provider_id": str(message.get("provider_id", ""))}
+        elif status == "failed":
+            result = {
+                "status": "failed",
+                "error": _safe_error_code(
+                    message.get("error"), "provider_configuration_failed"
+                ),
+            }
+        else:
+            raise WorkerProtocolError("invalid provider configuration status")
+        if not request.future.done():
+            request.future.set_result(result)
+        with self._lock:
+            self._provider_requests.pop(request_id, None)
+        self._send(
+            connection.device.device_id,
+            {"type": "provider.configuration.ack", "request_id": request_id},
+        )
+
     def _handle_workspace_selection_completed(
         self, connection: WorkerConnection, message: dict
     ) -> None:
@@ -1383,6 +1471,7 @@ class WorkerHub:
         for requests in (
             self._history_requests,
             self._model_requests,
+            self._provider_requests,
             self._rename_requests,
             self._delete_requests,
             self._uninstall_requests,

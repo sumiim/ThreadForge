@@ -4,6 +4,7 @@ import { ApiOutlined, PlusOutlined } from '@ant-design/icons'
 import type { Provider, ProviderProtocol } from '../../api/types'
 import {
   activateProvider,
+  configureProvider,
   createProvider,
   deleteProvider,
   listProviders,
@@ -27,7 +28,7 @@ interface FormValues {
   api_key?: string
 }
 
-export default function ProviderView() {
+export default function ProviderView({ deviceId }: { deviceId?: string }) {
   const [providers, setProviders] = useState<Provider[]>([])
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
@@ -87,12 +88,29 @@ export default function ProviderView() {
     const values = await form.validateFields()
     setSaving(true)
     try {
+      let providerId: string
       if (editing) {
-        await updateProvider(editing.provider_id, values)
+        const updated = await updateProvider(editing.provider_id, values)
+        providerId = updated.provider_id
         message.success('已保存')
       } else {
-        await createProvider(values)
+        const created = await createProvider(values)
+        providerId = created.provider_id
         message.success('已创建')
+      }
+      // api_key 只推送到 Worker 本地（中央不落）；device 未定或未填 key 时跳过。
+      if (deviceId && values.api_key?.trim()) {
+        try {
+          await configureProvider(providerId, {
+            device_id: deviceId,
+            base_url: values.base_url,
+            api_key: values.api_key,
+            model: values.model ?? '',
+            protocol: values.protocol,
+          })
+        } catch {
+          message.warning('供应商已保存，但 API Key 未能推送到 Worker，请稍后重试')
+        }
       }
       setModalOpen(false)
       void load()

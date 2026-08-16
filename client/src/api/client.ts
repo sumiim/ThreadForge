@@ -223,6 +223,23 @@ export function configureWorkerModel(
   })
 }
 
+export function configureProvider(
+  providerId: string,
+  config: {
+    device_id: string
+    base_url: string
+    api_key: string
+    model: string
+    protocol: string
+    reasoning_efforts?: string[]
+  },
+): Promise<{ provider_id: string; status: string }> {
+  return request(`/api/v1/providers/${encodeURIComponent(providerId)}/configure`, {
+    method: 'POST',
+    body: JSON.stringify(config),
+  })
+}
+
 const WORKER_RELEASE_CACHE_MS = 30_000
 let workerReleaseCache: { manifest: WorkerReleaseManifest; expiresAt: number } | null = null
 let workerReleaseRequest: Promise<WorkerReleaseManifest> | null = null
