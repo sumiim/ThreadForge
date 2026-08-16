@@ -323,6 +323,7 @@ export interface SessionRun {
   modelId?: string
   reasoningEffort?: ReasoningEffort
   permissionMode?: PermissionMode
+  input?: string
   items: RunIndexItem[]
 }
 

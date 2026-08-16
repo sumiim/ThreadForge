@@ -1062,6 +1062,7 @@ export function useSessions(): UseSessions {
             updatedAt: task.updated_at,
             modelId: task.model_id,
             reasoningEffort: task.reasoning_effort,
+            input: task.input,
             items: task.run_index ?? [],
           }))
         const loaded: Session = {
@@ -1357,6 +1358,7 @@ export function useSessions(): UseSessions {
                 modelId: modelId ?? activeSession.model,
                 reasoningEffort,
                 permissionMode,
+                input: content.trim(),
                 items: [],
               },
             ],
