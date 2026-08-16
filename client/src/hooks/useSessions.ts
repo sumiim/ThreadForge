@@ -1,6 +1,7 @@
 import { message as notify } from 'antd'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  appendTaskMessage,
   cancelTask,
   createSession as apiCreateSession,
   createTask,
@@ -1273,11 +1274,30 @@ export function useSessions(): UseSessions {
   const sendMessage = useCallback(
     (content: string, modelId?: string, reasoningEffort: ReasoningEffort = 'none', permissionMode: PermissionMode = 'default') => {
       const sessionId = activeId
-      if (!sessionId || !content.trim() || runningSessionIds.has(sessionId)) return
+      if (!sessionId || !content.trim()) return
       const activeSession = sessionsRef.current.find((session) => session.id === sessionId)
       const historyStatus = resolveHistoryStatus(sessionId, loadedRef.current, historyFailures)
       if (!activeSession || !historyAllowsSending(Boolean(activeSession.draft), historyStatus)) {
         notify.warning(historyStatus === 'error' ? '请先重新加载会话历史' : '会话历史仍在加载，请稍候')
+        return
+      }
+      // 运行中：追加到当前 in-flight 任务（inbox 1.5），不新建任务、不新开占位回答。
+      const activeRun = findActiveRun(sessionId)
+      if (activeRun) {
+        const now = new Date().toISOString()
+        const userId = nextId('m-user')
+        updateSessionMessages(sessionId, (messages) => [
+          ...messages,
+          { id: userId, role: 'user', content: content.trim(), createdAt: now },
+        ])
+        broadcastSessionChange(sessionId)
+        ;(async () => {
+          try {
+            await appendTaskMessage(activeRun.taskId, content.trim(), true)
+          } catch (err) {
+            notify.error(friendlyMessage(err))
+          }
+        })()
         return
       }
       setRunningForSession(sessionId, true)
@@ -1363,7 +1383,7 @@ export function useSessions(): UseSessions {
         }
       })()
     },
-    [activeId, attachEventStream, broadcastSessionChange, historyFailures, runningSessionIds, setRunningForSession, setStoppingForSession, updateProgress, updateSession, updateSessionMessages],
+    [activeId, attachEventStream, broadcastSessionChange, findActiveRun, historyFailures, setRunningForSession, setStoppingForSession, updateProgress, updateSession, updateSessionMessages],
   )
 
   const approveTool = useCallback(

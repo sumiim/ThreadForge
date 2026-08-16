@@ -430,6 +430,17 @@ export function createTask(
   })
 }
 
+export function appendTaskMessage(
+  taskId: string,
+  content: string,
+  wake: boolean = true,
+): Promise<{ task_id: string; status: string }> {
+  return request(`/api/v1/tasks/${encodeURIComponent(taskId)}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ content, wake }),
+  })
+}
+
 interface RenameResult {
   display_name: string
   display_name_source?: 'auto' | 'user'

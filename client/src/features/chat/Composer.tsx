@@ -46,7 +46,7 @@ export default function Composer({ model, modelOptions, running, stopping = fals
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
 
   const handleSend = () => {
-    if (!value.trim() || running || disabled) return
+    if (!value.trim() || disabled) return
     onSend(value, activeModel?.id ?? model, activeReasoningEffort, permissionMode)
     setValue('')
   }
@@ -65,9 +65,9 @@ export default function Composer({ model, modelOptions, running, stopping = fals
                   handleSend()
                 }
               }}
-              placeholder={running ? 'Agent 正在运行…' : disabled ? '会话历史尚未就绪' : '描述任务，Enter 发送，Shift + Enter 换行'}
+              placeholder={running ? 'Agent 正在运行，可继续补充要求（Enter 追加）' : disabled ? '会话历史尚未就绪' : '描述任务，Enter 发送，Shift + Enter 换行'}
               autoSize={{ minRows: 1, maxRows: 8 }}
-              disabled={running || disabled}
+              disabled={disabled}
               variant="borderless"
               className="text-sm"
               // 压掉 antd borderless 的 focus-visible 内描边（键盘焦点可见性由容器 ring 承担）
@@ -121,17 +121,29 @@ export default function Composer({ model, modelOptions, running, stopping = fals
                 />
               </div>
               {running ? (
-                <Button
-                  danger
-                  type="primary"
-                  icon={<StopOutlined />}
-                  onClick={onStop}
-                  loading={stopping}
-                  disabled={stopping}
-                  className="transition-transform active:scale-95"
-                >
-                  {stopping ? '正在停止' : '停止'}
-                </Button>
+                <>
+                  <Button
+                    type="primary"
+                    shape="circle"
+                    icon={<SendOutlined />}
+                    disabled={!value.trim()}
+                    onClick={handleSend}
+                    aria-label="追加"
+                    title="追加到当前任务"
+                    className="transition-transform active:scale-95"
+                  />
+                  <Button
+                    danger
+                    type="primary"
+                    icon={<StopOutlined />}
+                    onClick={onStop}
+                    loading={stopping}
+                    disabled={stopping}
+                    className="transition-transform active:scale-95"
+                  >
+                    {stopping ? '正在停止' : '停止'}
+                  </Button>
+                </>
               ) : (
                 <Button
                   type="primary"
