@@ -314,6 +314,13 @@ class WorkerHub:
                 with self._lock:
                     self._history_requests.pop(request_id, None)
         if result.get("status") != "completed":
+            # 旧版 Worker 对「本地无该 session」返回 failed/history_unavailable。
+            # 控制面已有该会话的 task 失败记录（run_index），历史为空是合法降级，
+            # 不应让整条 get_session 接口 422 导致前端「历史加载失败」。
+            # 新 Worker 直接返回 completed + 空历史（error=history_unavailable 标记），
+            # 此处兼容旧 Worker 的 failed 语义。
+            if result.get("error") == "history_unavailable":
+                return {"messages": [], "message_total": 0}
             raise WorkerCommandFailedError(
                 "local session history is unavailable",
                 {"reason": result.get("error", "history_unavailable")},

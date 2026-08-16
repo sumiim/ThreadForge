@@ -437,7 +437,12 @@ class WorkerClient:
                 "type": "session.history.result",
                 "request_id": request_id,
                 "session_id": session_id,
-                "status": "failed",
+                "status": "completed",
+                # 本地没有该 session（如任务失败从未持久化）或读取失败时，
+                # 返回空历史而非 failed：控制面已有 task 失败记录（run_index），
+                # 空历史让前端能打开会话并展示失败原因，而不是整条接口 422。
+                "message_total": 0,
+                "messages": [],
                 "error": "history_unavailable",
             }
         try:
