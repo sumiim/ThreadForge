@@ -90,6 +90,7 @@ COMPLETION_METADATA_KEYS = (
     "prompt_cache_retention",
     "requested_reasoning_effort",
     "effective_reasoning_effort",
+    "reasoning_summary",
 )
 
 PLAN_MAXIMUM_BUDGETS = {
