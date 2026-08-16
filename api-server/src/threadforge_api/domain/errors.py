@@ -1,4 +1,4 @@
-"""Stable domain error contract: code / message / details / http status."""
+﻿"""Stable domain error contract: code / message / details / http status."""
 
 from __future__ import annotations
 
@@ -34,6 +34,10 @@ class SessionNotFoundError(NotFoundError):
 
 class TaskNotFoundError(NotFoundError):
     code = "task_not_found"
+
+
+class ProviderNotFoundError(NotFoundError):
+    code = "provider_not_found"
 
 
 class ApprovalNotFoundError(NotFoundError):

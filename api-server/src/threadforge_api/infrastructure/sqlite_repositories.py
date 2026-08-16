@@ -21,10 +21,12 @@ from ..domain.entities import Approval, Task, utc_now
 from ..domain.errors import (
     ActiveTaskExistsError,
     ApprovalNotFoundError,
+    ProviderNotFoundError,
     RunNotFoundError,
     TaskNotFoundError,
 )
 from ..domain.identity import canonical_owner_id
+from ..domain.providers import Provider
 from .json_repositories import (
     RecordCorruptedError,
     RecordNotFoundError,
@@ -696,3 +698,123 @@ def _approval_from_payload(payload: dict, record_id: str) -> Approval:
         return Approval.from_dict(payload)
     except (KeyError, TypeError, ValueError) as exc:
         raise RecordCorruptedError(f"corrupted Approval record for {record_id}") from exc
+
+
+def _provider_from_payload(payload: dict, record_id: str) -> Provider:
+    try:
+        return Provider.from_dict(payload)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RecordCorruptedError(f"corrupted Provider record for {record_id}") from exc
+
+
+class SqliteProviderRepository:
+    """Provider CRUD（2.7 供应商窗口配置面）。只存非秘密字段；api_key 不在实体里。"""
+
+    def __init__(self, store: SqliteStore, json_root: Path | None = None):
+        self._store = store
+        self.mirror = _JsonMirror(json_root) if json_root is not None else None
+
+    def create(self, provider: Provider) -> Provider:
+        payload = provider.to_dict()
+        with self._store.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO providers(
+                    provider_id, owner_id, device_id, name, protocol, base_url,
+                    model, models, reasoning_tier, timeout, concurrency, state,
+                    is_default, last_test_at, last_error, schema_version, payload
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    provider.provider_id,
+                    provider.owner_id,
+                    provider.device_id,
+                    provider.name,
+                    provider.protocol,
+                    provider.base_url,
+                    provider.model,
+                    _json_dumps(provider.models),
+                    provider.reasoning_tier,
+                    provider.timeout,
+                    provider.concurrency,
+                    provider.state,
+                    int(provider.is_default),
+                    provider.last_test_at,
+                    provider.last_error,
+                    provider.schema_version,
+                    _json_dumps(payload),
+                ),
+            )
+        if self.mirror is not None:
+            self.mirror.write(provider.provider_id, payload)
+        return provider
+
+    def get(self, provider_id: str, owner_id: str) -> Provider:
+        row = self._store.query_one(
+            "SELECT payload FROM providers WHERE provider_id=? AND owner_id=?",
+            (provider_id, canonical_owner_id(owner_id)),
+        )
+        if row is None:
+            raise ProviderNotFoundError(provider_id)
+        return _provider_from_payload(_json_loads(row["payload"], provider_id), provider_id)
+
+    def list(self, owner_id: str, device_id: str = "") -> list[Provider]:
+        owner_id = canonical_owner_id(owner_id)
+        if device_id:
+            rows = self._store.query(
+                "SELECT payload FROM providers WHERE owner_id=? AND device_id=? ORDER BY name",
+                (owner_id, device_id),
+            )
+        else:
+            rows = self._store.query(
+                "SELECT payload FROM providers WHERE owner_id=? ORDER BY name", (owner_id,)
+            )
+        out = []
+        for row in rows:
+            payload = _json_loads(row["payload"], "provider")
+            provider_id = str(payload.get("provider_id", ""))
+            out.append(_provider_from_payload(payload, provider_id))
+        return out
+
+    def update(self, provider_id: str, owner_id: str, fn: Callable[[Provider], Provider]) -> Provider:
+        owner_id = canonical_owner_id(owner_id)
+        with self._store.transaction() as conn:
+            row = conn.execute(
+                "SELECT payload FROM providers WHERE provider_id=? AND owner_id=?",
+                (provider_id, owner_id),
+            ).fetchone()
+            if row is None:
+                raise ProviderNotFoundError(provider_id)
+            current = _provider_from_payload(_json_loads(row["payload"], provider_id), provider_id)
+            updated = fn(current)
+            payload = updated.to_dict()
+            conn.execute(
+                """
+                UPDATE providers SET name=?, protocol=?, base_url=?, model=?, models=?,
+                    reasoning_tier=?, timeout=?, concurrency=?, state=?, is_default=?,
+                    last_test_at=?, last_error=?, schema_version=?, payload=?
+                WHERE provider_id=? AND owner_id=?
+                """,
+                (
+                    updated.name, updated.protocol, updated.base_url, updated.model,
+                    _json_dumps(updated.models), updated.reasoning_tier, updated.timeout,
+                    updated.concurrency, updated.state, int(updated.is_default),
+                    updated.last_test_at, updated.last_error, updated.schema_version,
+                    _json_dumps(payload), provider_id, owner_id,
+                ),
+            )
+        if self.mirror is not None:
+            self.mirror.write(provider_id, payload)
+        return updated
+
+    def delete(self, provider_id: str, owner_id: str) -> None:
+        owner_id = canonical_owner_id(owner_id)
+        with self._store.transaction() as conn:
+            cur = conn.execute(
+                "DELETE FROM providers WHERE provider_id=? AND owner_id=?",
+                (provider_id, owner_id),
+            )
+        if cur.rowcount == 0:
+            raise ProviderNotFoundError(provider_id)
+        if self.mirror is not None:
+            self.mirror.remove(provider_id)

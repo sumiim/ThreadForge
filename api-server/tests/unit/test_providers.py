@@ -1,12 +1,16 @@
 import uuid
+from dataclasses import replace
 
 import pytest
 
+from threadforge_api.domain.errors import ProviderNotFoundError
 from threadforge_api.domain.providers import (
     Provider,
     ProviderProtocol,
     validate_provider_payload,
 )
+from threadforge_api.infrastructure.sqlite_repositories import SqliteProviderRepository
+from threadforge_api.infrastructure.sqlite_store import SqliteStore
 
 
 def test_provider_round_trips_through_dict():
@@ -49,3 +53,31 @@ def test_validate_provider_payload_normalizes_and_rejects():
         validate_provider_payload(
             {"name": "x", "protocol": "ollama", "base_url": "https://api.example.com", "timeout": 1}
         )
+
+
+def test_provider_repository_crud(tmp_path):
+    store = SqliteStore(tmp_path / "control.sqlite3")
+    repo = SqliteProviderRepository(store, json_root=tmp_path / "providers")
+
+    provider = Provider(
+        provider_id="prv_" + "c" * 32,
+        owner_id=str(uuid.uuid4()),
+        device_id="dev_" + "d" * 32,
+        name="DeepSeek",
+        protocol=ProviderProtocol.OPENAI_COMPATIBLE.value,
+        base_url="https://api.example.com/v1",
+    )
+    repo.create(provider)
+    assert repo.get(provider.provider_id, provider.owner_id).name == "DeepSeek"
+    assert [p.name for p in repo.list(provider.owner_id)] == ["DeepSeek"]
+
+    repo.update(
+        provider.provider_id,
+        provider.owner_id,
+        lambda p: replace(p, name="Renamed"),
+    )
+    assert repo.get(provider.provider_id, provider.owner_id).name == "Renamed"
+
+    repo.delete(provider.provider_id, provider.owner_id)
+    with pytest.raises(ProviderNotFoundError):
+        repo.get(provider.provider_id, provider.owner_id)
