@@ -23,7 +23,7 @@ import {
   updateWorker,
 } from '../../api/client'
 import type { Device, WorkerReleaseManifest } from '../../api/types'
-import { getWorkerDeviceActionState } from './worker-actions'
+import { getWorkerDeviceActionState, workerPairingUri } from './worker-actions'
 import { workerIsReady } from './worker-version'
 
 const delay = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds))
@@ -126,7 +126,7 @@ export default function WorkerDevices() {
   }
 
   const startLocalService = async () => {
-    setNotice('已请求系统启动 ThreadForge Worker')
+    setNotice('已请求启动已配对的 ThreadForge Worker')
     window.location.assign('threadforge://worker/start')
     await delay(1500)
     await refresh()
@@ -433,16 +433,18 @@ export default function WorkerDevices() {
         </div>
       )}
       <Button className="mt-3" block icon={<LinkOutlined />} onClick={() => void createCode()}>
-        绑定新设备
+        生成新设备配对码
       </Button>
-      <Button
-        className="mt-2"
-        block
-        icon={<PoweroffOutlined />}
-        onClick={() => void startLocalService()}
-      >
-        启动这台电脑的 Worker
-      </Button>
+      <Tooltip title="仅启动已配对的 Worker，不会替换失效的设备令牌">
+        <Button
+          className="mt-2"
+          block
+          icon={<PoweroffOutlined />}
+          onClick={() => void startLocalService()}
+        >
+          启动已配对的 Worker
+        </Button>
+      </Tooltip>
       {pairing ? (
         <div className="mt-3 rounded-xl bg-stone-100 p-3">
           <div className="text-xs text-stone-500">
@@ -451,6 +453,15 @@ export default function WorkerDevices() {
           <Typography.Text copyable className="mt-1 block font-mono text-lg tracking-wider">
             {pairing.code}
           </Typography.Text>
+          <Button
+            className="mt-2"
+            size="small"
+            type="primary"
+            icon={<LinkOutlined />}
+            href={workerPairingUri(workerServer, pairing.code)}
+          >
+            连接这台电脑
+          </Button>
           <div className="mt-2 text-[11px] text-stone-500">
             在本机执行：
             <code className="break-all">
