@@ -264,6 +264,7 @@ def run_native(
         "answer_attempts": 0,
     }
     try:
+        started_at = time.monotonic()
         if record_session:
             agent.memory.set_task_summary(task_input)
             agent.session["memory"] = agent.memory.to_dict()
@@ -272,7 +273,7 @@ def run_native(
         # 这样 intent/预算能反映到 AgentLoop 创建的 state 上。
         # 先建一个临时 TaskState 供 intent 阶段的 hooks/attempt 记录使用；
         # AgentLoop 会创建正式 TaskState 并替换 agent.current_task_state。
-        agent.current_task_state = TaskState.create(
+        task_state = TaskState.create(
             run_id=str(run_id or agent.new_run_id()),
             task_id=str(task_id or agent.new_task_id()),
             user_request=task_input,
@@ -280,6 +281,7 @@ def run_native(
             max_read_files=agent.max_read_files,
             max_total_steps=agent.max_total_steps,
         )
+        agent.current_task_state = task_state
         intent, requires_research, intent_source, intent_attempts = _resolve_intent(
             agent,
             task_input,
@@ -306,7 +308,6 @@ def run_native(
             "native_loop_started",
             {"intent": intent, "step_budget": step_budget},
         )
-        started_at = time.monotonic()
         final_answer = _run_native_loop(
             agent,
             task_input,
@@ -375,12 +376,8 @@ def run_native(
         agent.event_sink = original_sink
         agent.model_client = original_model_client
 
-    if record_session and task_state is not None:
-        from pico.workspace import now as _now
-
-        agent.record({"role": "user", "content": task_input, "created_at": _now()})
-        agent.record({"role": "assistant", "content": final_answer, "created_at": _now()})
-
+    # AgentLoop.run() 已 record user + assistant（record_session 语义由 AgentLoop
+    # 控制）；run_native 不再重复 record，避免 message_total 翻倍。
     return BackendRunResult(
         task_state=task_state,
         final_answer=final_answer,

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from langgraph_pico import run_agent
+from langgraph_pico import run_native
 from langgraph_pico.inbox import InboxSource
 from pico import Pico
 from pico.approval import ApprovalOutcome, ApprovalRequest, ApprovalStrategy
@@ -665,16 +665,14 @@ def run_task(
     active.inbox = InboxSource()
     started = time.monotonic()
     try:
-        run_agent(
+        run_native(
             pico,
             task["input"],
             task_mode="auto",
             router_model_client=router_model_client,
-            enable_planning=True,
             task_id=task["task_id"],
             run_id=task["run_id"],
             workspace_id=task.get("workspace_id", ""),
-            planning_deadline_seconds=float(settings.get("planning_deadline_seconds", 75)),
             inbox=active.inbox,
         )
     except Exception as exc:
