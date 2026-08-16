@@ -853,3 +853,53 @@ def test_revoke_device_cascades_to_sessions(client):
     assert client.delete(f"/api/v1/devices/{paired['device_id']}").status_code == 200
     remaining = client.get("/api/v1/sessions").json()["items"]
     assert all(item["session_id"] != session["session_id"] for item in remaining)
+
+
+def test_session_history_unavailable_degrades_to_empty_history(client):
+    # 任务失败且 worker 本地从未持久化 session 时，控制面仍有 session + task 失败记录。
+    # worker 返回 failed/history_unavailable 时，get_session 应降级为 200 + 空历史，
+    # 而不是 422 导致前端「历史加载失败」。
+    paired = _pair(client)
+    headers = {"Authorization": f"Bearer {paired['device_token']}"}
+    with client.websocket_connect("/api/v1/workers/connect", headers=headers) as socket:
+        workspace_id = _hello(socket, capabilities=["local_history"])
+        session = client.post(
+            "/api/v1/sessions", json={"workspace_id": workspace_id, "title": "lost history"}
+        ).json()
+        # 模拟：控制面记录了任务（task_total > 0），但 worker 本地无该 session。
+        session_id = session["session_id"]
+        task = client.post(
+            "/api/v1/tasks", json={"session_id": session_id, "input": "hello"}
+        ).json()
+        assert socket.receive_json()["type"] == "task.start"
+        socket.send_json(
+            {
+                "type": "terminal",
+                "task_id": task["task_id"],
+                "status": "failed",
+                "stop_reason": "worker_runtime_error",
+                "final_answer": "",
+                "message_total": 0,
+                "session_persisted": False,
+            }
+        )
+        _wait_status(client, task["task_id"], "failed")
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            detail_future = executor.submit(client.get, f"/api/v1/sessions/{session_id}")
+            command = socket.receive_json()
+            assert command["type"] == "session.history.get"
+            # 旧版 Worker 语义：本地无 session → failed/history_unavailable
+            socket.send_json(
+                {
+                    "type": "session.history.result",
+                    "request_id": command["request_id"],
+                    "session_id": session_id,
+                    "status": "failed",
+                    "error": "history_unavailable",
+                }
+            )
+            detail = detail_future.result(timeout=2)
+        assert detail.status_code == 200
+        assert detail.json()["messages"] == []
+        assert detail.json()["task_total"] == 1

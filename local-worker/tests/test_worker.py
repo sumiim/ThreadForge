@@ -1280,6 +1280,36 @@ def test_history_read_and_model_configuration_protocol(tmp_path):
         ]
 
 
+def test_history_read_returns_empty_history_when_local_session_missing(tmp_path):
+    # 任务失败且本地从未持久化时，控制面仍有 session + task 失败记录；
+    # worker 应返回 completed + 空历史（而非 failed），避免 get_session 整条 422。
+    store = ConfigStore(tmp_path / "state")
+    session_id = "ses_" + "f" * 32
+    messages = []
+
+    class Socket:
+        def send(self, raw):
+            messages.append(json.loads(raw))
+
+    client = WorkerClient(store, WorkerConfig())
+    client._socket = Socket()
+    client._handle(
+        {
+            "type": "session.history.get",
+            "request_id": "hist_missing",
+            "session_id": session_id,
+            "message_limit": 100,
+        }
+    )
+    deadline = time.monotonic() + 1
+    while not messages and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert messages[0]["status"] == "completed"
+    assert messages[0]["messages"] == []
+    assert messages[0]["message_total"] == 0
+    assert messages[0]["error"] == "history_unavailable"
+
+
 def test_delete_workspace_removes_local_sessions_and_run_artifacts(tmp_path):
     store = ConfigStore(tmp_path / "state")
     workspace_root = tmp_path / "repo"
