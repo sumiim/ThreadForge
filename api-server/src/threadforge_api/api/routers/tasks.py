@@ -19,7 +19,12 @@ from ..dependencies import (
     get_task_service,
     require_csrf,
 )
-from ..models import AppendMessageRequest, ApprovalDecisionRequest, CreateTaskRequest, TaskQueuedResponse
+from ..models import (
+    AppendMessageRequest,
+    ApprovalDecisionRequest,
+    CreateTaskRequest,
+    TaskQueuedResponse,
+)
 
 router = APIRouter()
 

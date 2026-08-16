@@ -18,8 +18,8 @@ from pico.security import redact_artifact
 from pico.session_store import SessionStore
 
 from .application.artifact_service import ArtifactService
-from .application.session_service import SessionService
 from .application.provider_service import ProviderService
+from .application.session_service import SessionService
 from .application.task_service import TaskService
 from .config import Settings
 from .domain.enums import ApprovalStatus, TaskStatus

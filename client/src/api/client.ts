@@ -566,11 +566,11 @@ export function listProviders(): Promise<{ providers: Provider[] }> {
   return request('/api/v1/providers')
 }
 
-export function createProvider(body: Record<string, unknown>): Promise<Provider> {
+export function createProvider(body: object): Promise<Provider> {
   return request('/api/v1/providers', { method: 'POST', body: JSON.stringify(body) })
 }
 
-export function updateProvider(providerId: string, body: Record<string, unknown>): Promise<Provider> {
+export function updateProvider(providerId: string, body: object): Promise<Provider> {
   return request(`/api/v1/providers/${encodeURIComponent(providerId)}`, {
     method: 'PATCH',
     body: JSON.stringify(body),
