@@ -53,7 +53,7 @@ class ProviderService:
         owner_id = canonical_owner_id(owner_id)
         updatable = {
             "name", "protocol", "base_url", "model", "models",
-            "reasoning_tier", "timeout", "concurrency", "state",
+            "reasoning_efforts", "timeout", "concurrency", "state",
         }
 
         def _apply(provider: Provider) -> Provider:

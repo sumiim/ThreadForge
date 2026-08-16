@@ -212,7 +212,7 @@ class WorkerClient:
                     "model_provider": os.environ.get("PICO_MODEL_PROVIDER", ""),
                     "orchestration_backend": "langgraph-v1.1",
                     "update_status": load_update_status(self.store),
-                    "model_capabilities": _model_capabilities(),
+                    "model_capabilities": _model_capabilities(self.store),
                     "capabilities": [
                         "local_history",
                         "model_configuration",
@@ -958,7 +958,7 @@ def _runtime_reasoning_efforts() -> tuple[str, ...]:
     return _supported_reasoning_efforts()
 
 
-def _model_capabilities() -> dict:
+def _model_capabilities(store: ConfigStore | None = None) -> dict:
     """Worker-level model capability report.
 
     ``max_output_tokens`` mirrors the runtime's default output budget
@@ -969,6 +969,13 @@ def _model_capabilities() -> dict:
     model = os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4")
     model_provider = os.environ.get("PICO_MODEL_PROVIDER", "").strip().lower()
     efforts = list(_runtime_reasoning_efforts())
+    # 本地已配置 provider 时，用其声明的 model/reasoning_efforts（替代 env 推断）。
+    providers = store.list_providers() if store is not None else []
+    if providers:
+        first = providers[0]
+        model = str(first.get("model") or model)
+        efforts = [str(item) for item in (first.get("reasoning_efforts") or ["none"])]
+        model_provider = str(first.get("protocol") or model_provider)
     if model_provider == "chat_completions":
         provider_label = "chat-completions"
     elif model_provider == "anthropic":

@@ -97,7 +97,7 @@ class ProviderCreateRequest(BaseModel):
     base_url: str
     model: str = ""
     models: list[str] = Field(default_factory=list)
-    reasoning_tier: str = "none"
+    reasoning_efforts: list[str] = Field(default_factory=lambda: ["none"])
     timeout: int = Field(default=45, ge=5, le=600)
     concurrency: int = Field(default=1, ge=1, le=16)
     # api_key 只写 device 本地，中央不落；这里仅作 has_key 判断。
@@ -117,7 +117,7 @@ class ProviderUpdateRequest(BaseModel):
     base_url: str | None = None
     model: str | None = None
     models: list[str] | None = None
-    reasoning_tier: str | None = None
+    reasoning_efforts: list[str] | None = None
     timeout: int | None = Field(default=None, ge=5, le=600)
     concurrency: int | None = Field(default=None, ge=1, le=16)
     state: Literal["active", "disabled", "error"] | None = None

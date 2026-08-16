@@ -348,7 +348,7 @@ export interface Provider {
   base_url: string
   model: string
   models: string[]
-  reasoning_tier: string
+  reasoning_efforts: string[]
   timeout: number
   concurrency: number
   state: 'active' | 'disabled' | 'error'

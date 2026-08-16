@@ -18,11 +18,21 @@ const PROTOCOL_LABELS: Record<ProviderProtocol, string> = {
   ollama: 'Ollama',
 }
 
+const REASONING_EFFORT_OPTIONS = [
+  { value: 'none', label: '无' },
+  { value: 'minimal', label: '最小' },
+  { value: 'low', label: '低' },
+  { value: 'medium', label: '中' },
+  { value: 'high', label: '高' },
+  { value: 'xhigh', label: '极高' },
+]
+
 interface FormValues {
   name: string
   protocol: ProviderProtocol
   base_url: string
   model?: string
+  reasoning_efforts?: string[]
   timeout?: number
   concurrency?: number
   api_key?: string
@@ -78,6 +88,7 @@ export default function ProviderView({ deviceId }: { deviceId?: string }) {
       protocol: p.protocol,
       base_url: p.base_url,
       model: p.model,
+      reasoning_efforts: p.reasoning_efforts?.length ? p.reasoning_efforts : ['none'],
       timeout: p.timeout,
       concurrency: p.concurrency,
     })
@@ -107,6 +118,7 @@ export default function ProviderView({ deviceId }: { deviceId?: string }) {
             api_key: values.api_key,
             model: values.model ?? '',
             protocol: values.protocol,
+            reasoning_efforts: values.reasoning_efforts ?? ['none'],
           })
         } catch {
           message.warning('供应商已保存，但 API Key 未能推送到 Worker，请稍后重试')
@@ -253,6 +265,13 @@ export default function ProviderView({ deviceId }: { deviceId?: string }) {
           </Form.Item>
           <Form.Item name="model" label="默认模型">
             <Input placeholder="如 deepseek-chat" />
+          </Form.Item>
+          <Form.Item name="reasoning_efforts" label="推理档位" initialValue={['none']}>
+            <Select
+              mode="multiple"
+              options={REASONING_EFFORT_OPTIONS}
+              placeholder="选择该供应商支持的推理档位"
+            />
           </Form.Item>
           <div className="grid grid-cols-2 gap-3">
             <Form.Item name="timeout" label="超时（秒）">

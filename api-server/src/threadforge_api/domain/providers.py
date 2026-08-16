@@ -26,6 +26,24 @@ class ProviderState(str, Enum):
 
 _PROVIDER_ID = re.compile(r"^prv_[a-f0-9]{32}$")
 _HTTP_URL = re.compile(r"^https?://")
+_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
+
+
+def _normalize_reasoning_efforts(payload: dict) -> list[str]:
+    raw = payload.get("reasoning_efforts")
+    if raw is None:
+        tier = str(payload.get("reasoning_tier", "none")).strip().lower()
+        raw = [tier] if tier else ["none"]
+    if not isinstance(raw, list):
+        raw = [raw]
+    efforts = []
+    for item in raw:
+        value = str(item).strip().lower()
+        if value not in _REASONING_EFFORTS:
+            raise ValueError(f"invalid reasoning effort: {item!r}")
+        if value not in efforts:
+            efforts.append(value)
+    return efforts or ["none"]
 
 
 @dataclass
@@ -38,7 +56,7 @@ class Provider:
     base_url: str
     model: str = ""
     models: list[str] = field(default_factory=list)
-    reasoning_tier: str = "none"
+    reasoning_efforts: list[str] = field(default_factory=lambda: ["none"])
     timeout: int = 45
     concurrency: int = 1
     state: str = ProviderState.ACTIVE.value
@@ -57,7 +75,7 @@ class Provider:
             "base_url": self.base_url,
             "model": self.model,
             "models": list(self.models),
-            "reasoning_tier": self.reasoning_tier,
+            "reasoning_efforts": list(self.reasoning_efforts),
             "timeout": int(self.timeout),
             "concurrency": int(self.concurrency),
             "state": self.state,
@@ -69,6 +87,10 @@ class Provider:
 
     @classmethod
     def from_dict(cls, data: dict) -> Provider:
+        data = dict(data)
+        if "reasoning_efforts" not in data and "reasoning_tier" in data:
+            tier = str(data.get("reasoning_tier") or "").strip()
+            data["reasoning_efforts"] = [tier] if tier else ["none"]
         known = {field.name for field in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
         return cls(**{key: value for key, value in data.items() if key in known})
 
@@ -105,7 +127,7 @@ def validate_provider_payload(payload: dict) -> dict:
         "base_url": base_url,
         "model": str(payload.get("model", "")).strip(),
         "models": [str(item).strip() for item in payload.get("models", []) if str(item).strip()],
-        "reasoning_tier": str(payload.get("reasoning_tier", "none")).strip(),
+        "reasoning_efforts": _normalize_reasoning_efforts(payload),
         "timeout": timeout,
         "concurrency": concurrency,
         "state": state,
