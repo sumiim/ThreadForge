@@ -12,7 +12,9 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from threadforge_worker.config import ConfigStore, WorkerConfig
 from threadforge_worker.updater import (
+    DeviceUnauthorizedError,
     UpdateAlreadyRunningError,
+    _download_error_is_permanent,
     _update_lock,
     _verify_manifest,
     _version_tuple,
@@ -256,6 +258,49 @@ def test_apply_update_reports_failed_after_repeated_connection_errors(tmp_path, 
         apply_update(store, statuses.append)
     assert statuses[-1]["status"] == "failed"
     assert "after 5 retries" in statuses[-1]["error"]
+
+
+def test_download_error_is_permanent_classifies_permanent_vs_transient():
+    import urllib.error
+
+    assert _download_error_is_permanent(
+        urllib.error.HTTPError("https://x", 403, "Forbidden", {}, None)
+    )
+    assert _download_error_is_permanent(RuntimeError("Worker update exceeded its signed size"))
+    assert _download_error_is_permanent(RuntimeError("does not support resumable downloads"))
+    assert not _download_error_is_permanent(OSError("simulated connection reset"))
+    assert not _download_error_is_permanent(TimeoutError("stalled"))
+
+
+def test_apply_update_reports_auth_failed_without_retrying(tmp_path, monkeypatch):
+    import urllib.error
+
+    store = ConfigStore(tmp_path)
+    store.save(WorkerConfig(server_url="https://threadforge.example", device_token="token"))
+    artifact = b"0123456789"
+    manifest = {
+        "version": "99.0.0",
+        "platforms": {
+            "windows-x86_64": {
+                "filename": "threadforge-worker-windows-x86_64.exe",
+                "size": len(artifact),
+                "sha256": hashlib.sha256(artifact).hexdigest(),
+            }
+        },
+    }
+    statuses = []
+
+    def auth_fail_open(*_args, **_kwargs):
+        raise urllib.error.HTTPError("https://x", 403, "Forbidden", {}, None)
+
+    monkeypatch.setattr("threadforge_worker.updater.update_available", lambda _store: (True, manifest))
+    monkeypatch.setattr("threadforge_worker.updater.sys.platform", "win32")
+    monkeypatch.setattr("threadforge_worker.updater.urllib.request.urlopen", auth_fail_open)
+    monkeypatch.setattr("threadforge_worker.updater.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(DeviceUnauthorizedError):
+        apply_update(store, statuses.append)
+    assert statuses[-1]["status"] == "auth_failed"
 
 
 def test_update_lock_rejects_a_second_updater(tmp_path):
