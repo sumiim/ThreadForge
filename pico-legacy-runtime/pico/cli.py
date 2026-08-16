@@ -436,13 +436,15 @@ def _run_request(agent, prompt, args, router_model_client=None):
     if getattr(args, "backend", "native") == "native":
         answer = agent.ask(prompt)
         return answer, True, agent.current_task_state.stop_reason
+    # §7.7.1 阶段 2：--backend langgraph 兼容层走原生单循环（run_native），
+    # LangGraph 编排已删除；保持 CLI 契约（intent 路由 + 收尾 review gate）。
     try:
-        from langgraph_pico import run_agent
+        from langgraph_pico import run_native
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "langgraph backend is optional; install examples/langgraph-pico first"
         ) from exc
-    result = run_agent(
+    result = run_native(
         agent,
         prompt,
         acceptance=getattr(args, "acceptance", None),
