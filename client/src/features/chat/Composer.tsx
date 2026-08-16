@@ -31,6 +31,35 @@ const permissionModeLabels: Record<PermissionMode, string> = {
   bypass: '免审批',
 }
 
+// reasoning 档位记忆：按 model 记最后选择，刷新/切模型后恢复（P3 再升级到 provider:model 维度）。
+const REASONING_EFFORT_KEY = 'threadforge.reasoningEffort'
+
+function readPersistedEffort(modelId: string, efforts: ReasoningEffort[]): ReasoningEffort {
+  try {
+    const raw = localStorage.getItem(REASONING_EFFORT_KEY)
+    if (!raw) return efforts[0]
+    const map = JSON.parse(raw) as Record<string, unknown>
+    const value = map[`model:${modelId}`]
+    if (typeof value === 'string' && efforts.includes(value as ReasoningEffort)) {
+      return value as ReasoningEffort
+    }
+  } catch {
+    // 忽略损坏的 localStorage
+  }
+  return efforts[0]
+}
+
+function writePersistedEffort(modelId: string, effort: ReasoningEffort): void {
+  try {
+    const raw = localStorage.getItem(REASONING_EFFORT_KEY)
+    const map: Record<string, unknown> = raw ? JSON.parse(raw) : {}
+    map[`model:${modelId}`] = effort
+    localStorage.setItem(REASONING_EFFORT_KEY, JSON.stringify(map))
+  } catch {
+    // 忽略存储失败（隐私模式等）
+  }
+}
+
 export default function Composer({ model, modelOptions, running, stopping = false, disabled = false, onSend, onStop }: ComposerProps) {
   const [value, setValue] = useState('')
   const [modelId, setModelId] = useState(modelOptions[0]?.id ?? model)
@@ -41,7 +70,7 @@ export default function Composer({ model, modelOptions, running, stopping = fals
   const efforts: ReasoningEffort[] = activeModel?.reasoning_efforts?.length
     ? activeModel.reasoning_efforts
     : ['none']
-  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(efforts[0])
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(() => readPersistedEffort(modelId, efforts))
   const activeReasoningEffort = efforts.includes(reasoningEffort) ? reasoningEffort : efforts[0]
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
 
@@ -82,7 +111,15 @@ export default function Composer({ model, modelOptions, running, stopping = fals
                   size="small"
                   value={activeModel?.id ?? model}
                   disabled={running || disabled}
-                  onChange={setModelId}
+                  onChange={(value) => {
+                    const nextModelId = value
+                    setModelId(nextModelId)
+                    const nextModel = modelOptions.find((item) => item.id === nextModelId)
+                    const nextEfforts: ReasoningEffort[] = nextModel?.reasoning_efforts?.length
+                      ? nextModel.reasoning_efforts
+                      : ['none']
+                    setReasoningEffort(readPersistedEffort(nextModelId, nextEfforts))
+                  }}
                   options={modelOptions.map((item) => ({ value: item.id, label: item.display_name }))}
                   className="min-w-28 max-w-44"
                   aria-label="模型"
@@ -91,7 +128,11 @@ export default function Composer({ model, modelOptions, running, stopping = fals
                   size="small"
                   value={activeReasoningEffort}
                   disabled={running || disabled}
-                  onChange={(value) => setReasoningEffort(value as ReasoningEffort)}
+                  onChange={(value) => {
+                    const effort = value as ReasoningEffort
+                    setReasoningEffort(effort)
+                    writePersistedEffort(activeModel?.id ?? model, effort)
+                  }}
                   options={efforts.map((effort) => ({ value: effort, label: effortLabels[effort] }))}
                   className="w-20"
                   aria-label="推理强度"
