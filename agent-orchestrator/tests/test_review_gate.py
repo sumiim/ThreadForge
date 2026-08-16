@@ -165,7 +165,7 @@ def test_code_change_needs_write_evidence_and_checklist():
     )
     assert decision.status == "needs_fix"
 
-    # 写证据 + checklist 完成 → pass
+    # 写证据 + 显式 checklist 完成 → pass
     state = _task_state(
         checklist=["change"],
         completed=["change"],
@@ -176,6 +176,32 @@ def test_code_change_needs_write_evidence_and_checklist():
         intent="code_change",
         step_budget=24,
         coordinator_steps_used=2,
+    )
+    assert decision.status == "pass"
+
+
+def test_code_change_default_template_checklist_passes_with_write_evidence():
+    # 原生路径：checklist 是默认阶段模板（非 planner 显式目标），
+    # 有写证据即通过完成门禁（模板不参与完成判定）。
+    state = _task_state(
+        evidence=[_evidence("patch_file", read_only=False)],
+    )
+    decision = run_review_gate(
+        state,
+        intent="code_change",
+        step_budget=24,
+        coordinator_steps_used=2,
+    )
+    assert decision.status == "pass"
+
+
+def test_conversation_passes_without_workspace_gate():
+    state = _task_state()
+    decision = run_review_gate(
+        state,
+        intent="conversation",
+        step_budget=2,
+        coordinator_steps_used=0,
     )
     assert decision.status == "pass"
 

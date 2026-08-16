@@ -156,6 +156,32 @@ class NativeBackendRunner:
             final_answer = task_state.final_answer
 
         task_state = agent.current_task_state
+        # §7.7.1 阶段 1：收尾 review gate（写触发 + checklist 派生预算）。
+        # 原生单循环没有 LangGraph 的 delegate review 角色，gate 是确定性完成门禁：
+        # - code_change：需写证据 + checklist 完成，否则标记未验证
+        # - read_only：需有证据
+        # - conversation：直接通过（无工作区约束）
+        from .review_gate import run_review_gate
+
+        if task_state is not None and task_state.status == "completed" and task_state.final_answer:
+            # benchmark 任务集均为改文件任务（code_change）；允许任务显式指定 intent。
+            intent = str(task.get("intent", "code_change") or "code_change")
+            decision = run_review_gate(
+                task_state,
+                intent=intent,
+                step_budget=int(task["step_budget"]),
+                coordinator_steps_used=int(getattr(task_state, "tool_steps", 0) or 0),
+                step_budget_explicit=True,
+                fix_attempts=0,
+            )
+            if decision.status == "needs_fix":
+                # 写证据缺失或 checklist 未完成 → 标记为未通过确定性完成门禁。
+                task_state.review_status = "needs_fix"
+                task_state.record_error(
+                    stage="completion_gate",
+                    code="completion_gate_failed",
+                )
+                final_answer = task_state.final_answer
         return BackendRunResult(
             task_state=task_state,
             final_answer=final_answer,

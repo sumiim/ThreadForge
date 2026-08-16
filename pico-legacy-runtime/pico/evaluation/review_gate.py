@@ -1,12 +1,12 @@
 """Deterministic review gate, extracted from the LangGraph orchestration.
 
-§7.7.1 阶段 0：review 门禁抽成独立 `review_gate(task_state)`，不依赖 graph state，
+§7.7.1 阶段 0：review 门禁抽成独立 `run_review_gate()`，不依赖 graph state，
 循环层可复用。LangGraph 删除后，原生循环用同一个 gate 做收尾确定性完成门禁。
 
 语义（保持与 graph.py review_node 等价）：
-- 写触发：仅当 affected_paths 有写（code_change）才需要收尾 review；
-  只读路径（read_only）直接收敛。
-- 确定性完成：checklist 全完成 or 无 checklist + 有 final answer。
+- 写触发：code_change 需要写证据 + 显式 checklist 完成才通过；
+  原生路径（无 planner）的默认阶段模板 checklist 不参与完成门禁。
+- read_only：有证据即收敛。
 - 预算收敛（§7.8.7 方案 C）：预算耗尽时按「剩余 checklist × 递减因子(3→2→1)」
   扩展；因子归零/清单清空/到硬顶时 auto-pass。
 - 停滞检测（§7.8.7-③）：连续 K 轮零增量 → 强制停。
@@ -20,6 +20,19 @@ from dataclasses import dataclass, field
 REVIEW_EXTENSION_FACTORS = {1: 3, 2: 2, 3: 1}
 # §7.8.7-③：连续 K 轮零进展（证据/checklist/工具集三信号全零增量）→ 强制停 + 托底。
 STAGNATION_ROUNDS_LIMIT = 2
+
+# 原生 AgentLoop 的阶段模板 checklist（TaskState 默认值）。它不是 planner
+# 设置的具体目标，不应作为完成门禁——原生循环无 plan，全部完成依赖模板逐项
+# set_phase 推进，而 finish_success 不触碰 completed_items。
+_DEFAULT_CHECKLIST = frozenset(
+    {
+        "Understand the request and acceptance criteria",
+        "Gather the minimum workspace context",
+        "Analyze evidence and choose the next action",
+        "Act or prepare a grounded answer",
+        "Verify the result before finishing",
+    }
+)
 
 
 @dataclass
@@ -55,6 +68,12 @@ def _has_write_evidence(task_state) -> bool:
         and not item.get("read_only", True)
         for item in (getattr(task_state, "evidence", None) or [])
     )
+
+
+def _checklist_is_explicit(task_state) -> bool:
+    """checklist 是否为 planner 设置的具体目标（非默认阶段模板）。"""
+    checklist = set(str(item) for item in (getattr(task_state, "checklist", []) or []))
+    return bool(checklist) and not checklist <= _DEFAULT_CHECKLIST
 
 
 def _round_signature(task_state) -> str:
@@ -119,7 +138,6 @@ def run_review_gate(
                 int(hard_cap),
                 int(step_budget) + remaining_checklist * factor,
             )
-            # 扩展后继续 review（调用方决定是否 needs_fix）
             decision.status = "needs_fix"
             decision.text = "budget extended for review fix"
             return decision
@@ -143,8 +161,7 @@ def run_review_gate(
         decision.text = "stagnation detected; converged"
         return decision
 
-    # 正常路径：只读任务无写证据 → 收敛（不需要模型评审）；
-    # 写任务有写证据 + checklist 完成 → 收敛。其余 needs_fix。
+    # 正常路径：read_only 有证据即收敛；conversation 直接通过。
     if intent == "read_only":
         if _has_evidence(task_state):
             decision.status = "pass"
@@ -153,9 +170,14 @@ def run_review_gate(
             decision.status = "needs_fix"
             decision.text = "read-only task lacks current-run evidence"
         return decision
+    if intent == "conversation":
+        decision.status = "pass"
+        decision.text = "conversation has no workspace completion gate"
+        return decision
 
-    # code_change / conversation：需要写证据 + 确定性完成。
-    if _has_write_evidence(task_state) and _checklist_remaining(task_state) == 0:
+    # code_change：需写证据；checklist 为显式目标时还需全部完成。
+    checklist_ok = (not _checklist_is_explicit(task_state)) or _checklist_remaining(task_state) == 0
+    if _has_write_evidence(task_state) and checklist_ok:
         decision.status = "pass"
         decision.text = "write evidence present and checklist complete"
         return decision
