@@ -1328,6 +1328,9 @@ def research_node(state: AgentState, config: RunnableConfig) -> AgentState:
         missing_tools = tuple(name for name in required_tools if name not in observed_tools)
         call = {"ok": False, "text": "", "child": None}
         delegate_calls = 0
+        initial_child_tool_steps = sum(
+            child.tool_steps for child in _child_task_states(agent, config)
+        )
         for attempt in range(1, MAX_REQUIRED_TOOL_ATTEMPTS + 1):
             requirement = ""
             if missing_tools:
@@ -1366,18 +1369,22 @@ def research_node(state: AgentState, config: RunnableConfig) -> AgentState:
                     "missing_tools": list(missing_tools),
                 },
             )
+        research_tool_steps = (
+            sum(child.tool_steps for child in _child_task_states(agent, config))
+            - initial_child_tool_steps
+        )
         if not call["ok"]:
             next_state = {
                 **state,
                 "research_result": "research delegate failed; continue using workspace evidence",
                 "delegate_failures": state["delegate_failures"] + 1,
-                "coordinator_steps_used": state["coordinator_steps_used"] + delegate_calls,
+                "coordinator_steps_used": state["coordinator_steps_used"] + delegate_calls + research_tool_steps,
             }
         else:
             next_state = {
                 **state,
                 "research_result": call["text"],
-                "coordinator_steps_used": state["coordinator_steps_used"] + delegate_calls,
+                "coordinator_steps_used": state["coordinator_steps_used"] + delegate_calls + research_tool_steps,
             }
     next_state = _budget_failure(next_state, config) or next_state
     route = route_after_research(next_state)
@@ -1886,6 +1893,9 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 "replan_reason": review["text"] if state["planning_enabled"] else "",
             }
     else:
+        initial_child_tool_steps = sum(
+            child.tool_steps for child in _child_task_states(agent, config)
+        )
         call = _call_graph_role_delegate(
             agent,
             RoleDelegateSpec(
@@ -1898,6 +1908,10 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 max_steps=3,
             ),
         )
+        review_tool_steps = (
+            sum(child.tool_steps for child in _child_task_states(agent, config))
+            - initial_child_tool_steps
+        )
         if not call["ok"]:
             next_state = _failed_state(
                 {
@@ -1905,7 +1919,7 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
                     "review_status": "",
                     "review_issues": "delegate_failed",
                     "delegate_failures": state["delegate_failures"] + 1,
-                    "coordinator_steps_used": state["coordinator_steps_used"] + 1,
+                    "coordinator_steps_used": state["coordinator_steps_used"] + 1 + review_tool_steps,
                 },
                 "delegate_failed",
                 "Review delegate failed; result could not be verified.",
@@ -1919,7 +1933,7 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 **state,
                 "review_status": review["status"],
                 "review_issues": review["text"],
-                "coordinator_steps_used": state["coordinator_steps_used"] + 1,
+                "coordinator_steps_used": state["coordinator_steps_used"] + 1 + review_tool_steps,
             }
             agent.current_task_state.review_status = review["status"]
             _write_graph_task_state(agent)

@@ -458,9 +458,9 @@ def run_agent(
             ]
             task_state.intent = result["resolved_intent"]
             task_state.review_status = result["review_status"]
-            budget_task_states = [task_state, *node_child_states]
+            budget_task_states = [task_state, *all_children]
             measured_steps = _verify_budget_accounting(
-                task_state, node_child_states, result["coordinator_steps_used"]
+                task_state, all_children, result["coordinator_steps_used"]
             )
             expected_metadata = {
                 key: result[key]
