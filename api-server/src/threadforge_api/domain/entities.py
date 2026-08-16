@@ -37,6 +37,7 @@ class Task:
     permission_mode: str = "default"
     model_id: str = ""
     reasoning_effort: str = "none"
+    provider_id: str = ""
     run_index: list[dict] = field(default_factory=list)
     final_answer: str | None = None
     stop_reason: str | None = None

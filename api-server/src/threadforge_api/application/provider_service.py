@@ -42,6 +42,13 @@ class ProviderService:
     def get_provider(self, provider_id: str, owner_id: str) -> dict:
         return self._repo.get(provider_id, canonical_owner_id(owner_id)).to_dict()
 
+    def get_active_provider(self, owner_id: str, device_id: str = "") -> dict | None:
+        owner_id = canonical_owner_id(owner_id)
+        for item in self._repo.list(owner_id, device_id):
+            if item.is_default:
+                return item.to_dict()
+        return None
+
     def update_provider(self, provider_id: str, owner_id: str, patch: dict) -> dict:
         owner_id = canonical_owner_id(owner_id)
         updatable = {

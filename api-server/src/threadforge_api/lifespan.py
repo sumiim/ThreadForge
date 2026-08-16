@@ -141,6 +141,7 @@ class AppContainer:
             worker_hub=self.worker_hub,
             allow_backend_workspaces=settings.identity_mode != "github_oauth",
         )
+        self.provider_service = ProviderService(self.provider_repo)
         self.task_service = TaskService(
             settings=settings,
             session_service=self.session_service,
@@ -151,9 +152,9 @@ class AppContainer:
             run_store_reader=self.run_store_reader,
             worker_hub=self.worker_hub,
             device_store=self.device_store,
+            provider_service=self.provider_service,
         )
         self.artifact_service = ArtifactService(self.run_store_reader, self.task_repo)
-        self.provider_service = ProviderService(self.provider_repo)
         self.ready = False
 
     def _assign_legacy_ownership(self) -> None:

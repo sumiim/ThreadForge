@@ -46,6 +46,7 @@ class TaskService:
         run_store_reader: RunStoreReader,
         worker_hub=None,
         device_store=None,
+        provider_service=None,
     ):
         self._settings = settings
         self._session_service = session_service
@@ -56,6 +57,7 @@ class TaskService:
         self._run_store_reader = run_store_reader
         self._worker_hub = worker_hub
         self._device_store = device_store
+        self._provider_service = provider_service
 
     def create_task(
         self,
@@ -80,6 +82,12 @@ class TaskService:
         device_id = session.get("device_id", "")
         selected_model = str(model_id or "").strip()
         selected_effort = str(reasoning_effort or "none").strip().lower()
+        active_provider_id = ""
+        if execution_environment == "local_worker" and self._provider_service is not None:
+            active_provider = self._provider_service.get_active_provider(owner_id, device_id)
+            if active_provider is not None:
+                active_provider_id = str(active_provider.get("provider_id", ""))
+                selected_model = selected_model or str(active_provider.get("model", ""))
         if execution_environment == "local_worker":
             if self._worker_hub is None or not self._worker_hub.is_online(device_id):
                 raise WorkerOfflineError("the selected local Worker is offline")
@@ -130,6 +138,7 @@ class TaskService:
             device_id=device_id,
             model_id=selected_model,
             reasoning_effort=selected_effort,
+            provider_id=active_provider_id,
         )
         if execution_environment == "local_worker":
             # The plaintext prompt is dispatched from memory. Persist only

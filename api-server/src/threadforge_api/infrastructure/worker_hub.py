@@ -750,6 +750,7 @@ class WorkerHub:
                             "shell_cleanup_grace_seconds": self._settings.shell_cleanup_grace_seconds,
                             "model_id": task.model_id,
                             "reasoning_effort": task.reasoning_effort,
+                            "provider_id": task.provider_id,
                             "sandbox_enabled": bool(
                                 getattr(self._settings, "sandbox_enabled", False)
                             ),

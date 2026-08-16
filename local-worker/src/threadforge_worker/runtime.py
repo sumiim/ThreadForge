@@ -556,9 +556,8 @@ def run_task(
     import os
 
     provider_id = str(settings.get("provider_id", "")).strip()
+    # 本地有该 provider（api_key 已推送）才走 provider 路径；否则退回 env（过渡期）。
     provider_cfg = ConfigStore(data_dir).load_provider(provider_id) if provider_id else None
-    if provider_id and provider_cfg is None:
-        raise RuntimeError("provider is not configured on the local Worker")
 
     if provider_cfg is not None:
         requested_model = str(provider_cfg["model"]).strip()
