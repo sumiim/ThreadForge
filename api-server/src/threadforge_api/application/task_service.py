@@ -14,6 +14,7 @@ from ..domain.errors import (
     ApprovalNotFoundError,
     AuthorizationDeniedError,
     InputTooLongError,
+    ModelCapabilityUnavailableError,
     ModelNotConfiguredError,
     TaskRunnerUnavailableError,
     TaskTerminalError,
@@ -105,7 +106,7 @@ class TaskService:
             if not models:
                 models = {device.model: {"none"}}
             if selected_model not in models or selected_effort not in models[selected_model]:
-                raise WorkerCapabilityUnavailableError(
+                raise ModelCapabilityUnavailableError(
                     "the selected model or reasoning effort is unavailable on this Worker"
                 )
         else:

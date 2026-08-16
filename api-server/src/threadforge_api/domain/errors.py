@@ -1,4 +1,4 @@
-﻿"""Stable domain error contract: code / message / details / http status."""
+"""Stable domain error contract: code / message / details / http status."""
 
 from __future__ import annotations
 
@@ -159,6 +159,12 @@ class WorkerOfflineError(AppError):
 class WorkerCapabilityUnavailableError(AppError):
     http_status = 409
     code = "worker_capability_unavailable"
+
+
+class ModelCapabilityUnavailableError(AppError):
+    """模型或推理强度不被当前 Worker 支持（与版本/协议能力缺失区分开）。"""
+    http_status = 409
+    code = "model_capability_unavailable"
 
 
 class WorkerCommandPendingError(AppError):

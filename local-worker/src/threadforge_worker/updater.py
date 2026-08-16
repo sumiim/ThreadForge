@@ -192,10 +192,18 @@ def load_update_status(store: ConfigStore) -> dict:
     if not isinstance(payload, dict):
         return {}
     try:
+        status = str(payload.get("status", ""))[:32]
+        current_version = str(payload.get("current_version", ""))[:32]
+        target_version = str(payload.get("target_version", ""))[:32]
+        # 启动后若已运行到 target（安装已完成），把残留的 installing 归一为 current，
+        # 避免「正在安装更新」假状态被重复上报。
+        if status == "installing" and target_version and target_version == __version__:
+            status = "current"
+            current_version = __version__
         return {
-            "status": str(payload.get("status", ""))[:32],
-            "current_version": str(payload.get("current_version", ""))[:32],
-            "target_version": str(payload.get("target_version", ""))[:32],
+            "status": status,
+            "current_version": current_version,
+            "target_version": target_version,
             "downloaded_bytes": max(0, int(payload.get("downloaded_bytes", 0))),
             "total_bytes": max(0, int(payload.get("total_bytes", 0))),
             "bytes_per_second": max(0, int(payload.get("bytes_per_second", 0))),
