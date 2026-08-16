@@ -44,6 +44,7 @@ from threadforge_worker.runtime import (
     ActiveRun,
     CancellableModelClient,
     CancellationToken,
+    ModelProviderFactory,
     RemoteApprovalStrategy,
     RemoteExecutionHooks,
     _supported_reasoning_efforts,
@@ -275,6 +276,84 @@ def test_reasoning_capabilities_follow_model_family_or_explicit_override():
         clear=True,
     ):
         assert _supported_reasoning_efforts() == ("low", "high")
+
+
+def test_provider_factory_resolves_env_fallback_without_provider(tmp_path):
+    with patch.dict(
+        "os.environ",
+        {
+            "PICO_OPENAI_API_BASE": "https://provider.example/v1",
+            "PICO_OPENAI_MODEL": "gpt-5.5",
+        },
+        clear=True,
+    ):
+        factory = ModelProviderFactory(data_dir=tmp_path / "state", settings={})
+        profile = factory.resolve()
+        assert profile["provider_id"] == ""
+        assert profile["model"] == "gpt-5.5"
+        assert profile["base_url"] == ""  # env 延迟解析
+        assert "high" in profile["supported_reasoning_efforts"]
+
+
+def test_provider_factory_rejects_unsupported_reasoning_effort(tmp_path):
+    with patch.dict(
+        "os.environ",
+        {
+            "PICO_OPENAI_API_BASE": "https://provider.example/v1",
+            "PICO_OPENAI_MODEL": "model-a",  # 只有 none
+        },
+        clear=True,
+    ):
+        factory = ModelProviderFactory(
+            data_dir=tmp_path / "state",
+            settings={"reasoning_effort": "high"},
+        )
+        with pytest.raises(RuntimeError, match="not supported"):
+            factory.resolve()
+
+
+def test_provider_factory_uses_provider_cfg_when_present(tmp_path):
+    store = ConfigStore(tmp_path / "state")
+    store.save_provider(
+        "prv_test",
+        base_url="https://api.deepseek.com",
+        api_key="sk-local",
+        model="deepseek-v4-flash",
+        protocol="deepseek",
+        reasoning_efforts=("none", "low", "high"),
+    )
+    factory = ModelProviderFactory(
+        data_dir=tmp_path / "state",
+        settings={"provider_id": "prv_test", "reasoning_effort": "high"},
+    )
+    profile = factory.resolve()
+    assert profile["provider_id"] == "prv_test"
+    assert profile["model"] == "deepseek-v4-flash"
+    assert profile["model_provider"] == "chat_completions"
+    assert profile["base_url"] == "https://api.deepseek.com"
+    assert profile["api_key"] == "sk-local"
+    assert profile["reasoning_effort"] == "high"
+
+
+def test_provider_factory_create_clients_uses_injected_factory(tmp_path):
+    from pico.providers.clients import FakeModelClient
+
+    captured = []
+
+    def injected():
+        captured.append(1)
+        return FakeModelClient(["ok"])
+
+    factory = ModelProviderFactory(
+        data_dir=tmp_path / "state",
+        settings={},
+        model_client_factory=injected,
+    )
+    main_client, router_client = factory.create_clients(
+        temperature=0.2, timeout=30, max_attempts=3
+    )
+    assert main_client is router_client
+    assert captured == [1]  # factory 只调用一次
 
 
 def test_service_lock_prevents_duplicate_worker_processes(tmp_path):
