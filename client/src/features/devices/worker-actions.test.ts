@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { getWorkerDeviceActionState } from './worker-actions.ts'
+import { getWorkerDeviceActionState, workerPairingUri } from './worker-actions.ts'
 
 test('uses authenticated remote uninstall for an online capable Worker', () => {
   assert.deepEqual(
@@ -39,4 +39,11 @@ test('marks a device busy while unbinding to prevent duplicate actions', () => {
     '',
   )
   assert.equal(state.pending, true)
+})
+
+test('builds a protocol pairing link from the short-lived pairing code', () => {
+  assert.equal(
+    workerPairingUri('https://threadforge.example', 'ABCD-1234-EF56-7890'),
+    'threadforge://worker/pair?server=https%3A%2F%2Fthreadforge.example&code=ABCD-1234-EF56-7890',
+  )
 })

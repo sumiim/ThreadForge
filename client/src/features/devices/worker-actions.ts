@@ -20,3 +20,11 @@ export function getWorkerDeviceActionState(
     uninstallLabel: canRemoteUninstall ? '卸载 Worker' : '本机卸载 Worker',
   }
 }
+
+export function workerPairingUri(server: string, code: string): string {
+  const query = new URLSearchParams({
+    server: server.trim(),
+    code: code.trim(),
+  })
+  return `threadforge://worker/pair?${query.toString()}`
+}
