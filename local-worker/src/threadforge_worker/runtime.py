@@ -16,7 +16,6 @@ from pathlib import Path
 
 from langgraph_pico import run_agent
 from langgraph_pico.inbox import InboxSource
-from .config import ConfigStore
 from pico import Pico
 from pico.approval import ApprovalOutcome, ApprovalRequest, ApprovalStrategy
 from pico.event_sink import CompositeSink, EventCollector, EventSink, JsonlSink
@@ -46,6 +45,8 @@ from pico.task_state import (
     STOP_REASON_USER_CANCELLED,
 )
 from pico.workspace import WorkspaceContext
+
+from .config import ConfigStore
 
 
 def _utc_now():
