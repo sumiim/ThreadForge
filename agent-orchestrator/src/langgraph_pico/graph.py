@@ -57,8 +57,12 @@ PLANNING_DEADLINE_SECONDS = 75.0
 READ_ONLY_TOOLS = ("list_files", "read_file", "search")
 INTENT_STEP_BUDGETS = {
     INTENT_CONVERSATION: 2,
-    INTENT_READ_ONLY: 8,
-    INTENT_CODE_CHANGE: 16,
+    # 统一「一步 = 实际工具调用」后，research/review 从「记 1 次 delegate」改为
+    # 「delegate + 子 agent 实际 tool_steps」，单轮消耗显著上升；且 §7.8.2 已诊断
+    # 旧 read_only=8 偏紧（正好烧光）。故 read_only / code_change 上调；code_change
+    # 保持在 §7.5 记录的「≤25」硬顶以内。
+    INTENT_READ_ONLY: 16,
+    INTENT_CODE_CHANGE: 24,
 }
 
 
@@ -181,6 +185,20 @@ def _run_budget_usage(state, config):
         "output_tokens": sum(item.output_tokens for item in unique.values()),
         "elapsed_seconds": max(0, int(time.monotonic() - state["started_monotonic"])),
     }
+
+
+def _verify_budget_accounting(task_state, node_child_states, coordinator_steps_used):
+    """校验图协调器的手动步数计数与实际子 agent tool_steps 之和一致。
+
+    这是「两层预算计数」的安全网：``coordinator_steps_used`` 是图的手动计数，
+    实测 ``tool_steps`` 之和是实际消耗；两者不一致即计数漂移（会跑飞预算）。
+    返回实测步数，供调用方复用（逐步向单一计数来源收敛）。
+    """
+    budget_task_states = [task_state, *node_child_states]
+    measured_steps = sum(state.tool_steps for state in budget_task_states)
+    if measured_steps != int(coordinator_steps_used):
+        raise RuntimeError("graph budget counter drift")
+    return measured_steps
 
 
 def _plan_minimum_budgets(state, config, maximum):
@@ -424,6 +442,51 @@ def _explored_summary(agent):
         )
         parts.append("\n".join(lines))
     return "\n".join(parts)
+
+
+def _drain_inbox(state, configurable):
+    """在循环边界（intent_router 入口）消费下一条 inbox 唤醒项。
+
+    返回 ``(new_state, consumed)``。有新唤醒项时，把 routing 相关字段重置成
+    「全新请求」状态，并把上一轮 task 记进 ``continuation_context`` 供 planner
+    识别为继续；无唤醒项时原样返回。
+    """
+    inbox = configurable.get("inbox")
+    if inbox is None:
+        return state, False
+    item = inbox.pop_wake()
+    if item is None or not str(item.message).strip():
+        return state, False
+    new_task = str(item.message).strip()
+    prior = str(state.get("task", "")).strip()
+    continuation = state.get("continuation_context", "")
+    if prior:
+        continuation = "\n".join(
+            part for part in (str(continuation).strip(), f"Earlier task: {prior}")
+            if part
+        )
+    return (
+        {
+            **state,
+            "task": new_task,
+            "continuation_context": continuation,
+            "resolved_intent": "",
+            "intent_source": "",
+            "plan": {},
+            "plan_attempts": 0,
+            "replan_requested": False,
+            "replan_reason": "",
+            "replan_attempts": 0,
+            "router_direct_answer": False,
+            "requires_research": None,
+            "research_result": "",
+            "execution_result": "",
+            "review_status": "",
+            "review_issues": "",
+            "terminal_reason": "",
+        },
+        True,
+    )
 
 
 def _planned_read_tools(state, agent):
@@ -1129,6 +1192,13 @@ def intent_router_node(state: AgentState, config: RunnableConfig) -> AgentState:
         route = route_after_intent(state)
         _emit_route(agent, "intent_router", route, state["terminal_reason"])
         return state
+
+    # 循环边界：消费下一条 inbox 唤醒项（1.5 运行中追加）。终态/预算耗尽已在上方
+    # 提前返回，不会消费到新消息；只有仍在 replan 循环时才在此排空 inbox。
+    state, inbox_consumed = _drain_inbox(state, configurable)
+    if inbox_consumed:
+        _emit_route(agent, "intent_router", "inbox_consumed", state["task"])
+
     if state["planning_enabled"]:
         if not (state["plan"] and state["replan_attempts"]):
             next_state = _route_and_plan_initial_task(state, config)
@@ -1262,6 +1332,9 @@ def research_node(state: AgentState, config: RunnableConfig) -> AgentState:
         missing_tools = tuple(name for name in required_tools if name not in observed_tools)
         call = {"ok": False, "text": "", "child": None}
         delegate_calls = 0
+        initial_child_tool_steps = sum(
+            child.tool_steps for child in _child_task_states(agent, config)
+        )
         for attempt in range(1, MAX_REQUIRED_TOOL_ATTEMPTS + 1):
             requirement = ""
             if missing_tools:
@@ -1300,18 +1373,22 @@ def research_node(state: AgentState, config: RunnableConfig) -> AgentState:
                     "missing_tools": list(missing_tools),
                 },
             )
+        research_tool_steps = (
+            sum(child.tool_steps for child in _child_task_states(agent, config))
+            - initial_child_tool_steps
+        )
         if not call["ok"]:
             next_state = {
                 **state,
                 "research_result": "research delegate failed; continue using workspace evidence",
                 "delegate_failures": state["delegate_failures"] + 1,
-                "coordinator_steps_used": state["coordinator_steps_used"] + delegate_calls,
+                "coordinator_steps_used": state["coordinator_steps_used"] + delegate_calls + research_tool_steps,
             }
         else:
             next_state = {
                 **state,
                 "research_result": call["text"],
-                "coordinator_steps_used": state["coordinator_steps_used"] + delegate_calls,
+                "coordinator_steps_used": state["coordinator_steps_used"] + delegate_calls + research_tool_steps,
             }
     next_state = _budget_failure(next_state, config) or next_state
     route = route_after_research(next_state)
@@ -1820,6 +1897,9 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 "replan_reason": review["text"] if state["planning_enabled"] else "",
             }
     else:
+        initial_child_tool_steps = sum(
+            child.tool_steps for child in _child_task_states(agent, config)
+        )
         call = _call_graph_role_delegate(
             agent,
             RoleDelegateSpec(
@@ -1832,6 +1912,10 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 max_steps=3,
             ),
         )
+        review_tool_steps = (
+            sum(child.tool_steps for child in _child_task_states(agent, config))
+            - initial_child_tool_steps
+        )
         if not call["ok"]:
             next_state = _failed_state(
                 {
@@ -1839,7 +1923,7 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
                     "review_status": "",
                     "review_issues": "delegate_failed",
                     "delegate_failures": state["delegate_failures"] + 1,
-                    "coordinator_steps_used": state["coordinator_steps_used"] + 1,
+                    "coordinator_steps_used": state["coordinator_steps_used"] + 1 + review_tool_steps,
                 },
                 "delegate_failed",
                 "Review delegate failed; result could not be verified.",
@@ -1853,7 +1937,7 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 **state,
                 "review_status": review["status"],
                 "review_issues": review["text"],
-                "coordinator_steps_used": state["coordinator_steps_used"] + 1,
+                "coordinator_steps_used": state["coordinator_steps_used"] + 1 + review_tool_steps,
             }
             agent.current_task_state.review_status = review["status"]
             _write_graph_task_state(agent)

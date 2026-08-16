@@ -254,6 +254,13 @@ class WorkerClient:
             active = self.active_runs.get(str(message.get("task_id", "")))
             if active is not None:
                 active.cancel(5)
+        elif message_type == "task.message":
+            active = self.active_runs.get(str(message.get("task_id", "")))
+            if active is not None and active.inbox is not None:
+                active.inbox.append(
+                    str(message.get("content", "")),
+                    wake=bool(message.get("wake", True)),
+                )
         elif message_type == "approval.decision":
             active = self.active_runs.get(str(message.get("task_id", "")))
             if active is not None:

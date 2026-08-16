@@ -24,7 +24,7 @@ import { buildDeviceGroups } from './session-groups'
 import type { WorkspaceGroup } from './session-groups'
 import { sessionWorkspaceKey, workspaceKey } from './workspaceIdentity'
 
-export type PanelView = 'chat' | 'skills' | 'mcp'
+export type PanelView = 'chat' | 'skills' | 'mcp' | 'providers'
 
 interface SessionPanelProps {
   sessions: Session[]
@@ -176,6 +176,12 @@ export default function SessionPanel({
             label="MCP"
             active={activeView === 'mcp'}
             onClick={() => onNavigate('mcp')}
+          />
+          <NavItem
+            icon={<SettingOutlined />}
+            label="供应商"
+            active={activeView === 'providers'}
+            onClick={() => onNavigate('providers')}
           />
         </div>
       </div>

@@ -18,6 +18,7 @@ from pico.security import redact_artifact
 from pico.session_store import SessionStore
 
 from .application.artifact_service import ArtifactService
+from .application.provider_service import ProviderService
 from .application.session_service import SessionService
 from .application.task_service import TaskService
 from .config import Settings
@@ -43,6 +44,7 @@ from .infrastructure.sqlite_repositories import (
     ControlPlaneMigrator,
     SqliteApprovalRepository,
     SqliteLeaseRepository,
+    SqliteProviderRepository,
     SqliteRunRepository,
     SqliteTaskRepository,
 )
@@ -78,6 +80,9 @@ class AppContainer:
         self.approval_repo = SqliteApprovalRepository(self.control_store, json_root=settings.data_dir / "approvals")
         self.run_repo = SqliteRunRepository(self.control_store)
         self.lease_repo = SqliteLeaseRepository(self.control_store)
+        self.provider_repo = SqliteProviderRepository(
+            self.control_store, json_root=settings.data_dir / "providers"
+        )
         self.migrator = ControlPlaneMigrator(self.task_repo, self.approval_repo)
         self.isolation = WorkspaceIsolation(
             settings.data_dir, self.lease_repo, self.workspace_catalog
@@ -148,6 +153,7 @@ class AppContainer:
             device_store=self.device_store,
         )
         self.artifact_service = ArtifactService(self.run_store_reader, self.task_repo)
+        self.provider_service = ProviderService(self.provider_repo)
         self.ready = False
 
     def _assign_legacy_ownership(self) -> None:

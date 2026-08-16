@@ -1369,3 +1369,18 @@ def test_safe_execution_failure_classifies_connection_errors():
     # ConnectionResetError 是 ConnectionError 子类，也走连接分类
     code, _ = _safe_execution_failure(ConnectionResetError("reset"))
     assert code == "model_connection_error"
+
+
+def test_verify_budget_accounting_matches_and_detects_drift():
+    from types import SimpleNamespace
+
+    from langgraph_pico.graph import _verify_budget_accounting
+
+    parent = SimpleNamespace(tool_steps=2)
+    children = [SimpleNamespace(tool_steps=3), SimpleNamespace(tool_steps=1)]
+
+    # 一致：2 + 3 + 1 = 6
+    assert _verify_budget_accounting(parent, children, 6) == 6
+    # 漂移：手动计数 7 != 实测 6
+    with pytest.raises(RuntimeError, match="drift"):
+        _verify_budget_accounting(parent, children, 7)

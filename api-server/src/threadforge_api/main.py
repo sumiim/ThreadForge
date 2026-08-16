@@ -18,6 +18,7 @@ from .api.routers import (
     devices,
     health,
     metadata,
+    providers,
     runs,
     sessions,
     tasks,
@@ -102,6 +103,7 @@ def create_app(
     app.include_router(workspaces.router)
     app.include_router(sessions.router)
     app.include_router(tasks.router)
+    app.include_router(providers.router)
     app.include_router(runs.router)
 
     install_error_handlers(app)

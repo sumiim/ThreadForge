@@ -1,12 +1,17 @@
 import uuid
+from dataclasses import replace
 
 import pytest
 
+from threadforge_api.application.provider_service import ProviderService
+from threadforge_api.domain.errors import ProviderNotFoundError
 from threadforge_api.domain.providers import (
     Provider,
     ProviderProtocol,
     validate_provider_payload,
 )
+from threadforge_api.infrastructure.sqlite_repositories import SqliteProviderRepository
+from threadforge_api.infrastructure.sqlite_store import SqliteStore
 
 
 def test_provider_round_trips_through_dict():
@@ -49,3 +54,59 @@ def test_validate_provider_payload_normalizes_and_rejects():
         validate_provider_payload(
             {"name": "x", "protocol": "ollama", "base_url": "https://api.example.com", "timeout": 1}
         )
+
+
+def test_provider_repository_crud(tmp_path):
+    store = SqliteStore(tmp_path / "control.sqlite3")
+    repo = SqliteProviderRepository(store, json_root=tmp_path / "providers")
+
+    provider = Provider(
+        provider_id="prv_" + "c" * 32,
+        owner_id=str(uuid.uuid4()),
+        device_id="dev_" + "d" * 32,
+        name="DeepSeek",
+        protocol=ProviderProtocol.OPENAI_COMPATIBLE.value,
+        base_url="https://api.example.com/v1",
+    )
+    repo.create(provider)
+    assert repo.get(provider.provider_id, provider.owner_id).name == "DeepSeek"
+    assert [p.name for p in repo.list(provider.owner_id)] == ["DeepSeek"]
+
+    repo.update(
+        provider.provider_id,
+        provider.owner_id,
+        lambda p: replace(p, name="Renamed"),
+    )
+    assert repo.get(provider.provider_id, provider.owner_id).name == "Renamed"
+
+    repo.delete(provider.provider_id, provider.owner_id)
+    with pytest.raises(ProviderNotFoundError):
+        repo.get(provider.provider_id, provider.owner_id)
+
+
+def test_provider_service_crud_and_activate(tmp_path):
+    store = SqliteStore(tmp_path / "control.sqlite3")
+    repo = SqliteProviderRepository(store, json_root=tmp_path / "providers")
+    service = ProviderService(repo)
+    owner = str(uuid.uuid4())
+
+    created = service.create_provider(owner, "", {
+        "name": "DeepSeek",
+        "protocol": "openai_compatible",
+        "base_url": "https://api.example.com/v1",
+        "api_key": "sk-secret-not-stored",
+    })
+    provider_id = created["provider_id"]
+    assert created["name"] == "DeepSeek"
+    assert "api_key" not in created  # 中央不落密钥
+
+    assert [p["name"] for p in service.list_providers(owner)] == ["DeepSeek"]
+
+    updated = service.update_provider(provider_id, owner, {"name": "Renamed"})
+    assert updated["name"] == "Renamed"
+
+    service.activate_provider(provider_id, owner)
+    assert service.get_provider(provider_id, owner)["is_default"] is True
+
+    service.delete_provider(provider_id, owner)
+    assert service.list_providers(owner) == []

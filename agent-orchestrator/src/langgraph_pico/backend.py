@@ -31,7 +31,8 @@ from pico.task_state import (
 )
 from pico.workspace import now
 
-from .graph import build_graph
+from .graph import _verify_budget_accounting, build_graph
+from .inbox import InboxSource
 from .intent import (
     INTENT_CODE_CHANGE,
     INTENT_CONVERSATION,
@@ -280,6 +281,7 @@ def run_agent(
     run_id=None,
     workspace_id="",
     planning_deadline_seconds=75,
+    inbox=None,
 ):
     """Run the routed LangGraph workflow with an already configured Pico instance."""
     task_input = str(task_input).strip()
@@ -403,6 +405,7 @@ def run_agent(
             "started_monotonic": started_at,
         }
 
+        inbox = inbox if inbox is not None else InboxSource()
         try:
             result = build_graph().invoke(
                 graph_state,
@@ -414,6 +417,7 @@ def run_agent(
                         "run_metadata_collector": run_metadata_collector,
                         "plan_budget_runtime": {},
                         "planning_deadline_seconds": planning_deadline_seconds,
+                        "inbox": inbox,
                     }
                 },
             )
@@ -454,10 +458,10 @@ def run_agent(
             ]
             task_state.intent = result["resolved_intent"]
             task_state.review_status = result["review_status"]
-            budget_task_states = [task_state, *node_child_states]
-            measured_steps = sum(state.tool_steps for state in budget_task_states)
-            if measured_steps != result["coordinator_steps_used"]:
-                raise RuntimeError("graph budget counter drift")
+            budget_task_states = [task_state, *all_children]
+            measured_steps = _verify_budget_accounting(
+                task_state, all_children, result["coordinator_steps_used"]
+            )
             expected_metadata = {
                 key: result[key]
                 for key in RUN_METADATA_KEYS

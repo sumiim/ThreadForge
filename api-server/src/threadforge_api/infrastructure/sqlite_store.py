@@ -89,6 +89,27 @@ CREATE TABLE IF NOT EXISTS workspace_leases (
 CREATE INDEX IF NOT EXISTS idx_leases_holder  ON workspace_leases(holder_task_id);
 CREATE INDEX IF NOT EXISTS idx_leases_expires ON workspace_leases(expires_at);
 
+CREATE TABLE IF NOT EXISTS providers (
+    provider_id    TEXT PRIMARY KEY,
+    owner_id       TEXT NOT NULL,
+    device_id      TEXT NOT NULL,
+    name           TEXT NOT NULL,
+    protocol       TEXT NOT NULL,
+    base_url       TEXT NOT NULL,
+    model          TEXT NOT NULL DEFAULT '',
+    models         TEXT NOT NULL DEFAULT '[]',
+    reasoning_tier TEXT NOT NULL DEFAULT 'none',
+    timeout        INTEGER NOT NULL DEFAULT 45,
+    concurrency    INTEGER NOT NULL DEFAULT 1,
+    state          TEXT NOT NULL DEFAULT 'active',
+    is_default     INTEGER NOT NULL DEFAULT 0,
+    last_test_at   TEXT NOT NULL DEFAULT '',
+    last_error     TEXT NOT NULL DEFAULT '',
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    payload        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_providers_owner ON providers(owner_id, device_id);
+
 CREATE TABLE IF NOT EXISTS event_cursors (
     run_id        TEXT PRIMARY KEY,
     last_sequence INTEGER NOT NULL DEFAULT 0,

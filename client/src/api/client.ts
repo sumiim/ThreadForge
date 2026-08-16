@@ -9,6 +9,7 @@ import type {
   RunEventEnvelope,
   RuntimeConfig,
   SessionDetail,
+  Provider,
   SessionSummary,
   SkillMetadata,
   TaskQueued,
@@ -557,6 +558,31 @@ export function parseEventFrame(raw: string): RunEventEnvelope | null {
   } catch {
     return null
   }
+}
+
+// ---- 供应商（2.7 供应商管理窗口） -----------------------------------------
+
+export function listProviders(): Promise<{ providers: Provider[] }> {
+  return request('/api/v1/providers')
+}
+
+export function createProvider(body: object): Promise<Provider> {
+  return request('/api/v1/providers', { method: 'POST', body: JSON.stringify(body) })
+}
+
+export function updateProvider(providerId: string, body: object): Promise<Provider> {
+  return request(`/api/v1/providers/${encodeURIComponent(providerId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  })
+}
+
+export function deleteProvider(providerId: string): Promise<void> {
+  return request(`/api/v1/providers/${encodeURIComponent(providerId)}`, { method: 'DELETE' })
+}
+
+export function activateProvider(providerId: string): Promise<Provider> {
+  return request(`/api/v1/providers/${encodeURIComponent(providerId)}/activate`, { method: 'POST' })
 }
 
 export type { PendingApproval, RunEventEnvelope }

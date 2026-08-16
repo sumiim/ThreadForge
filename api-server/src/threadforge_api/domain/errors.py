@@ -1,4 +1,4 @@
-"""Stable domain error contract: code / message / details / http status."""
+﻿"""Stable domain error contract: code / message / details / http status."""
 
 from __future__ import annotations
 
@@ -36,6 +36,10 @@ class TaskNotFoundError(NotFoundError):
     code = "task_not_found"
 
 
+class ProviderNotFoundError(NotFoundError):
+    code = "provider_not_found"
+
+
 class ApprovalNotFoundError(NotFoundError):
     code = "approval_not_found"
 
@@ -55,6 +59,14 @@ class ActiveTaskExistsError(AppError):
 
     def __init__(self, task_id: str):
         super().__init__("another root task is active", {"task_id": task_id})
+
+
+class TaskTerminalError(AppError):
+    http_status = 409
+    code = "task_terminal"
+
+    def __init__(self, task_id: str):
+        super().__init__("task has already reached a terminal state", {"task_id": task_id})
 
 
 class RenameConflictError(AppError):

@@ -44,6 +44,8 @@ class RoleDelegateSpec:
     acceptance: str = ""
     context_summary: str = ""
     max_steps: int = 3
+    read_only: bool = True
+    approval_policy: str = "never"
 
 
 def validate_role_delegate_spec(spec):
@@ -146,12 +148,12 @@ def create_role_delegate(parent, spec):
             workspace=parent.workspace,
             session_store=InMemorySessionStore(),
             run_store=parent.run_store,
-            approval_policy="never",
+            approval_policy=spec.approval_policy,
             max_steps=spec.max_steps,
             max_new_tokens=parent.max_new_tokens,
             depth=parent.depth + 1,
             max_depth=parent.max_depth,
-            read_only=True,
+            read_only=spec.read_only,
             secret_env_names=parent.secret_env_names,
             shell_env_allowlist=parent.shell_env_allowlist,
             feature_flags=parent.feature_flags,
