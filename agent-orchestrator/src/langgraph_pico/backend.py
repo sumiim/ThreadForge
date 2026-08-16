@@ -4,6 +4,7 @@ import time
 import traceback
 from pathlib import Path, PureWindowsPath
 
+from pico.agent_loop import _best_effort_step_limit
 from pico.evaluation.backends import (
     BackendRunResult,
     HarnessModelClientAdapter,
@@ -30,7 +31,6 @@ from pico.task_state import (
     TaskState,
 )
 from pico.workspace import now
-from pico.agent_loop import _best_effort_step_limit
 
 from .graph import _complete_graph_model, _verify_budget_accounting, build_graph
 from .inbox import InboxSource
@@ -110,7 +110,7 @@ def _synthesize_budget_conclusion(agent, task_input, task_state):
             agent.max_new_tokens,
             stage="budget_convergence",
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - convergence must fall back to collected evidence.
         return None
     text = str(raw).strip()
     if text.startswith("<final>") and text.endswith("</final>"):
