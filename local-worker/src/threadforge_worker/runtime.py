@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import queue
 import secrets
 import threading
@@ -520,6 +521,119 @@ class ActiveRun:
             self.pico.tool_context().terminate_active_shell(cleanup_grace)
 
 
+class ModelProviderFactory:
+    """§2.2 ModelProviderFactory：按 provider_id / env fallback 解析并创建模型客户端。
+
+    把 run_task 里的「provider_cfg vs env」内联 if/elif 抽成工厂：
+    - provider_cfg 存在（api_key 已推送）→ 用它声明的 model/protocol/reasoning_efforts
+    - 否则退回 env（过渡期，延迟解析 base_url/api_key）
+    能力协商：requested_effort 不在 supported_reasoning_efforts 时直接报错。
+    """
+
+    def __init__(
+        self,
+        *,
+        data_dir: Path,
+        settings: dict,
+        model_client_factory: Callable[[], object] | None = None,
+    ):
+        self.data_dir = Path(data_dir)
+        self.settings = dict(settings or {})
+        self.model_client_factory = model_client_factory
+
+    def resolve(self) -> dict:
+        """返回 provider 解析结果（不含客户端实例）。"""
+        provider_id = str(self.settings.get("provider_id", "")).strip()
+        provider_cfg = (
+            ConfigStore(self.data_dir).load_provider(provider_id) if provider_id else None
+        )
+        if provider_cfg is not None:
+            requested_model = str(provider_cfg["model"]).strip()
+            model_provider = _provider_protocol_to_model_provider(provider_cfg["protocol"])
+            base_url = str(provider_cfg["base_url"]).strip()
+            api_key = str(provider_cfg["api_key"]).strip()
+            supported_efforts = tuple(
+                str(item) for item in (provider_cfg.get("reasoning_efforts") or ["none"])
+            )
+            requested_effort = (
+                str(self.settings.get("reasoning_effort", "none")).strip().lower() or "none"
+            )
+            if requested_effort not in supported_efforts:
+                raise RuntimeError("requested reasoning effort is not supported by this provider")
+            return {
+                "provider_id": provider_id,
+                "model": requested_model,
+                "model_provider": model_provider,
+                "base_url": base_url,
+                "api_key": api_key,
+                "supported_reasoning_efforts": supported_efforts,
+                "reasoning_effort": requested_effort,
+            }
+        configured_model = os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4").strip() or "gpt-5.4"
+        requested_model = (
+            str(self.settings.get("model_id", configured_model)).strip() or configured_model
+        )
+        if requested_model != configured_model:
+            raise RuntimeError("requested model is not configured on the local Worker")
+        model_provider = str(
+            self.settings.get("model_provider", "")
+            or os.environ.get("PICO_MODEL_PROVIDER", "")
+        ).strip().lower()
+        # 延迟到真正建客户端时才解析 env（model_client_factory 测试路径不依赖 env）。
+        supported_efforts = _supported_reasoning_efforts()
+        requested_effort = (
+            str(self.settings.get("reasoning_effort", "none")).strip().lower() or "none"
+        )
+        if requested_effort not in supported_efforts:
+            raise RuntimeError("requested reasoning effort is not supported by the local Worker")
+        return {
+            "provider_id": "",
+            "model": requested_model,
+            "model_provider": model_provider,
+            "base_url": "",
+            "api_key": "",
+            "supported_reasoning_efforts": supported_efforts,
+            "reasoning_effort": requested_effort,
+        }
+
+    def create_clients(self, *, temperature, timeout, max_attempts):
+        """返回 (provider_model_client, router_model_client)。
+
+        ``model_client_factory``（测试注入）时两者用同一 client；否则按
+        provider 解析结果创建主/路由客户端（路由吃与主客户端相同的推理档）。
+        """
+        profile = self.resolve()
+        if self.model_client_factory is not None:
+            provider_model_client = self.model_client_factory()
+            return provider_model_client, provider_model_client
+        provider_model_client = _create_model_client(
+            model_provider=profile["model_provider"],
+            model=profile["model"],
+            base_url=profile["base_url"] or _required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
+            api_key=profile["api_key"] or _required_env("PICO_OPENAI_API_KEY"),
+            temperature=temperature,
+            timeout=timeout,
+            max_attempts=max_attempts,
+            reasoning_effort=profile["reasoning_effort"],
+            supported_reasoning_efforts=profile["supported_reasoning_efforts"],
+            instructions=THREADFORGE_MODEL_INSTRUCTIONS,
+        )
+        # A（planner 吃 effort）：路由用与主客户端相同的推理档，不再钉死 minimal。
+        router_provider_client = _create_model_client(
+            model_provider=profile["model_provider"],
+            model=profile["model"],
+            base_url=profile["base_url"] or _required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
+            api_key=profile["api_key"] or _required_env("PICO_OPENAI_API_KEY"),
+            temperature=temperature,
+            timeout=min(45, timeout),
+            max_attempts=min(2, max_attempts),
+            reasoning_effort=profile["reasoning_effort"],
+            supported_reasoning_efforts=profile["supported_reasoning_efforts"],
+            instructions=THREADFORGE_MODEL_INSTRUCTIONS,
+        )
+        return provider_model_client, router_provider_client
+
+
 def run_task(
     *,
     task: dict,
@@ -554,34 +668,7 @@ def run_task(
         session = incoming_session
     session["workspace_root"] = str(workspace_path)
     run_store = RunStore(data_dir / "runs")
-    import os
 
-    provider_id = str(settings.get("provider_id", "")).strip()
-    # 本地有该 provider（api_key 已推送）才走 provider 路径；否则退回 env（过渡期）。
-    provider_cfg = ConfigStore(data_dir).load_provider(provider_id) if provider_id else None
-
-    if provider_cfg is not None:
-        requested_model = str(provider_cfg["model"]).strip()
-        model_provider = _provider_protocol_to_model_provider(provider_cfg["protocol"])
-        base_url = str(provider_cfg["base_url"]).strip()
-        api_key = str(provider_cfg["api_key"]).strip()
-        supported_efforts = tuple(str(item) for item in (provider_cfg.get("reasoning_efforts") or ["none"]))
-        requested_effort = str(settings.get("reasoning_effort", "none")).strip().lower() or "none"
-        if requested_effort not in supported_efforts:
-            raise RuntimeError("requested reasoning effort is not supported by this provider")
-    else:
-        configured_model = os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4").strip() or "gpt-5.4"
-        requested_model = str(settings.get("model_id", configured_model)).strip() or configured_model
-        if requested_model != configured_model:
-            raise RuntimeError("requested model is not configured on the local Worker")
-        model_provider = str(settings.get("model_provider", "") or os.environ.get("PICO_MODEL_PROVIDER", "")).strip().lower()
-        # 延迟到真正建客户端时才解析 env（model_client_factory 测试路径不依赖 env）。
-        base_url = ""
-        api_key = ""
-        supported_efforts = _supported_reasoning_efforts()
-        requested_effort = str(settings.get("reasoning_effort", "none")).strip().lower() or "none"
-        if requested_effort not in supported_efforts:
-            raise RuntimeError("requested reasoning effort is not supported by the local Worker")
     def send_runtime_event(event_type: str, data: dict) -> None:
         send(
             {
@@ -596,37 +683,17 @@ def run_task(
 
     model_timeout = int(settings.get("model_timeout_seconds", 120))
     model_max_attempts = max(1, min(5, int(settings.get("model_max_attempts", 3))))
-    if model_client_factory is not None:
-        provider_model_client = model_client_factory()
-        router_provider_client = provider_model_client
-    else:
-        provider_model_client = _create_model_client(
-            model_provider=model_provider,
-            model=requested_model,
-            base_url=base_url or _required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
-            api_key=api_key or _required_env("PICO_OPENAI_API_KEY"),
-            temperature=0.2,
-            timeout=model_timeout,
-            max_attempts=model_max_attempts,
-            reasoning_effort=requested_effort,
-            supported_reasoning_efforts=supported_efforts,
-            instructions=THREADFORGE_MODEL_INSTRUCTIONS,
-        )
-        # A（planner 吃 effort）：路由/规划用与主客户端相同的推理档，不再钉死 minimal。
-        # 用户选 high/xhigh，planner 也用它，提高意图/计划准确率（治「意图判错」）。
-        router_effort = requested_effort
-        router_provider_client = _create_model_client(
-            model_provider=model_provider,
-            model=requested_model,
-            base_url=base_url or _required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
-            api_key=api_key or _required_env("PICO_OPENAI_API_KEY"),
-            temperature=0.2,
-            timeout=min(45, model_timeout),
-            max_attempts=min(2, model_max_attempts),
-            reasoning_effort=router_effort,
-            supported_reasoning_efforts=supported_efforts,
-            instructions=THREADFORGE_MODEL_INSTRUCTIONS,
-        )
+    # §2.2 ModelProviderFactory：provider_id / env fallback 解析 + 客户端创建。
+    provider_factory = ModelProviderFactory(
+        data_dir=data_dir,
+        settings=settings,
+        model_client_factory=model_client_factory,
+    )
+    provider_model_client, router_provider_client = provider_factory.create_clients(
+        temperature=0.2,
+        timeout=model_timeout,
+        max_attempts=model_max_attempts,
+    )
     hooks = RemoteExecutionHooks(
         send_runtime_event,
         active.token,
