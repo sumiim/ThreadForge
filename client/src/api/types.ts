@@ -323,6 +323,7 @@ export interface SessionRun {
   modelId?: string
   reasoningEffort?: ReasoningEffort
   permissionMode?: PermissionMode
+  input?: string
   items: RunIndexItem[]
 }
 
@@ -348,7 +349,7 @@ export interface Provider {
   base_url: string
   model: string
   models: string[]
-  reasoning_tier: string
+  reasoning_efforts: ReasoningEffort[]
   timeout: number
   concurrency: number
   state: 'active' | 'disabled' | 'error'

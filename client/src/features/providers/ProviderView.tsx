@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react'
-import { Button, Form, Input, InputNumber, Modal, Select, Space, Table, Tag, message } from 'antd'
+import { Button, Drawer, Form, Input, InputNumber, Modal, Select, Tag, message } from 'antd'
 import { ApiOutlined, PlusOutlined } from '@ant-design/icons'
 import type { Provider, ProviderProtocol } from '../../api/types'
 import {
   activateProvider,
+  configureProvider,
   createProvider,
   deleteProvider,
   listProviders,
+  testProvider,
   updateProvider,
 } from '../../api/client'
 
@@ -17,17 +19,27 @@ const PROTOCOL_LABELS: Record<ProviderProtocol, string> = {
   ollama: 'Ollama',
 }
 
+const REASONING_EFFORT_OPTIONS = [
+  { value: 'none', label: '无' },
+  { value: 'minimal', label: '最小' },
+  { value: 'low', label: '低' },
+  { value: 'medium', label: '中' },
+  { value: 'high', label: '高' },
+  { value: 'xhigh', label: '极高' },
+]
+
 interface FormValues {
   name: string
   protocol: ProviderProtocol
   base_url: string
   model?: string
+  reasoning_efforts?: string[]
   timeout?: number
   concurrency?: number
   api_key?: string
 }
 
-export default function ProviderView() {
+export default function ProviderView({ deviceId }: { deviceId?: string }) {
   const [providers, setProviders] = useState<Provider[]>([])
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
@@ -77,6 +89,7 @@ export default function ProviderView() {
       protocol: p.protocol,
       base_url: p.base_url,
       model: p.model,
+      reasoning_efforts: p.reasoning_efforts?.length ? p.reasoning_efforts : ['none'],
       timeout: p.timeout,
       concurrency: p.concurrency,
     })
@@ -87,12 +100,30 @@ export default function ProviderView() {
     const values = await form.validateFields()
     setSaving(true)
     try {
+      let providerId: string
       if (editing) {
-        await updateProvider(editing.provider_id, values)
+        const updated = await updateProvider(editing.provider_id, values)
+        providerId = updated.provider_id
         message.success('已保存')
       } else {
-        await createProvider(values)
+        const created = await createProvider(values)
+        providerId = created.provider_id
         message.success('已创建')
+      }
+      // api_key 只推送到 Worker 本地（中央不落）；device 未定或未填 key 时跳过。
+      if (deviceId && values.api_key?.trim()) {
+        try {
+          await configureProvider(providerId, {
+            device_id: deviceId,
+            base_url: values.base_url,
+            api_key: values.api_key,
+            model: values.model ?? '',
+            protocol: values.protocol,
+            reasoning_efforts: values.reasoning_efforts ?? ['none'],
+          })
+        } catch {
+          message.warning('供应商已保存，但 API Key 未能推送到 Worker，请稍后重试')
+        }
       }
       setModalOpen(false)
       void load()
@@ -131,53 +162,19 @@ export default function ProviderView() {
     })
   }
 
-  const columns = [
-    {
-      title: '名称',
-      dataIndex: 'name',
-      key: 'name',
-      render: (value: string, record: Provider) => (
-        <Space size={6}>
-          <span className="font-medium text-stone-800">{value}</span>
-          {record.is_default ? <Tag color="blue">默认</Tag> : null}
-        </Space>
-      ),
-    },
-    {
-      title: '协议',
-      dataIndex: 'protocol',
-      key: 'protocol',
-      render: (value: ProviderProtocol) => PROTOCOL_LABELS[value] ?? value,
-    },
-    { title: 'Base URL', dataIndex: 'base_url', key: 'base_url', ellipsis: true },
-    { title: '模型', dataIndex: 'model', key: 'model', render: (v: string) => v || '—' },
-    {
-      title: '状态',
-      dataIndex: 'state',
-      key: 'state',
-      render: (value: string) =>
-        value === 'active' ? <Tag color="green">active</Tag> : <Tag>{value}</Tag>,
-    },
-    {
-      title: '操作',
-      key: 'actions',
-      render: (_: unknown, record: Provider) => (
-        <Space size={4}>
-          {!record.is_default ? (
-            <Button type="link" size="small" onClick={() => onActivate(record)}>
-              设为默认
-            </Button>
-          ) : null}
-          <Button type="link" size="small" onClick={() => openEdit(record)}>
-            编辑
-          </Button>
-          <Button type="link" size="small" danger onClick={() => onDelete(record)}>
-            删除
-          </Button>
-        </Space>
-      ),
-    },
-  ]
+  const onTest = async (p: Provider) => {
+    if (!deviceId) {
+      message.warning('请先选择本地设备/工作区')
+      return
+    }
+    try {
+      const result = await testProvider(p.provider_id, deviceId)
+      message.success(`连接成功，发现 ${result.models.length} 个模型`)
+      void load()
+    } catch {
+      message.error('连接测试失败，请检查 Base URL / API Key')
+    }
+  }
 
   return (
     <div className="h-full overflow-y-auto px-6 py-8 lg:px-10">
@@ -198,27 +195,64 @@ export default function ProviderView() {
         </p>
 
         <div className="mt-6">
-          <Table<Provider>
-            rowKey="provider_id"
-            columns={columns}
-            dataSource={providers}
-            loading={loading}
-            pagination={false}
-            size="middle"
-          />
+          {loading ? (
+            <div className="py-12 text-center text-sm text-stone-400">加载中…</div>
+          ) : providers.length === 0 ? (
+            <div className="py-12 text-center text-sm text-stone-400">暂无供应商，点击「新增供应商」创建。</div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {providers.map((p) => (
+                <div key={p.provider_id} className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-xs font-medium text-blue-600">
+                        {(PROTOCOL_LABELS[p.protocol] ?? 'P').slice(0, 1)}
+                      </span>
+                      <span className="truncate font-medium text-stone-800">{p.name}</span>
+                      {p.is_default ? <Tag color="blue">默认</Tag> : null}
+                    </div>
+                    <Tag color={p.state === 'active' ? 'green' : 'default'}>{p.state}</Tag>
+                  </div>
+                  <div className="mt-3 space-y-1 text-xs text-stone-500">
+                    <div className="truncate font-mono">{p.base_url}</div>
+                    <div>
+                      {PROTOCOL_LABELS[p.protocol] ?? p.protocol} · 模型 {p.model || '—'}
+                      {p.models.length ? `（+${p.models.length}）` : ''}
+                    </div>
+                    <div>推理档 {(p.reasoning_efforts ?? []).join(' / ') || '—'}</div>
+                    {p.last_error ? (
+                      <div className="truncate text-red-500">{p.last_error}</div>
+                    ) : p.last_test_at ? (
+                      <div>上次测试 {p.last_test_at.slice(0, 16).replace('T', ' ')}</div>
+                    ) : null}
+                  </div>
+                  <div className="mt-3 flex items-center gap-1 border-t border-stone-100 pt-2">
+                    <Button type="link" size="small" onClick={() => onTest(p)}>测试连接</Button>
+                    {!p.is_default ? (
+                      <Button type="link" size="small" onClick={() => onActivate(p)}>设为默认</Button>
+                    ) : null}
+                    <Button type="link" size="small" onClick={() => openEdit(p)}>编辑</Button>
+                    <Button type="link" size="small" danger onClick={() => onDelete(p)}>删除</Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
-      <Modal
+      <Drawer
         title={editing ? '编辑供应商' : '新增供应商'}
         open={modalOpen}
-        onCancel={() => setModalOpen(false)}
-        onOk={submit}
-        confirmLoading={saving}
-        okText={editing ? '保存' : '创建'}
-        destroyOnClose
+        onClose={() => setModalOpen(false)}
+        width={420}
+        extra={
+          <Button type="primary" loading={saving} onClick={submit}>
+            {editing ? '保存' : '创建'}
+          </Button>
+        }
       >
-        <Form form={form} layout="vertical" className="mt-4">
+        <Form form={form} layout="vertical">
           <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
             <Input placeholder="如 DeepSeek" />
           </Form.Item>
@@ -236,6 +270,13 @@ export default function ProviderView() {
           <Form.Item name="model" label="默认模型">
             <Input placeholder="如 deepseek-chat" />
           </Form.Item>
+          <Form.Item name="reasoning_efforts" label="推理档位" initialValue={['none']}>
+            <Select
+              mode="multiple"
+              options={REASONING_EFFORT_OPTIONS}
+              placeholder="选择该供应商支持的推理档位"
+            />
+          </Form.Item>
           <div className="grid grid-cols-2 gap-3">
             <Form.Item name="timeout" label="超时（秒）">
               <InputNumber min={5} max={600} className="w-full" />
@@ -250,7 +291,7 @@ export default function ProviderView() {
             </Form.Item>
           ) : null}
         </Form>
-      </Modal>
+      </Drawer>
     </div>
   )
 }

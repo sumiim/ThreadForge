@@ -734,7 +734,7 @@ class SqliteProviderRepository:
                     provider.base_url,
                     provider.model,
                     _json_dumps(provider.models),
-                    provider.reasoning_tier,
+                    _json_dumps(provider.reasoning_efforts),
                     provider.timeout,
                     provider.concurrency,
                     provider.state,
@@ -797,7 +797,7 @@ class SqliteProviderRepository:
                 """,
                 (
                     updated.name, updated.protocol, updated.base_url, updated.model,
-                    _json_dumps(updated.models), updated.reasoning_tier, updated.timeout,
+                    _json_dumps(updated.models), _json_dumps(updated.reasoning_efforts), updated.timeout,
                     updated.concurrency, updated.state, int(updated.is_default),
                     updated.last_test_at, updated.last_error, updated.schema_version,
                     _json_dumps(payload), provider_id, owner_id,

@@ -56,6 +56,7 @@ function downloadJson(run: SessionRun | undefined) {
     status: run.status,
     model_id: run.modelId,
     reasoning_effort: run.reasoningEffort,
+    input: run.input ?? '',
     events: run.items,
     exported_at: new Date().toISOString(),
   }

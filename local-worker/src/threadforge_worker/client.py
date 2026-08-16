@@ -212,7 +212,7 @@ class WorkerClient:
                     "model_provider": os.environ.get("PICO_MODEL_PROVIDER", ""),
                     "orchestration_backend": "langgraph-v1.1",
                     "update_status": load_update_status(self.store),
-                    "model_capabilities": _model_capabilities(),
+                    "model_capabilities": _model_capabilities(self.store),
                     "capabilities": [
                         "local_history",
                         "model_configuration",
@@ -278,6 +278,10 @@ class WorkerClient:
             self._start_history_read(message)
         elif message_type == "model.configure":
             self._configure_model(message)
+        elif message_type == "provider.configure":
+            self._configure_provider(message)
+        elif message_type == "provider.list_models":
+            self._handle_provider_list_models(message)
         elif message_type == "entity.rename":
             self._rename_entity(message)
         elif message_type == "entity.delete":
@@ -466,6 +470,65 @@ class WorkerClient:
                 "error": "model_configuration_invalid",
             }
         self._send(response)
+
+    def _configure_provider(self, message: dict) -> None:
+        request_id = str(message.get("request_id", ""))
+        provider_id = str(message.get("provider_id", ""))
+        try:
+            self.store.save_provider(
+                provider_id,
+                base_url=str(message.get("base_url", "")),
+                api_key=str(message.get("api_key", "")),
+                model=str(message.get("model", "")),
+                protocol=str(message.get("protocol", "")),
+                reasoning_efforts=tuple(str(item) for item in message.get("reasoning_efforts", [])),
+            )
+            response = {
+                "type": "provider.configuration.completed",
+                "request_id": request_id,
+                "status": "completed",
+                "provider_id": provider_id,
+            }
+        except Exception:
+            response = {
+                "type": "provider.configuration.completed",
+                "request_id": request_id,
+                "status": "failed",
+                "error": "provider_configuration_invalid",
+            }
+        self._send(response)
+
+    def _handle_provider_list_models(self, message: dict) -> None:
+        request_id = str(message.get("request_id", ""))
+        provider_id = str(message.get("provider_id", ""))
+        provider = self.store.load_provider(provider_id)
+        if provider is None:
+            self._send({
+                "type": "provider.list_models.completed",
+                "request_id": request_id,
+                "status": "failed",
+                "error": "provider_not_configured",
+            })
+            return
+        models, error = _list_provider_models(
+            str(provider.get("base_url", "")),
+            str(provider.get("api_key", "")),
+            str(provider.get("protocol", "")),
+        )
+        if error:
+            self._send({
+                "type": "provider.list_models.completed",
+                "request_id": request_id,
+                "status": "failed",
+                "error": error,
+            })
+            return
+        self._send({
+            "type": "provider.list_models.completed",
+            "request_id": request_id,
+            "status": "completed",
+            "models": models,
+        })
 
     def _rename_entity(self, message: dict) -> None:
         request_id = str(message.get("request_id", ""))
@@ -929,7 +992,46 @@ def _runtime_reasoning_efforts() -> tuple[str, ...]:
     return _supported_reasoning_efforts()
 
 
-def _model_capabilities() -> dict:
+def _list_provider_models(base_url: str, api_key: str, protocol: str) -> tuple[list[str], str]:
+    """按协议调用 list-models 端点，返回 (模型列表, 错误码)。
+
+    错误码为空字符串表示成功；key 不落日志，响应正文只取模型 id。
+    """
+    import json
+    import urllib.error
+
+    base_url = base_url.rstrip("/")
+    if protocol == "ollama":
+        url = base_url + "/api/tags"
+    elif protocol == "anthropic":
+        url = base_url + "/v1/models"
+    else:
+        url = base_url + "/models"
+
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return [], f"model_http_{exc.code}"
+    except (urllib.error.URLError, ConnectionError, TimeoutError):
+        return [], "model_connection_error"
+    except json.JSONDecodeError:
+        return [], "model_response_invalid"
+
+    if protocol == "ollama":
+        raw_models = data.get("models", []) if isinstance(data, dict) else []
+        model_ids = [str(item.get("name", "")) for item in raw_models if isinstance(item, dict)]
+    else:
+        raw_models = data.get("data", []) if isinstance(data, dict) else []
+        model_ids = [str(item.get("id", "")) for item in raw_models if isinstance(item, dict)]
+    return [model_id for model_id in model_ids if model_id], ""
+
+
+def _model_capabilities(store: ConfigStore | None = None) -> dict:
     """Worker-level model capability report.
 
     ``max_output_tokens`` mirrors the runtime's default output budget
@@ -940,6 +1042,13 @@ def _model_capabilities() -> dict:
     model = os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4")
     model_provider = os.environ.get("PICO_MODEL_PROVIDER", "").strip().lower()
     efforts = list(_runtime_reasoning_efforts())
+    # 本地已配置 provider 时，用其声明的 model/reasoning_efforts（替代 env 推断）。
+    providers = store.list_providers() if store is not None else []
+    if providers:
+        first = providers[0]
+        model = str(first.get("model") or model)
+        efforts = [str(item) for item in (first.get("reasoning_efforts") or ["none"])]
+        model_provider = str(first.get("protocol") or model_provider)
     if model_provider == "chat_completions":
         provider_label = "chat-completions"
     elif model_provider == "anthropic":

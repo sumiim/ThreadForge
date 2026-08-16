@@ -46,6 +46,8 @@ from pico.task_state import (
 )
 from pico.workspace import WorkspaceContext
 
+from .config import ConfigStore
+
 
 def _utc_now():
     """Wall-clock ISO-8601 UTC timestamp for event contract fields."""
@@ -554,14 +556,32 @@ def run_task(
     run_store = RunStore(data_dir / "runs")
     import os
 
-    configured_model = os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4").strip() or "gpt-5.4"
-    requested_model = str(settings.get("model_id", configured_model)).strip() or configured_model
-    if requested_model != configured_model:
-        raise RuntimeError("requested model is not configured on the local Worker")
-    supported_efforts = _supported_reasoning_efforts()
-    requested_effort = str(settings.get("reasoning_effort", "none")).strip().lower() or "none"
-    if requested_effort not in supported_efforts:
-        raise RuntimeError("requested reasoning effort is not supported by the local Worker")
+    provider_id = str(settings.get("provider_id", "")).strip()
+    # 本地有该 provider（api_key 已推送）才走 provider 路径；否则退回 env（过渡期）。
+    provider_cfg = ConfigStore(data_dir).load_provider(provider_id) if provider_id else None
+
+    if provider_cfg is not None:
+        requested_model = str(provider_cfg["model"]).strip()
+        model_provider = _provider_protocol_to_model_provider(provider_cfg["protocol"])
+        base_url = str(provider_cfg["base_url"]).strip()
+        api_key = str(provider_cfg["api_key"]).strip()
+        supported_efforts = tuple(str(item) for item in (provider_cfg.get("reasoning_efforts") or ["none"]))
+        requested_effort = str(settings.get("reasoning_effort", "none")).strip().lower() or "none"
+        if requested_effort not in supported_efforts:
+            raise RuntimeError("requested reasoning effort is not supported by this provider")
+    else:
+        configured_model = os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4").strip() or "gpt-5.4"
+        requested_model = str(settings.get("model_id", configured_model)).strip() or configured_model
+        if requested_model != configured_model:
+            raise RuntimeError("requested model is not configured on the local Worker")
+        model_provider = str(settings.get("model_provider", "") or os.environ.get("PICO_MODEL_PROVIDER", "")).strip().lower()
+        # 延迟到真正建客户端时才解析 env（model_client_factory 测试路径不依赖 env）。
+        base_url = ""
+        api_key = ""
+        supported_efforts = _supported_reasoning_efforts()
+        requested_effort = str(settings.get("reasoning_effort", "none")).strip().lower() or "none"
+        if requested_effort not in supported_efforts:
+            raise RuntimeError("requested reasoning effort is not supported by the local Worker")
     def send_runtime_event(event_type: str, data: dict) -> None:
         send(
             {
@@ -574,7 +594,6 @@ def run_task(
 
     shell_factory = _sandbox_shell_factory(settings, send_runtime_event)
 
-    model_provider = str(settings.get("model_provider", "") or os.environ.get("PICO_MODEL_PROVIDER", "")).strip().lower()
     model_timeout = int(settings.get("model_timeout_seconds", 120))
     model_max_attempts = max(1, min(5, int(settings.get("model_max_attempts", 3))))
     if model_client_factory is not None:
@@ -584,8 +603,8 @@ def run_task(
         provider_model_client = _create_model_client(
             model_provider=model_provider,
             model=requested_model,
-            base_url=_required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
-            api_key=_required_env("PICO_OPENAI_API_KEY"),
+            base_url=base_url or _required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
+            api_key=api_key or _required_env("PICO_OPENAI_API_KEY"),
             temperature=0.2,
             timeout=model_timeout,
             max_attempts=model_max_attempts,
@@ -602,8 +621,8 @@ def run_task(
         router_provider_client = _create_model_client(
             model_provider=model_provider,
             model=requested_model,
-            base_url=_required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
-            api_key=_required_env("PICO_OPENAI_API_KEY"),
+            base_url=base_url or _required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
+            api_key=api_key or _required_env("PICO_OPENAI_API_KEY"),
             temperature=0.2,
             timeout=min(45, model_timeout),
             max_attempts=min(2, model_max_attempts),
@@ -756,6 +775,24 @@ def _required_env(name: str, default: str = "") -> str:
     return value
 
 
+_PROVIDER_PROTOCOL_TO_MODEL_PROVIDER = {
+    "openai_compatible": "chat_completions",
+    "deepseek": "chat_completions",
+    "ollama": "chat_completions",
+    "anthropic": "anthropic",
+}
+
+
+def _provider_protocol_to_model_provider(protocol: str) -> str:
+    """Provider.protocol（2.7 四值）→ worker model_provider 词汇。
+
+    OpenAI 兼容 / DeepSeek / Ollama 都实现 Chat Completions；只有 anthropic
+    走 Messages API。Responses API（OpenAI 专有）不在 Provider 枚举内，保留
+    给 env fallback（model_provider=""）。
+    """
+    return _PROVIDER_PROTOCOL_TO_MODEL_PROVIDER.get(str(protocol).strip().lower(), "")
+
+
 def _create_model_client(
     *,
     model_provider: str,
@@ -779,8 +816,8 @@ def _create_model_client(
     if model_provider == "chat_completions":
         return OpenAICompletionsModelClient(
             model=model,
-            base_url=base_url,
-            api_key=api_key,
+            base_url=base_url or _required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
+            api_key=api_key or _required_env("PICO_OPENAI_API_KEY"),
             temperature=temperature,
             timeout=timeout,
             max_attempts=max_attempts,
@@ -788,8 +825,8 @@ def _create_model_client(
     if model_provider == "anthropic":
         return AnthropicCompatibleModelClient(
             model=model,
-            base_url=base_url,
-            api_key=api_key,
+            base_url=base_url or _required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
+            api_key=api_key or _required_env("PICO_OPENAI_API_KEY"),
             temperature=temperature,
             timeout=timeout,
             max_attempts=max_attempts,

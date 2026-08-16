@@ -9,6 +9,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import replace
 
+from ..domain.entities import utc_now
 from ..domain.identity import canonical_owner_id
 from ..domain.providers import Provider, validate_provider_payload
 from ..infrastructure.sqlite_repositories import SqliteProviderRepository
@@ -42,11 +43,18 @@ class ProviderService:
     def get_provider(self, provider_id: str, owner_id: str) -> dict:
         return self._repo.get(provider_id, canonical_owner_id(owner_id)).to_dict()
 
+    def get_active_provider(self, owner_id: str, device_id: str = "") -> dict | None:
+        owner_id = canonical_owner_id(owner_id)
+        for item in self._repo.list(owner_id, device_id):
+            if item.is_default:
+                return item.to_dict()
+        return None
+
     def update_provider(self, provider_id: str, owner_id: str, patch: dict) -> dict:
         owner_id = canonical_owner_id(owner_id)
         updatable = {
             "name", "protocol", "base_url", "model", "models",
-            "reasoning_tier", "timeout", "concurrency", "state",
+            "reasoning_efforts", "timeout", "concurrency", "state",
         }
 
         def _apply(provider: Provider) -> Provider:
@@ -69,3 +77,16 @@ class ProviderService:
         return self._repo.update(
             provider_id, owner_id, lambda p: _set_default(p, True)
         ).to_dict()
+
+    def record_models(
+        self, provider_id: str, owner_id: str, models: list[str], *, error: str = ""
+    ) -> dict:
+        owner_id = canonical_owner_id(owner_id)
+
+        def _apply(provider: Provider) -> Provider:
+            provider.models = [str(item).strip() for item in models if str(item).strip()]
+            provider.last_test_at = utc_now()
+            provider.last_error = str(error or "")
+            return provider
+
+        return self._repo.update(provider_id, owner_id, _apply).to_dict()
