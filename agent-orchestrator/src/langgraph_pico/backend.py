@@ -441,6 +441,8 @@ def run_agent(
             "terminal_reason": "",
             "final_result": "",
             "budget_exhausted_convergence": False,
+            "stagnation_rounds": 0,
+            "last_round_signature": "",
             "planning_enabled": bool(enable_planning),
             "plan": {},
             "plan_attempts": 0,

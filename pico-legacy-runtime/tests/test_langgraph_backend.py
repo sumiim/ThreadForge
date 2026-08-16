@@ -1345,6 +1345,28 @@ def test_task_state_budget_converged_roundtrip():
     assert restored.budget_converged is True
 
 
+def test_intent_step_budget_uses_planner_budget_with_hard_cap():
+    from langgraph_pico.graph import _intent_step_budget
+    from langgraph_pico.intent import INTENT_READ_ONLY
+
+    # 非显式：软预算 = planner 自报 tool_calls，封顶 intent 硬顶（16）
+    state = {
+        "step_budget": 6,
+        "step_budget_explicit": False,
+        "plan": {"budgets": {"tool_calls": 10}},
+    }
+    assert _intent_step_budget(state, INTENT_READ_ONLY) == 10
+
+    # planner 自报超硬顶 → 封顶 16
+    state["plan"]["budgets"]["tool_calls"] = 99
+    assert _intent_step_budget(state, INTENT_READ_ONLY) == 16
+
+    # 显式 step_budget → 原样返回（尊重用户/benchmark 指定）
+    state["step_budget_explicit"] = True
+    state["step_budget"] = 2
+    assert _intent_step_budget(state, INTENT_READ_ONLY) == 2
+
+
 def test_read_only_answer_merges_listed_dirs_into_parent_memory(tmp_path):
     from langgraph_pico import run_agent
 

@@ -488,6 +488,8 @@ class WorkerClient:
                 "request_id": request_id,
                 "status": "completed",
                 "provider_id": provider_id,
+                "model": str(message.get("model", "")),
+                "model_capabilities": _model_capabilities(self.store),
             }
         except Exception:
             response = {

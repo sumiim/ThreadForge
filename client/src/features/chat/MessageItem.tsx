@@ -94,11 +94,6 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
             </div>
           </details>
         ) : null}
-        {message.content && (
-          <div className="py-1">
-            <Markdown content={message.content} />
-          </div>
-        )}
         {message.toolCalls?.map((toolCall) => (
           <div key={toolCall.id} className="mt-3 max-w-full">
             <ToolCallCard
@@ -108,6 +103,11 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
             />
           </div>
         ))}
+        {message.content && (
+          <div className="py-1">
+            <Markdown content={message.content} />
+          </div>
+        )}
         <div className="mt-1 font-mono text-[11px] text-stone-500">
           {message.status === 'streaming' ? (
             <StreamingStatus />

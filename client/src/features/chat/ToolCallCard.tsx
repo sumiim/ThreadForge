@@ -106,21 +106,29 @@ export default function ToolCallCard({ toolCall, onApprove, onReject }: ToolCall
           <div className="mt-1.5 truncate font-mono text-[11px] text-stone-400">{summary}</div>
         )}
 
-        {codeBody ? (
-          <pre className="mt-2.5 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg border border-stone-100 bg-white p-2.5 font-mono text-[11px] leading-relaxed text-stone-500">
-            {codeBody}
-          </pre>
-        ) : hasArgs ? (
-          <pre className="mt-2.5 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg border border-stone-100 bg-white p-2.5 font-mono text-[11px] leading-relaxed text-stone-500">
-            {JSON.stringify(toolCall.args, null, 2)}
-          </pre>
+        {(codeBody || hasArgs || toolCall.result) ? (
+          <details className="mt-2">
+            <summary className="cursor-pointer select-none font-mono text-[11px] text-stone-400 transition-colors hover:text-stone-600">
+              查看详情
+            </summary>
+            <div className="mt-1.5 space-y-2">
+              {codeBody ? (
+                <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg border border-stone-100 bg-white p-2.5 font-mono text-[11px] leading-relaxed text-stone-500">
+                  {codeBody}
+                </pre>
+              ) : hasArgs ? (
+                <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg border border-stone-100 bg-white p-2.5 font-mono text-[11px] leading-relaxed text-stone-500">
+                  {JSON.stringify(toolCall.args, null, 2)}
+                </pre>
+              ) : null}
+              {toolCall.result && (
+                <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-stone-100 bg-white p-2.5 font-mono text-[11px] leading-relaxed text-stone-600">
+                  {toolCall.result}
+                </pre>
+              )}
+            </div>
+          </details>
         ) : null}
-
-        {toolCall.result && (
-          <pre className="mt-2.5 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-stone-100 bg-white p-2.5 font-mono text-[11px] leading-relaxed text-stone-600">
-            {toolCall.result}
-          </pre>
-        )}
 
         {needsApproval && (
           <div className="mt-3 flex items-center justify-between border-t border-stone-100 pt-2.5">

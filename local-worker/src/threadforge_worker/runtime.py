@@ -612,12 +612,9 @@ def run_task(
             supported_reasoning_efforts=supported_efforts,
             instructions=THREADFORGE_MODEL_INSTRUCTIONS,
         )
-        # 路由/规划需要产出严格 JSON，用「minimal 起步」的推理强度降低 malformed
-        # 首轮（none 经常第一轮就格式错、靠第 2 次才过）。成本增加很小，换来少一次往返。
-        router_effort = next(
-            (effort for effort in ("minimal", "low", "none") if effort in supported_efforts),
-            "",
-        )
+        # A（planner 吃 effort）：路由/规划用与主客户端相同的推理档，不再钉死 minimal。
+        # 用户选 high/xhigh，planner 也用它，提高意图/计划准确率（治「意图判错」）。
+        router_effort = requested_effort
         router_provider_client = _create_model_client(
             model_provider=model_provider,
             model=requested_model,

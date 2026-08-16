@@ -61,6 +61,33 @@ function writePersistedEffort(modelId: string, effort: ReasoningEffort): void {
   }
 }
 
+// 审批模式记忆：default/plan/acceptEdits 持久化；bypass 不持久化（每次需显式二次确认）。
+const PERMISSION_MODE_KEY = 'threadforge.permissionMode'
+
+function readPersistedPermissionMode(): PermissionMode {
+  try {
+    const value = localStorage.getItem(PERMISSION_MODE_KEY)
+    if (value === 'plan' || value === 'acceptEdits' || value === 'default') {
+      return value
+    }
+  } catch {
+    // 忽略
+  }
+  return 'default'
+}
+
+function writePersistedPermissionMode(mode: PermissionMode): void {
+  try {
+    if (mode === 'bypass') {
+      localStorage.removeItem(PERMISSION_MODE_KEY)
+      return
+    }
+    localStorage.setItem(PERMISSION_MODE_KEY, mode)
+  } catch {
+    // 忽略
+  }
+}
+
 export default function Composer({ model, modelOptions, running, stopping = false, disabled = false, onSend, onStop }: ComposerProps) {
   const [value, setValue] = useState('')
   const [providers, setProviders] = useState<Provider[]>([])
@@ -88,7 +115,7 @@ export default function Composer({ model, modelOptions, running, stopping = fals
     : ['none']
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(() => readPersistedEffort(modelId, efforts))
   const activeReasoningEffort = efforts.includes(reasoningEffort) ? reasoningEffort : efforts[0]
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(() => readPersistedPermissionMode())
 
   const handleSend = () => {
     if (!value.trim() || disabled) return
@@ -192,6 +219,7 @@ export default function Composer({ model, modelOptions, running, stopping = fals
                       })
                     } else {
                       setPermissionMode(mode)
+                      writePersistedPermissionMode(mode)
                     }
                   }}
                   options={(Object.keys(permissionModeLabels) as PermissionMode[]).map((mode) => ({ value: mode, label: permissionModeLabels[mode] }))}

@@ -1248,6 +1248,25 @@ class WorkerHub:
                 raise WorkerProtocolError("provider configuration request is not pending")
         status = str(message.get("status", ""))
         if status == "completed":
+            model = str(message.get("model", ""))[:200]
+            if model:
+                # 供应商保存/切换后立即刷新设备模型能力，避免旧能力（如只有 none）残留，
+                # 导致服务端误拒 high/xhigh。
+                connection.device = self._devices.update_presence(
+                    connection.device.device_id,
+                    model=model,
+                    model_provider=connection.device.model_provider,
+                    model_configured=True,
+                    version=connection.device.version,
+                    protocol_version=connection.device.protocol_version,
+                    platform=connection.device.platform,
+                    architecture=connection.device.architecture,
+                    capabilities=connection.device.capabilities,
+                    workspaces=connection.device.workspaces,
+                    model_capabilities=_parse_model_capabilities(
+                        message.get("model_capabilities", {}), model
+                    ),
+                )
             result = {"status": "completed", "provider_id": str(message.get("provider_id", ""))}
         elif status == "failed":
             result = {

@@ -437,6 +437,40 @@ def _extract_usage_cache_details(data):
     }
 
 
+def _extract_reasoning_summary(data):
+    """从 OpenAI-compatible 响应里提取 reasoning 摘要（B 思考回传）。
+
+    只取供应商明确提供的 summary/thinking 文本，截断到 2000 字符；不保留逐字
+    思考、不从普通输出猜测。Responses API 的 output[type=reasoning].summary 与
+    Chat Completions 的 reasoning_content/reasoning/thinking 字段都覆盖。
+    """
+    if not isinstance(data, dict):
+        return ""
+    output = data.get("output")
+    if isinstance(output, list):
+        parts = []
+        for item in output:
+            if not isinstance(item, dict) or item.get("type") != "reasoning":
+                continue
+            summary = item.get("summary")
+            if isinstance(summary, list):
+                for part in summary:
+                    if isinstance(part, dict) and part.get("type") == "summary_text":
+                        text = str(part.get("text", "")).strip()
+                        if text:
+                            parts.append(text)
+            content = item.get("content")
+            if isinstance(content, str) and content.strip():
+                parts.append(content.strip())
+        if parts:
+            return "\n".join(parts)[:2000]
+    for key in ("reasoning_content", "reasoning", "thinking"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:2000]
+    return ""
+
+
 class OpenAICompatibleModelClient:
     def __init__(
         self,
@@ -597,6 +631,7 @@ class OpenAICompatibleModelClient:
                         self.last_completion_metadata = {
                             "requested_reasoning_effort": self.reasoning_effort,
                             "effective_reasoning_effort": self.reasoning_effort,
+                            "reasoning_summary": _extract_reasoning_summary(response_data or {}),
                             "prompt_cache_supported": self.supports_prompt_cache,
                             "prompt_cache_key": prompt_cache_key,
                             "prompt_cache_retention": prompt_cache_retention,
