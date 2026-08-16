@@ -197,6 +197,80 @@ class ConfigStore:
     def model_env_path(self) -> Path:
         return self.root / ".env"
 
+    @property
+    def providers_path(self) -> Path:
+        return self.root / "providers.json"
+
+    def _read_providers(self) -> dict:
+        if not self.providers_path.is_file():
+            return {}
+        payload = json.loads(self.providers_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise TypeError("provider config must be a JSON object")
+        return payload
+
+    def _write_providers(self, providers: dict) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                delete=False,
+                dir=self.root,
+                prefix="providers.json.",
+                suffix=".tmp",
+            ) as handle:
+                temp_path = Path(handle.name)
+                json.dump(providers, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            _replace_with_retry(temp_path, self.providers_path)
+            temp_path = None
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+        if sys.platform != "win32":
+            self.providers_path.chmod(0o600)
+
+    def save_provider(
+        self,
+        provider_id: str,
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        protocol: str,
+        reasoning_efforts: tuple[str, ...] = (),
+    ) -> None:
+        base_url = _validate_model_value("base_url", base_url, 2048)
+        api_key = _validate_model_value("api_key", api_key, 8192)
+        model = _validate_model_value("model", model, 200)
+        protocol = _validate_provider_protocol(protocol)
+        providers = self._read_providers()
+        providers[str(provider_id)] = {
+            "base_url": base_url,
+            "api_key": api_key,
+            "model": model,
+            "protocol": protocol,
+            "reasoning_efforts": [str(item).strip() for item in reasoning_efforts if str(item).strip()],
+        }
+        self._write_providers(providers)
+
+    def load_provider(self, provider_id: str) -> dict | None:
+        provider = self._read_providers().get(str(provider_id))
+        return dict(provider) if isinstance(provider, dict) else None
+
+    def list_providers(self) -> list[dict]:
+        return [dict(item) for item in self._read_providers().values()]
+
+    def delete_provider(self, provider_id: str) -> None:
+        providers = self._read_providers()
+        if str(provider_id) in providers:
+            del providers[str(provider_id)]
+            self._write_providers(providers)
+
     def save_model_env(self, *, base_url: str, api_key: str, model: str, model_provider: str = "") -> None:
         base_url = _validate_model_value("base_url", base_url, 2048)
         api_key = _validate_model_value("api_key", api_key, 8192)
@@ -268,6 +342,16 @@ def _validate_model_provider(value: str) -> str:
     value = str(value).strip().lower()
     if value not in _ALLOWED_MODEL_PROVIDERS:
         raise ValueError(f"invalid model_provider: {value!r}")
+    return value
+
+
+_ALLOWED_PROVIDER_PROTOCOLS = frozenset({"openai_compatible", "anthropic", "deepseek", "ollama"})
+
+
+def _validate_provider_protocol(value: str) -> str:
+    value = str(value).strip().lower()
+    if value not in _ALLOWED_PROVIDER_PROTOCOLS:
+        raise ValueError(f"invalid provider protocol: {value!r}")
     return value
 
 

@@ -16,6 +16,7 @@ from pathlib import Path
 
 from langgraph_pico import run_agent
 from langgraph_pico.inbox import InboxSource
+from .config import ConfigStore
 from pico import Pico
 from pico.approval import ApprovalOutcome, ApprovalRequest, ApprovalStrategy
 from pico.event_sink import CompositeSink, EventCollector, EventSink, JsonlSink
@@ -554,14 +555,32 @@ def run_task(
     run_store = RunStore(data_dir / "runs")
     import os
 
-    configured_model = os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4").strip() or "gpt-5.4"
-    requested_model = str(settings.get("model_id", configured_model)).strip() or configured_model
-    if requested_model != configured_model:
-        raise RuntimeError("requested model is not configured on the local Worker")
-    supported_efforts = _supported_reasoning_efforts()
-    requested_effort = str(settings.get("reasoning_effort", "none")).strip().lower() or "none"
-    if requested_effort not in supported_efforts:
-        raise RuntimeError("requested reasoning effort is not supported by the local Worker")
+    provider_id = str(settings.get("provider_id", "")).strip()
+    provider_cfg = ConfigStore(data_dir).load_provider(provider_id) if provider_id else None
+    if provider_id and provider_cfg is None:
+        raise RuntimeError("provider is not configured on the local Worker")
+
+    if provider_cfg is not None:
+        requested_model = str(provider_cfg["model"]).strip()
+        model_provider = _provider_protocol_to_model_provider(provider_cfg["protocol"])
+        base_url = str(provider_cfg["base_url"]).strip()
+        api_key = str(provider_cfg["api_key"]).strip()
+        supported_efforts = tuple(str(item) for item in (provider_cfg.get("reasoning_efforts") or ["none"]))
+        requested_effort = str(settings.get("reasoning_effort", "none")).strip().lower() or "none"
+        if requested_effort not in supported_efforts:
+            raise RuntimeError("requested reasoning effort is not supported by this provider")
+    else:
+        configured_model = os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4").strip() or "gpt-5.4"
+        requested_model = str(settings.get("model_id", configured_model)).strip() or configured_model
+        if requested_model != configured_model:
+            raise RuntimeError("requested model is not configured on the local Worker")
+        model_provider = str(settings.get("model_provider", "") or os.environ.get("PICO_MODEL_PROVIDER", "")).strip().lower()
+        base_url = _required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1")
+        api_key = _required_env("PICO_OPENAI_API_KEY")
+        supported_efforts = _supported_reasoning_efforts()
+        requested_effort = str(settings.get("reasoning_effort", "none")).strip().lower() or "none"
+        if requested_effort not in supported_efforts:
+            raise RuntimeError("requested reasoning effort is not supported by the local Worker")
     def send_runtime_event(event_type: str, data: dict) -> None:
         send(
             {
@@ -574,7 +593,6 @@ def run_task(
 
     shell_factory = _sandbox_shell_factory(settings, send_runtime_event)
 
-    model_provider = str(settings.get("model_provider", "") or os.environ.get("PICO_MODEL_PROVIDER", "")).strip().lower()
     model_timeout = int(settings.get("model_timeout_seconds", 120))
     model_max_attempts = max(1, min(5, int(settings.get("model_max_attempts", 3))))
     if model_client_factory is not None:
@@ -584,8 +602,8 @@ def run_task(
         provider_model_client = _create_model_client(
             model_provider=model_provider,
             model=requested_model,
-            base_url=_required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
-            api_key=_required_env("PICO_OPENAI_API_KEY"),
+            base_url=base_url,
+            api_key=api_key,
             temperature=0.2,
             timeout=model_timeout,
             max_attempts=model_max_attempts,
@@ -602,8 +620,8 @@ def run_task(
         router_provider_client = _create_model_client(
             model_provider=model_provider,
             model=requested_model,
-            base_url=_required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
-            api_key=_required_env("PICO_OPENAI_API_KEY"),
+            base_url=base_url,
+            api_key=api_key,
             temperature=0.2,
             timeout=min(45, model_timeout),
             max_attempts=min(2, model_max_attempts),
@@ -754,6 +772,24 @@ def _required_env(name: str, default: str = "") -> str:
     if not value:
         raise RuntimeError(f"{name} is not configured on the local Worker")
     return value
+
+
+_PROVIDER_PROTOCOL_TO_MODEL_PROVIDER = {
+    "openai_compatible": "chat_completions",
+    "deepseek": "chat_completions",
+    "ollama": "chat_completions",
+    "anthropic": "anthropic",
+}
+
+
+def _provider_protocol_to_model_provider(protocol: str) -> str:
+    """Provider.protocol（2.7 四值）→ worker model_provider 词汇。
+
+    OpenAI 兼容 / DeepSeek / Ollama 都实现 Chat Completions；只有 anthropic
+    走 Messages API。Responses API（OpenAI 专有）不在 Provider 枚举内，保留
+    给 env fallback（model_provider=""）。
+    """
+    return _PROVIDER_PROTOCOL_TO_MODEL_PROVIDER.get(str(protocol).strip().lower(), "")
 
 
 def _create_model_client(

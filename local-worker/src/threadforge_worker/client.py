@@ -278,6 +278,8 @@ class WorkerClient:
             self._start_history_read(message)
         elif message_type == "model.configure":
             self._configure_model(message)
+        elif message_type == "provider.configure":
+            self._configure_provider(message)
         elif message_type == "entity.rename":
             self._rename_entity(message)
         elif message_type == "entity.delete":
@@ -464,6 +466,33 @@ class WorkerClient:
                 "request_id": request_id,
                 "status": "failed",
                 "error": "model_configuration_invalid",
+            }
+        self._send(response)
+
+    def _configure_provider(self, message: dict) -> None:
+        request_id = str(message.get("request_id", ""))
+        provider_id = str(message.get("provider_id", ""))
+        try:
+            self.store.save_provider(
+                provider_id,
+                base_url=str(message.get("base_url", "")),
+                api_key=str(message.get("api_key", "")),
+                model=str(message.get("model", "")),
+                protocol=str(message.get("protocol", "")),
+                reasoning_efforts=tuple(str(item) for item in message.get("reasoning_efforts", [])),
+            )
+            response = {
+                "type": "provider.configuration.completed",
+                "request_id": request_id,
+                "status": "completed",
+                "provider_id": provider_id,
+            }
+        except Exception:
+            response = {
+                "type": "provider.configuration.completed",
+                "request_id": request_id,
+                "status": "failed",
+                "error": "provider_configuration_invalid",
             }
         self._send(response)
 
