@@ -280,6 +280,8 @@ class WorkerClient:
             self._configure_model(message)
         elif message_type == "provider.configure":
             self._configure_provider(message)
+        elif message_type == "provider.list_models":
+            self._handle_provider_list_models(message)
         elif message_type == "entity.rename":
             self._rename_entity(message)
         elif message_type == "entity.delete":
@@ -495,6 +497,38 @@ class WorkerClient:
                 "error": "provider_configuration_invalid",
             }
         self._send(response)
+
+    def _handle_provider_list_models(self, message: dict) -> None:
+        request_id = str(message.get("request_id", ""))
+        provider_id = str(message.get("provider_id", ""))
+        provider = self.store.load_provider(provider_id)
+        if provider is None:
+            self._send({
+                "type": "provider.list_models.completed",
+                "request_id": request_id,
+                "status": "failed",
+                "error": "provider_not_configured",
+            })
+            return
+        models, error = _list_provider_models(
+            str(provider.get("base_url", "")),
+            str(provider.get("api_key", "")),
+            str(provider.get("protocol", "")),
+        )
+        if error:
+            self._send({
+                "type": "provider.list_models.completed",
+                "request_id": request_id,
+                "status": "failed",
+                "error": error,
+            })
+            return
+        self._send({
+            "type": "provider.list_models.completed",
+            "request_id": request_id,
+            "status": "completed",
+            "models": models,
+        })
 
     def _rename_entity(self, message: dict) -> None:
         request_id = str(message.get("request_id", ""))
@@ -956,6 +990,45 @@ def _runtime_reasoning_efforts() -> tuple[str, ...]:
     from .runtime import _supported_reasoning_efforts
 
     return _supported_reasoning_efforts()
+
+
+def _list_provider_models(base_url: str, api_key: str, protocol: str) -> tuple[list[str], str]:
+    """按协议调用 list-models 端点，返回 (模型列表, 错误码)。
+
+    错误码为空字符串表示成功；key 不落日志，响应正文只取模型 id。
+    """
+    import json
+    import urllib.error
+
+    base_url = base_url.rstrip("/")
+    if protocol == "ollama":
+        url = base_url + "/api/tags"
+    elif protocol == "anthropic":
+        url = base_url + "/v1/models"
+    else:
+        url = base_url + "/models"
+
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return [], f"model_http_{exc.code}"
+    except (urllib.error.URLError, ConnectionError, TimeoutError):
+        return [], "model_connection_error"
+    except json.JSONDecodeError:
+        return [], "model_response_invalid"
+
+    if protocol == "ollama":
+        raw_models = data.get("models", []) if isinstance(data, dict) else []
+        model_ids = [str(item.get("name", "")) for item in raw_models if isinstance(item, dict)]
+    else:
+        raw_models = data.get("data", []) if isinstance(data, dict) else []
+        model_ids = [str(item.get("id", "")) for item in raw_models if isinstance(item, dict)]
+    return [model_id for model_id in model_ids if model_id], ""
 
 
 def _model_capabilities(store: ConfigStore | None = None) -> dict:

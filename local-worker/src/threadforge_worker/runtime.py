@@ -574,8 +574,9 @@ def run_task(
         if requested_model != configured_model:
             raise RuntimeError("requested model is not configured on the local Worker")
         model_provider = str(settings.get("model_provider", "") or os.environ.get("PICO_MODEL_PROVIDER", "")).strip().lower()
-        base_url = _required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1")
-        api_key = _required_env("PICO_OPENAI_API_KEY")
+        # 延迟到真正建客户端时才解析 env（model_client_factory 测试路径不依赖 env）。
+        base_url = ""
+        api_key = ""
         supported_efforts = _supported_reasoning_efforts()
         requested_effort = str(settings.get("reasoning_effort", "none")).strip().lower() or "none"
         if requested_effort not in supported_efforts:
@@ -601,8 +602,8 @@ def run_task(
         provider_model_client = _create_model_client(
             model_provider=model_provider,
             model=requested_model,
-            base_url=base_url,
-            api_key=api_key,
+            base_url=base_url or _required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
+            api_key=api_key or _required_env("PICO_OPENAI_API_KEY"),
             temperature=0.2,
             timeout=model_timeout,
             max_attempts=model_max_attempts,
@@ -619,8 +620,8 @@ def run_task(
         router_provider_client = _create_model_client(
             model_provider=model_provider,
             model=requested_model,
-            base_url=base_url,
-            api_key=api_key,
+            base_url=base_url or _required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
+            api_key=api_key or _required_env("PICO_OPENAI_API_KEY"),
             temperature=0.2,
             timeout=min(45, model_timeout),
             max_attempts=min(2, model_max_attempts),
@@ -814,8 +815,8 @@ def _create_model_client(
     if model_provider == "chat_completions":
         return OpenAICompletionsModelClient(
             model=model,
-            base_url=base_url,
-            api_key=api_key,
+            base_url=base_url or _required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
+            api_key=api_key or _required_env("PICO_OPENAI_API_KEY"),
             temperature=temperature,
             timeout=timeout,
             max_attempts=max_attempts,
@@ -823,8 +824,8 @@ def _create_model_client(
     if model_provider == "anthropic":
         return AnthropicCompatibleModelClient(
             model=model,
-            base_url=base_url,
-            api_key=api_key,
+            base_url=base_url or _required_env("PICO_OPENAI_API_BASE", "https://api.openai.com/v1"),
+            api_key=api_key or _required_env("PICO_OPENAI_API_KEY"),
             temperature=temperature,
             timeout=timeout,
             max_attempts=max_attempts,

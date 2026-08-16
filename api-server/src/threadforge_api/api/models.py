@@ -146,6 +146,10 @@ class ConfigureProviderRequest(BaseModel):
     reasoning_efforts: list[str] = []
 
 
+class ProviderTestRequest(BaseModel):
+    device_id: str = Field(min_length=1, max_length=200)
+
+
 class RenameEntityRequest(BaseModel):
     display_name: str = Field(min_length=1, max_length=200)
     expected_updated_at: str | None = Field(default=None, max_length=64)

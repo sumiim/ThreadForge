@@ -8,6 +8,7 @@ import {
   createProvider,
   deleteProvider,
   listProviders,
+  testProvider,
   updateProvider,
 } from '../../api/client'
 
@@ -161,6 +162,20 @@ export default function ProviderView({ deviceId }: { deviceId?: string }) {
     })
   }
 
+  const onTest = async (p: Provider) => {
+    if (!deviceId) {
+      message.warning('请先选择本地设备/工作区')
+      return
+    }
+    try {
+      const result = await testProvider(p.provider_id, deviceId)
+      message.success(`连接成功，发现 ${result.models.length} 个模型`)
+      void load()
+    } catch {
+      message.error('连接测试失败，请检查 Base URL / API Key')
+    }
+  }
+
   const columns = [
     {
       title: '名称',
@@ -193,6 +208,9 @@ export default function ProviderView({ deviceId }: { deviceId?: string }) {
       key: 'actions',
       render: (_: unknown, record: Provider) => (
         <Space size={4}>
+          <Button type="link" size="small" onClick={() => onTest(record)}>
+            测试连接
+          </Button>
           {!record.is_default ? (
             <Button type="link" size="small" onClick={() => onActivate(record)}>
               设为默认

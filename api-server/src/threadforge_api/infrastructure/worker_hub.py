@@ -365,6 +365,7 @@ class WorkerHub:
                 "local model configuration was rejected",
                 {"reason": result.get("error", "model_configuration_failed")},
             )
+        return {"status": "completed", "model": result.get("model", "")}
 
     async def configure_provider(
         self,
@@ -416,7 +417,47 @@ class WorkerHub:
                 {"reason": result.get("error", "provider_configuration_failed")},
             )
         return {"provider_id": provider_id, "status": "completed"}
-        return {"status": "completed", "model": result.get("model", "")}
+
+    async def list_provider_models(
+        self,
+        *,
+        device_id: str,
+        owner_id: str,
+        provider_id: str,
+    ) -> dict:
+        self._devices.get_for_owner(device_id, owner_id)
+        request_id = "models_" + uuid.uuid4().hex
+        future = self._register_pending_request(
+            self._provider_requests,
+            request_id=request_id,
+            device_id=device_id,
+            owner_id=owner_id,
+            capability="model_configuration",
+        )
+        timed_out = False
+        try:
+            self._send(
+                device_id,
+                {
+                    "type": "provider.list_models",
+                    "request_id": request_id,
+                    "provider_id": provider_id,
+                },
+            )
+            result = await asyncio.wait_for(future, timeout=15)
+        except asyncio.TimeoutError as exc:
+            timed_out = True
+            raise WorkerOfflineError("provider model listing timed out") from exc
+        finally:
+            if not timed_out:
+                with self._lock:
+                    self._provider_requests.pop(request_id, None)
+        if result.get("status") != "completed":
+            raise WorkerCommandFailedError(
+                "local provider model listing failed",
+                {"reason": result.get("error", "provider_list_models_failed")},
+            )
+        return {"provider_id": provider_id, "models": result.get("models", [])}
 
     async def rename_entity(
         self,
@@ -922,6 +963,8 @@ class WorkerHub:
             self._handle_model_configuration_completed(connection, message)
         elif message_type == "provider.configuration.completed":
             self._handle_provider_configuration_completed(connection, message)
+        elif message_type == "provider.list_models.completed":
+            self._handle_provider_list_models_completed(connection, message)
         elif message_type == "entity.rename.completed":
             self._handle_rename_completed(connection, message)
         elif message_type == "entity.delete.completed":
@@ -1222,6 +1265,42 @@ class WorkerHub:
         self._send(
             connection.device.device_id,
             {"type": "provider.configuration.ack", "request_id": request_id},
+        )
+
+    def _handle_provider_list_models_completed(
+        self, connection: WorkerConnection, message: dict
+    ) -> None:
+        request_id = str(message.get("request_id", ""))
+        with self._lock:
+            request = self._provider_requests.get(request_id)
+            if (
+                request is None
+                or request.device_id != connection.device.device_id
+                or request.owner_id != connection.device.owner_id
+            ):
+                raise WorkerProtocolError("provider list-models request is not pending")
+        status = str(message.get("status", ""))
+        if status == "completed":
+            models = message.get("models", [])
+            if not isinstance(models, list):
+                raise WorkerProtocolError("invalid provider model list")
+            result = {"status": "completed", "models": [str(item)[:200] for item in models]}
+        elif status == "failed":
+            result = {
+                "status": "failed",
+                "error": _safe_error_code(
+                    message.get("error"), "provider_list_models_failed"
+                ),
+            }
+        else:
+            raise WorkerProtocolError("invalid provider list-models status")
+        if not request.future.done():
+            request.future.set_result(result)
+        with self._lock:
+            self._provider_requests.pop(request_id, None)
+        self._send(
+            connection.device.device_id,
+            {"type": "provider.list_models.ack", "request_id": request_id},
         )
 
     def _handle_workspace_selection_completed(

@@ -613,4 +613,15 @@ export function activateProvider(providerId: string): Promise<Provider> {
   return request(`/api/v1/providers/${encodeURIComponent(providerId)}/activate`, { method: 'POST' })
 }
 
+export function testProvider(providerId: string, deviceId: string): Promise<Provider> {
+  return request(`/api/v1/providers/${encodeURIComponent(providerId)}/test`, {
+    method: 'POST',
+    body: JSON.stringify({ device_id: deviceId }),
+  })
+}
+
+export function listProviderModels(providerId: string): Promise<{ provider_id: string; models: string[] }> {
+  return request(`/api/v1/providers/${encodeURIComponent(providerId)}/models`)
+}
+
 export type { PendingApproval, RunEventEnvelope }

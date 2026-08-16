@@ -9,6 +9,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import replace
 
+from ..domain.entities import utc_now
 from ..domain.identity import canonical_owner_id
 from ..domain.providers import Provider, validate_provider_payload
 from ..infrastructure.sqlite_repositories import SqliteProviderRepository
@@ -76,3 +77,16 @@ class ProviderService:
         return self._repo.update(
             provider_id, owner_id, lambda p: _set_default(p, True)
         ).to_dict()
+
+    def record_models(
+        self, provider_id: str, owner_id: str, models: list[str], *, error: str = ""
+    ) -> dict:
+        owner_id = canonical_owner_id(owner_id)
+
+        def _apply(provider: Provider) -> Provider:
+            provider.models = [str(item).strip() for item in models if str(item).strip()]
+            provider.last_test_at = utc_now()
+            provider.last_error = str(error or "")
+            return provider
+
+        return self._repo.update(provider_id, owner_id, _apply).to_dict()

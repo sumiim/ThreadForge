@@ -9,7 +9,12 @@ from ...application.provider_service import ProviderService
 from ...domain.identity import Actor
 from ...infrastructure.worker_hub import WorkerHub
 from ..dependencies import get_actor, get_provider_service, get_worker_hub, require_csrf
-from ..models import ConfigureProviderRequest, ProviderCreateRequest, ProviderUpdateRequest
+from ..models import (
+    ConfigureProviderRequest,
+    ProviderCreateRequest,
+    ProviderTestRequest,
+    ProviderUpdateRequest,
+)
 
 router = APIRouter()
 
@@ -108,3 +113,35 @@ async def configure_provider(
         protocol=body.protocol,
         reasoning_efforts=body.reasoning_efforts,
     )
+
+
+@router.post(
+    "/api/v1/providers/{provider_id}/test",
+    dependencies=[Depends(require_csrf)],
+)
+async def test_provider(
+    provider_id: str,
+    body: ProviderTestRequest,
+    actor: Actor = Depends(get_actor),
+    provider_service: ProviderService = Depends(get_provider_service),
+    worker_hub: WorkerHub = Depends(get_worker_hub),
+) -> dict:
+    provider_service.get_provider(provider_id, actor.owner_id)
+    result = await worker_hub.list_provider_models(
+        device_id=body.device_id,
+        owner_id=actor.owner_id,
+        provider_id=provider_id,
+    )
+    return provider_service.record_models(
+        provider_id, actor.owner_id, result.get("models", [])
+    )
+
+
+@router.get("/api/v1/providers/{provider_id}/models")
+def list_provider_models(
+    provider_id: str,
+    actor: Actor = Depends(get_actor),
+    provider_service: ProviderService = Depends(get_provider_service),
+) -> dict:
+    provider = provider_service.get_provider(provider_id, actor.owner_id)
+    return {"provider_id": provider_id, "models": provider.get("models", [])}
