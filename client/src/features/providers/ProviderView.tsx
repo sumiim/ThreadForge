@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Button, Form, Input, InputNumber, Modal, Select, Space, Table, Tag, message } from 'antd'
+import { Button, Drawer, Form, Input, InputNumber, Modal, Select, Tag, message } from 'antd'
 import { ApiOutlined, PlusOutlined } from '@ant-design/icons'
 import type { Provider, ProviderProtocol } from '../../api/types'
 import {
@@ -176,57 +176,6 @@ export default function ProviderView({ deviceId }: { deviceId?: string }) {
     }
   }
 
-  const columns = [
-    {
-      title: '名称',
-      dataIndex: 'name',
-      key: 'name',
-      render: (value: string, record: Provider) => (
-        <Space size={6}>
-          <span className="font-medium text-stone-800">{value}</span>
-          {record.is_default ? <Tag color="blue">默认</Tag> : null}
-        </Space>
-      ),
-    },
-    {
-      title: '协议',
-      dataIndex: 'protocol',
-      key: 'protocol',
-      render: (value: ProviderProtocol) => PROTOCOL_LABELS[value] ?? value,
-    },
-    { title: 'Base URL', dataIndex: 'base_url', key: 'base_url', ellipsis: true },
-    { title: '模型', dataIndex: 'model', key: 'model', render: (v: string) => v || '—' },
-    {
-      title: '状态',
-      dataIndex: 'state',
-      key: 'state',
-      render: (value: string) =>
-        value === 'active' ? <Tag color="green">active</Tag> : <Tag>{value}</Tag>,
-    },
-    {
-      title: '操作',
-      key: 'actions',
-      render: (_: unknown, record: Provider) => (
-        <Space size={4}>
-          <Button type="link" size="small" onClick={() => onTest(record)}>
-            测试连接
-          </Button>
-          {!record.is_default ? (
-            <Button type="link" size="small" onClick={() => onActivate(record)}>
-              设为默认
-            </Button>
-          ) : null}
-          <Button type="link" size="small" onClick={() => openEdit(record)}>
-            编辑
-          </Button>
-          <Button type="link" size="small" danger onClick={() => onDelete(record)}>
-            删除
-          </Button>
-        </Space>
-      ),
-    },
-  ]
-
   return (
     <div className="h-full overflow-y-auto px-6 py-8 lg:px-10">
       <div className="mx-auto max-w-4xl">
@@ -246,27 +195,64 @@ export default function ProviderView({ deviceId }: { deviceId?: string }) {
         </p>
 
         <div className="mt-6">
-          <Table<Provider>
-            rowKey="provider_id"
-            columns={columns}
-            dataSource={providers}
-            loading={loading}
-            pagination={false}
-            size="middle"
-          />
+          {loading ? (
+            <div className="py-12 text-center text-sm text-stone-400">加载中…</div>
+          ) : providers.length === 0 ? (
+            <div className="py-12 text-center text-sm text-stone-400">暂无供应商，点击「新增供应商」创建。</div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {providers.map((p) => (
+                <div key={p.provider_id} className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-xs font-medium text-blue-600">
+                        {(PROTOCOL_LABELS[p.protocol] ?? 'P').slice(0, 1)}
+                      </span>
+                      <span className="truncate font-medium text-stone-800">{p.name}</span>
+                      {p.is_default ? <Tag color="blue">默认</Tag> : null}
+                    </div>
+                    <Tag color={p.state === 'active' ? 'green' : 'default'}>{p.state}</Tag>
+                  </div>
+                  <div className="mt-3 space-y-1 text-xs text-stone-500">
+                    <div className="truncate font-mono">{p.base_url}</div>
+                    <div>
+                      {PROTOCOL_LABELS[p.protocol] ?? p.protocol} · 模型 {p.model || '—'}
+                      {p.models.length ? `（+${p.models.length}）` : ''}
+                    </div>
+                    <div>推理档 {(p.reasoning_efforts ?? []).join(' / ') || '—'}</div>
+                    {p.last_error ? (
+                      <div className="truncate text-red-500">{p.last_error}</div>
+                    ) : p.last_test_at ? (
+                      <div>上次测试 {p.last_test_at.slice(0, 16).replace('T', ' ')}</div>
+                    ) : null}
+                  </div>
+                  <div className="mt-3 flex items-center gap-1 border-t border-stone-100 pt-2">
+                    <Button type="link" size="small" onClick={() => onTest(p)}>测试连接</Button>
+                    {!p.is_default ? (
+                      <Button type="link" size="small" onClick={() => onActivate(p)}>设为默认</Button>
+                    ) : null}
+                    <Button type="link" size="small" onClick={() => openEdit(p)}>编辑</Button>
+                    <Button type="link" size="small" danger onClick={() => onDelete(p)}>删除</Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
-      <Modal
+      <Drawer
         title={editing ? '编辑供应商' : '新增供应商'}
         open={modalOpen}
-        onCancel={() => setModalOpen(false)}
-        onOk={submit}
-        confirmLoading={saving}
-        okText={editing ? '保存' : '创建'}
-        destroyOnClose
+        onClose={() => setModalOpen(false)}
+        width={420}
+        extra={
+          <Button type="primary" loading={saving} onClick={submit}>
+            {editing ? '保存' : '创建'}
+          </Button>
+        }
       >
-        <Form form={form} layout="vertical" className="mt-4">
+        <Form form={form} layout="vertical">
           <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
             <Input placeholder="如 DeepSeek" />
           </Form.Item>
@@ -305,7 +291,7 @@ export default function ProviderView({ deviceId }: { deviceId?: string }) {
             </Form.Item>
           ) : null}
         </Form>
-      </Modal>
+      </Drawer>
     </div>
   )
 }
