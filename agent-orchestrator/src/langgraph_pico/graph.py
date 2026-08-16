@@ -57,8 +57,12 @@ PLANNING_DEADLINE_SECONDS = 75.0
 READ_ONLY_TOOLS = ("list_files", "read_file", "search")
 INTENT_STEP_BUDGETS = {
     INTENT_CONVERSATION: 2,
-    INTENT_READ_ONLY: 8,
-    INTENT_CODE_CHANGE: 16,
+    # 统一「一步 = 实际工具调用」后，research/review 从「记 1 次 delegate」改为
+    # 「delegate + 子 agent 实际 tool_steps」，单轮消耗显著上升；且 §7.8.2 已诊断
+    # 旧 read_only=8 偏紧（正好烧光）。故 read_only / code_change 上调；code_change
+    # 保持在 §7.5 记录的「≤25」硬顶以内。
+    INTENT_READ_ONLY: 16,
+    INTENT_CODE_CHANGE: 24,
 }
 
 
