@@ -591,8 +591,11 @@ def run_task(
             supported_reasoning_efforts=supported_efforts,
             instructions=THREADFORGE_MODEL_INSTRUCTIONS,
         )
-        router_effort = "none" if "none" in supported_efforts else (
-            "low" if "low" in supported_efforts else ""
+        # 路由/规划需要产出严格 JSON，用「minimal 起步」的推理强度降低 malformed
+        # 首轮（none 经常第一轮就格式错、靠第 2 次才过）。成本增加很小，换来少一次往返。
+        router_effort = next(
+            (effort for effort in ("minimal", "low", "none") if effort in supported_efforts),
+            "",
         )
         router_provider_client = _create_model_client(
             model_provider=model_provider,
