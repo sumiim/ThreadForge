@@ -74,13 +74,21 @@ _READ_ONLY_TOOL_NAMES = frozenset({"list_files", "read_file", "search"})
 
 
 def _normalize_tool_args(name, args):
-    """把语义相同但字符串不同的路径参数（`.` / `./` / 空 / 结尾斜杠）归一化。"""
+    """把语义相同但字符串不同的参数归一化，用于重复调用判定。
+
+    - 路径参数（`.` / `./` / 空 / 结尾斜杠）归一化。
+    - read_file 的 ``start``/``end`` 是位置参数，不参与判定——读同一文件不同行号
+      仍是「读同一个文件」，防止模型靠改行号绕过 repeated_identical_call。
+    """
     if not isinstance(args, dict):
         return args
     normalized = dict(args)
     if name in _READ_ONLY_TOOL_NAMES and "path" in normalized:
         path = str(normalized.get("path", "")).strip().replace("\\", "/")
         normalized["path"] = path.rstrip("/") or "."
+    if name == "read_file":
+        normalized.pop("start", None)
+        normalized.pop("end", None)
     return normalized
 
 

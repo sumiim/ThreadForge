@@ -63,6 +63,8 @@ INTENT_STEP_BUDGETS = {
 
 # §7.8.7 方案 C：review 预算扩展因子按轮递减（3→2→1），第 4 轮起归零 → 收敛。
 REVIEW_EXTENSION_FACTORS = {1: 3, 2: 2, 3: 1}
+# §7.8.7-③：连续 K 轮零进展（证据/checklist/工具集三信号全零增量）→ 强制停 + 托底。
+STAGNATION_ROUNDS_LIMIT = 2
 
 
 def _intent_step_budget(state, intent):
@@ -126,6 +128,8 @@ class AgentState(TypedDict):
     delegate_failures: int
     final_result: str
     budget_exhausted_convergence: bool
+    stagnation_rounds: int
+    last_round_signature: str
     planning_enabled: bool
     plan: dict
     plan_attempts: int
@@ -1774,6 +1778,25 @@ def _read_only_review_evidence(agent, config):
     return evidence
 
 
+def _round_progress_signature(agent, config):
+    """本轮进度签名：证据数 + 已完成项数 + 工具集摘要。三个都零增量才算停滞。"""
+    import hashlib
+    import json
+
+    children = _child_task_states(agent, config)
+    evidence_count = sum(len(getattr(child, "evidence", ()) or ()) for child in children)
+    completed_count = len(getattr(agent.current_task_state, "completed_items", []) or [])
+    tool_keys = sorted(
+        (str(item.get("tool_name", "")), tuple(item.get("relative_paths", []) or []))
+        for child in children
+        for item in (getattr(child, "evidence", ()) or ())
+    )
+    digest = hashlib.sha256(
+        json.dumps(tool_keys, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    return f"{evidence_count}:{completed_count}:{digest}"
+
+
 def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
     agent = config["configurable"]["agent"]
     budget_failure = _budget_failure(state, config)
@@ -1884,12 +1907,29 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
                         "recovered": False,
                     }
                     budget_exhausted_convergence = True
+        # §7.8.7-③：停滞检测——连续 K 轮「证据/checklist/工具集」三信号零增量 → 强制停。
+        signature = _round_progress_signature(agent, config)
+        if signature == state.get("last_round_signature"):
+            stagnation_rounds = int(state["stagnation_rounds"]) + 1
+        else:
+            stagnation_rounds = 0
+        if stagnation_rounds >= STAGNATION_ROUNDS_LIMIT and review["status"] == "needs_fix":
+            review = {
+                "status": "pass",
+                "text": review["text"],
+                "issue_codes": list(review.get("issue_codes", [])),
+                "recovered": False,
+            }
+            budget_exhausted_convergence = True
+            stagnation_rounds = 0
         updated = {
             **state,
             "review_status": review["status"],
             "review_issues": review["text"],
             "budget_exhausted_convergence": budget_exhausted_convergence,
             "step_budget": extended_budget,
+            "stagnation_rounds": stagnation_rounds,
+            "last_round_signature": signature,
         }
         task_state.review_status = review["status"]
         if review["recovered"]:
