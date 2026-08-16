@@ -57,26 +57,26 @@ PLANNING_DEADLINE_SECONDS = 75.0
 READ_ONLY_TOOLS = ("list_files", "read_file", "search")
 INTENT_STEP_BUDGETS = {
     INTENT_CONVERSATION: 2,
-    # 统一「一步 = 实际工具调用」后，research/review 从「记 1 次 delegate」改为
-    # 「delegate + 子 agent 实际 tool_steps」，单轮消耗显著上升；且 §7.8.2 已诊断
-    # 旧 read_only=8 偏紧（正好烧光）。故 read_only / code_change 上调；code_change
-    # 保持在 §7.5 记录的「≤25」硬顶以内。
     INTENT_READ_ONLY: 16,
     INTENT_CODE_CHANGE: 24,
 }
 
+# §7.8.7 方案 C：review 预算扩展因子按轮递减（3→2→1），第 4 轮起归零 → 收敛。
+REVIEW_EXTENSION_FACTORS = {1: 3, 2: 2, 3: 1}
+
 
 def _intent_step_budget(state, intent):
-    """Raise the default step budget to the intent minimum; respect explicit budgets.
+    """方案 C：软预算 = planner 自报 tool_calls；INTENT_STEP_BUDGETS 降级为断路器硬顶。
 
-    The default step budget (6) is too small for the Research -> Execute ->
-    Review flow; code_change needs room for the bounded fix loop. An explicitly
-    provided step_budget (even a small one) is always respected.
+    不再用拍脑袋的 intent 固定值当主预算。planner 自报的 ``budgets.tool_calls``
+    是有据的初始软预算，封顶在 intent 硬顶（断路器）。显式 step_budget 仍优先。
     """
     if state.get("step_budget_explicit", False):
         return int(state["step_budget"])
-    floor = int(INTENT_STEP_BUDGETS.get(intent, 0))
-    return max(int(state["step_budget"]), floor)
+    hard_cap = int(INTENT_STEP_BUDGETS.get(intent, 0))
+    soft = int((state.get("plan") or {}).get("budgets", {}).get("tool_calls", 0) or 0)
+    budget = max(int(state["step_budget"]), soft)
+    return min(budget, hard_cap) if hard_cap else budget
 COMPLETION_METADATA_KEYS = (
     "input_tokens",
     "output_tokens",
@@ -1842,24 +1842,54 @@ def review_node(state: AgentState, config: RunnableConfig) -> AgentState:
                 stage="review",
             )
             review = normalize_review_result(raw)
-        # §7.8.6：review 预算感知——步数预算耗尽时不再 needs_fix（否则再开一轮
-        # replan/execute 只会烧光预算后裸 blocked），改为自动 pass 收敛，由 finalize
-        # 输出 best-effort 结论并明确告知「预算已用尽」。
+        # §7.8.7 方案 C：预算耗尽时按「剩余 checklist × 递减因子(3→2→1)」扩展；
+        # 因子归零/清单清空/到硬顶时收敛（auto-pass）。硬顶 ②（token/墙钟）由
+        # _budget_failure 兜底，即使只剩最后一步也不放松。
         remaining_budget = int(state["step_budget"]) - int(state["coordinator_steps_used"])
         budget_exhausted_convergence = False
+        extended_budget = state["step_budget"]
         if review["status"] == "needs_fix" and remaining_budget < 1:
-            review = {
-                "status": "pass",
-                "text": review["text"],
-                "issue_codes": list(review.get("issue_codes", [])),
-                "recovered": False,
-            }
-            budget_exhausted_convergence = True
+            if state.get("step_budget_explicit", False):
+                # 显式预算（用户/benchmark 指定硬上限）：耗尽即收敛，不做扩展（§7.8.6 原行为）。
+                review = {
+                    "status": "pass",
+                    "text": review["text"],
+                    "issue_codes": list(review.get("issue_codes", [])),
+                    "recovered": False,
+                }
+                budget_exhausted_convergence = True
+            else:
+                remaining_checklist = max(
+                    0,
+                    len(getattr(task_state, "checklist", []) or [])
+                    - len(getattr(task_state, "completed_items", []) or []),
+                )
+                hard_cap = int(INTENT_STEP_BUDGETS.get(state["resolved_intent"], 0))
+                factor = REVIEW_EXTENSION_FACTORS.get(int(state["fix_attempts"]) + 1, 0)
+                can_extend = (
+                    factor > 0
+                    and remaining_checklist > 0
+                    and hard_cap > 0
+                    and int(state["step_budget"]) < hard_cap
+                )
+                if can_extend:
+                    extended_budget = min(
+                        hard_cap, int(state["step_budget"]) + remaining_checklist * factor
+                    )
+                else:
+                    review = {
+                        "status": "pass",
+                        "text": review["text"],
+                        "issue_codes": list(review.get("issue_codes", [])),
+                        "recovered": False,
+                    }
+                    budget_exhausted_convergence = True
         updated = {
             **state,
             "review_status": review["status"],
             "review_issues": review["text"],
             "budget_exhausted_convergence": budget_exhausted_convergence,
+            "step_budget": extended_budget,
         }
         task_state.review_status = review["status"]
         if review["recovered"]:
