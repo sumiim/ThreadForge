@@ -335,6 +335,29 @@ export interface TaskQueued {
   events_url: string
 }
 
+// ---- 供应商（2.7 供应商管理窗口） -----------------------------------------
+
+export type ProviderProtocol = 'openai_compatible' | 'anthropic' | 'deepseek' | 'ollama'
+
+export interface Provider {
+  provider_id: string
+  owner_id: string
+  device_id: string
+  name: string
+  protocol: ProviderProtocol
+  base_url: string
+  model: string
+  models: string[]
+  reasoning_tier: string
+  timeout: number
+  concurrency: number
+  state: 'active' | 'disabled' | 'error'
+  is_default: boolean
+  last_test_at: string
+  last_error: string
+  schema_version: number
+}
+
 // ---- SSE 事件流 ----------------------------------------------------------
 
 // 每个 SSE 帧的 data 都是一个事件信封；type 事件名同帧头 event 字段

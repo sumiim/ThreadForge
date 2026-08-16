@@ -16,6 +16,7 @@ import ChatView from './features/chat/ChatView'
 import RunTracePanel from './features/chat/RunTracePanel'
 import SkillsView from './features/skills/SkillsView'
 import McpView from './features/mcp/McpView'
+import ProviderView from './features/providers/ProviderView'
 import WorkerDevices from './features/devices/WorkerDevices'
 import { getLatestWorkerRelease } from './api/client'
 import { workspaceKey } from './features/sessions/workspaceIdentity'
@@ -79,7 +80,7 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
     closeMobileNav()
   }
   const hasRun = active?.lastRunId != null
-  const pageTitle = view === 'chat' ? (active?.title ?? 'ThreadForge') : view === 'skills' ? 'Skills' : 'MCP'
+  const pageTitle = view === 'chat' ? (active?.title ?? 'ThreadForge') : view === 'skills' ? 'Skills' : view === 'mcp' ? 'MCP' : '供应商'
   const activePath = active
     ? (workspaces.find((w) => workspaceKey(w) === workspaceKey({
         workspace_id: active.workspaceId,
@@ -250,8 +251,10 @@ export default function App({ auth, onLogout, signingOut }: AppProps) {
               )
             ) : view === 'skills' ? (
               <SkillsView items={skills} />
-            ) : (
+            ) : view === 'mcp' ? (
               <McpView items={mcpServers} />
+            ) : (
+              <ProviderView />
             )}
           </Content>
         </Layout>
