@@ -1304,6 +1304,47 @@ def test_v11_review_auto_passes_when_step_budget_exhausted(tmp_path):
     assert "still incomplete" in result.final_answer
 
 
+def test_v11_budget_convergence_completes_with_evidence(tmp_path):
+    """预算在 answer 入口耗尽（剩余<1）但有 research 证据时，应收敛为 completed + budget_converged，
+    而不是裸 budget_exhausted（§7.8.3-B 被动兜底）。"""
+    from langgraph_pico import run_agent
+
+    plan = json.loads(_v11_plan("read_only", ["read_file"]))
+    plan["budgets"]["tool_calls"] = 2
+    agent, _, _ = _build_runtime(
+        tmp_path,
+        [
+            json.dumps(plan),
+            '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
+            "<final>Research findings from README.</final>",
+            "<final>README describes the fixture project.</final>",
+        ],
+    )
+
+    result = run_agent(
+        agent,
+        "Inspect README",
+        task_mode="auto",
+        requires_research=True,
+        enable_planning=True,
+        step_budget=2,
+    )
+
+    assert result.task_state.stop_reason == "final_answer_returned"
+    assert result.task_state.budget_converged is True
+    assert "预算已用尽" in result.final_answer
+    assert "README describes the fixture project" in result.final_answer
+
+
+def test_task_state_budget_converged_roundtrip():
+    from pico.task_state import TaskState
+
+    state = TaskState.create(run_id="r", task_id="t", user_request="hi")
+    state.budget_converged = True
+    restored = TaskState.from_dict(state.to_dict())
+    assert restored.budget_converged is True
+
+
 def test_read_only_answer_merges_listed_dirs_into_parent_memory(tmp_path):
     from langgraph_pico import run_agent
 

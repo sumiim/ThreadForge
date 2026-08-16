@@ -4,6 +4,7 @@ import time
 import traceback
 from pathlib import Path, PureWindowsPath
 
+from pico.agent_loop import _best_effort_step_limit
 from pico.evaluation.backends import (
     BackendRunResult,
     HarnessModelClientAdapter,
@@ -31,7 +32,7 @@ from pico.task_state import (
 )
 from pico.workspace import now
 
-from .graph import _verify_budget_accounting, build_graph
+from .graph import _complete_graph_model, _verify_budget_accounting, build_graph
 from .inbox import InboxSource
 from .intent import (
     INTENT_CODE_CHANGE,
@@ -69,6 +70,53 @@ STOP_REASON_MAP = {
     "missing_current_run_evidence": STOP_REASON_RUNTIME_ERROR,
     "completion_gate_failed": STOP_REASON_RUNTIME_ERROR,
 }
+
+# 预算耗尽且「有证据」时走收敛（completed + budget_converged），零证据/协议故障仍 blocked。
+_BUDGET_CONVERGENCE_REASONS = frozenset({"budget_exhausted", "step_limit_reached"})
+
+
+def _synthesize_budget_conclusion(agent, task_input, task_state):
+    """一次性、无工具的预算收敛合成：把已收集证据总结成部分结论。
+
+    返回合成文本；无证据或合成调用失败时返回 None（由调用方回退 raw 文本）。
+    """
+    evidence = [
+        item
+        for item in (getattr(task_state, "evidence", None) or [])
+        if item.get("status") in {"ok", "partial_success"}
+    ]
+    if not evidence:
+        return None
+    lines = []
+    for item in evidence[-20:]:
+        tool = str(item.get("tool_name", "tool"))
+        paths = "、".join(str(p) for p in (item.get("relative_paths") or [])[:4])
+        summary = str(item.get("summary", "")).strip()[:300]
+        lines.append(f"- {tool} {paths or '（无路径）'}: {summary}")
+    prompt = (
+        "You are wrapping up a task that exhausted its execution budget. "
+        "Do not call any tool. Synthesize a concise partial conclusion from the evidence below.\n\n"
+        f"REQUEST: {task_input}\n\n"
+        "COLLECTED EVIDENCE:\n" + "\n".join(lines) + "\n\n"
+        "Reply in the request's language, as plain text only (no XML tags, no markdown fences, no JSON). "
+        "State only what the evidence supports, and clearly separate confirmed findings "
+        "from still-unverified items. Do not invent facts."
+    )
+    try:
+        raw = _complete_graph_model(
+            agent,
+            agent.model_client,
+            prompt,
+            agent.max_new_tokens,
+            stage="budget_convergence",
+        )
+    except Exception:  # noqa: BLE001 - convergence must fall back to collected evidence.
+        return None
+    text = str(raw).strip()
+    if text.startswith("<final>") and text.endswith("</final>"):
+        text = text[len("<final>"):-len("</final>")].strip()
+    return text or None
+
 
 MODEL_ERROR_MESSAGES = {
     "model_rate_limited": "模型服务当前请求过多，已自动重试，请稍后再试。",
@@ -518,6 +566,24 @@ def run_agent(
                 terminal_reason = result["terminal_reason"]
                 if terminal_reason == STOP_REASON_USER_CANCELLED:
                     task_state.stop_user_cancelled(final_answer=final_answer)
+                elif terminal_reason in _BUDGET_CONVERGENCE_REASONS:
+                    has_evidence = any(
+                        item.get("status") in {"ok", "partial_success"}
+                        for item in (getattr(task_state, "evidence", None) or [])
+                    )
+                    if has_evidence:
+                        synthesized = _synthesize_budget_conclusion(agent, task_input, task_state)
+                        conclusion = (
+                            "⚠️ 预算已用尽（budget_exhausted）：以下为已确认的部分结论。\n\n"
+                            + (synthesized if synthesized else _best_effort_step_limit(
+                                task_state, "预算已用尽（budget_exhausted）"
+                            ))
+                        )
+                        task_state.budget_converged = True
+                        task_state.finish_success(conclusion)
+                    else:
+                        stop_reason = STOP_REASON_MAP[terminal_reason]
+                        task_state.stop(stop_reason, status=STATUS_FAILED, final_answer=final_answer)
                 else:
                     stop_reason = STOP_REASON_MAP[terminal_reason]
                     task_state.stop(stop_reason, status=STATUS_FAILED, final_answer=final_answer)

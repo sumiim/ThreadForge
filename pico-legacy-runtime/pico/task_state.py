@@ -89,6 +89,7 @@ class TaskState:
     replan_reasons: list[str] = field(default_factory=list)
     intent: str = ""
     review_status: str = ""
+    budget_converged: bool = False
     talk_steps: int = 0
     evidence: list[dict] = field(default_factory=list)
     input_tokens: int = 0
@@ -162,6 +163,7 @@ class TaskState:
             ],
             intent=str(data.get("intent", "")),
             review_status=str(data.get("review_status", "")),
+            budget_converged=bool(data.get("budget_converged", False)),
             talk_steps=max(0, int(data.get("talk_steps", 0))),
             evidence=[dict(item) for item in data.get("evidence", []) if isinstance(item, dict)],
             input_tokens=max(0, int(data.get("input_tokens", 0) or 0)),
@@ -324,6 +326,7 @@ class TaskState:
             "replan_reasons": list(self.replan_reasons),
             "intent": self.intent,
             "review_status": self.review_status,
+            "budget_converged": self.budget_converged,
             "talk_steps": self.talk_steps,
             "evidence": [dict(item) for item in self.evidence],
             "input_tokens": self.input_tokens,

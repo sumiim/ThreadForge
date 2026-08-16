@@ -702,6 +702,7 @@ def run_task(
             "task_id": task["task_id"],
             "status": status,
             "stop_reason": stop_reason,
+            "budget_converged": bool(getattr(state, "budget_converged", False)),
             "final_answer": redact_artifact(getattr(state, "final_answer", "") or ""),
             "message_total": len(pico.session.get("history", [])),
             "session_updated_at": pico.session.get("updated_at", ""),
