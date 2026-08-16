@@ -43,6 +43,7 @@ tmp/
 /docs/requirements-v1.2-agent-hardening-and-productivity.md
 /docs/requirements-v1.3-extension-ecosystem.md
 /docs/frontend-api-and-ssh-access.md
+/docs/main-loop-convergence-design.md
 
 # Icon source files
 /icon/绘图1.vsdx
