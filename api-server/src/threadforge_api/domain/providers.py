@@ -68,7 +68,7 @@ class Provider:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "Provider":
+    def from_dict(cls, data: dict) -> Provider:
         known = {field.name for field in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
         return cls(**{key: value for key, value in data.items() if key in known})
 
