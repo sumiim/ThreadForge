@@ -195,9 +195,14 @@ def load_update_status(store: ConfigStore) -> dict:
         status = str(payload.get("status", ""))[:32]
         current_version = str(payload.get("current_version", ""))[:32]
         target_version = str(payload.get("target_version", ""))[:32]
-        # 启动后若已运行到 target（安装已完成），把残留的 installing 归一为 current，
-        # 避免「正在安装更新」假状态被重复上报。
-        if status == "installing" and target_version and target_version == __version__:
+        # 启动后若已运行到 target（安装/下载已完成），把任何残留更新状态
+        # （installing / downloading / retrying / failed）归一为 current，
+        # 避免「正在下载/安装更新」假状态被重复上报成「下到一半」。
+        if (
+            status not in {"", "current", "idle"}
+            and target_version
+            and target_version == __version__
+        ):
             status = "current"
             current_version = __version__
         return {

@@ -68,7 +68,11 @@ export function terminalFailureMessage(data: Record<string, unknown>): string {
   if (status === 'cancelled') return '已停止当前任务。'
   if (status === 'interrupted') return '运行因服务重启或连接中断而终止，请重新执行。'
   if (status === 'blocked') return '运行受阻，请查看运行事件中的具体原因后重试。'
-  return status === 'failed' ? 'Agent 运行失败，请稍后重试。' : ''
+  if (status === 'failed') {
+    const detail = String(data.error_detail ?? '').trim()
+    return detail ? `Agent 运行失败：${detail}` : 'Agent 运行失败，请稍后重试。'
+  }
+  return ''
 }
 
 interface ToolEventUpdate {

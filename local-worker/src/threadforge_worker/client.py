@@ -895,6 +895,14 @@ class WorkerClient:
                         "status": "failed",
                         "stop_reason": _stable_failure_reason(exc),
                         "final_answer": "",
+                        # 带脱敏异常信息，前端能定位 worker_runtime_error 的具体原因
+                        "error": {
+                            "stage": "runtime",
+                            "code": _stable_failure_reason(exc),
+                            "retryable": False,
+                            "attempts": 1,
+                            "detail": str(redact_artifact(str(exc)))[:500],
+                        },
                         "message_total": self._local_message_total(
                             str(task.get("session_id", ""))
                         ),
