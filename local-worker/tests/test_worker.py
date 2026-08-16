@@ -1075,36 +1075,9 @@ def test_runtime_completes_with_fake_model_without_provider_call(tmp_path):
         active=active,
         model_client_factory=lambda: FakeModelClient(
             [
-                json.dumps(
-                    {
-                        "schema_version": "1",
-                        "plan_id": "plan_worker",
-                        "revision": 1,
-                        "intent": "conversation",
-                        "summary": "Answer the user.",
-                        "steps": [
-                            {
-                                "id": "answer",
-                                "goal": "Answer the user",
-                                "dependencies": [],
-                                "required_tools": [],
-                                "required_evidence": [],
-                                "done_when": ["the answer is returned"],
-                            }
-                        ],
-                        "acceptance": ["the answer is returned"],
-                        "risk_level": "low",
-                        "budgets": {
-                            "model_rounds": 3,
-                            "tool_calls": 1,
-                            "input_tokens": 1000,
-                            "output_tokens": 256,
-                            "elapsed_seconds": 30,
-                        },
-                    }
-                ),
-                '{"answer":"done"}',
-                "status: pass\nissues: none",
+                # 原生路径（run_native）：router 先分类 intent，主循环走文本协议
+                json.dumps({"intent": "conversation", "requires_research": False}),
+                "<final>done</final>",
             ]
         ),
     )

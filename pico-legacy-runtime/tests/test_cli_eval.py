@@ -92,14 +92,14 @@ def test_run_request_lazily_dispatches_to_langgraph(monkeypatch):
 
     captured = {}
 
-    def fake_run_agent(agent, prompt, **kwargs):
+    def fake_run_native(agent, prompt, **kwargs):
         captured.update({"agent": agent, "prompt": prompt, **kwargs})
         return SimpleNamespace(
             final_answer="graph answer",
             task_state=SimpleNamespace(status="completed", stop_reason="final_answer_returned"),
         )
 
-    monkeypatch.setattr(langgraph_pico, "run_agent", fake_run_agent)
+    monkeypatch.setattr(langgraph_pico, "run_native", fake_run_native)
     agent = object()
     args = SimpleNamespace(
         backend="langgraph",
@@ -107,7 +107,7 @@ def test_run_request_lazily_dispatches_to_langgraph(monkeypatch):
         max_steps=7,
         requires_research=False,
         focus_paths=["README.md"],
-        task_mode="code_change",
+        task_mode="auto",
     )
     router_model_client = object()
 
@@ -128,7 +128,7 @@ def test_run_request_lazily_dispatches_to_langgraph(monkeypatch):
         "step_budget": 7,
         "requires_research": False,
         "focus_paths": ["README.md"],
-        "task_mode": "code_change",
+        "task_mode": "auto",
         "router_model_client": router_model_client,
         "record_session": True,
     }
