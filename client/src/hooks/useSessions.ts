@@ -771,7 +771,13 @@ export function useSessions(): UseSessions {
           }
           case 'assistant.commentary': {
             const text = String(data.text ?? '').trim()
-            if (text) appendActivity(envelope, '过程更新', text)
+            if (!text) return
+            appendActivity(envelope, '过程更新', text)
+            updateSessionMessages(sessionId, (messages) => messages.map((message) =>
+              message.id === assistantId
+                ? { ...message, commentary: `${message.commentary ?? ''}${message.commentary ? '\n' : ''}${text}` }
+                : message,
+            ))
             return
           }
           case 'review.started': {

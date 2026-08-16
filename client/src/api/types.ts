@@ -449,6 +449,7 @@ export interface Message {
   role: 'user' | 'assistant'
   content: string
   createdAt: string // ISO 时间
+  commentary?: string // 模型过程中间话（流式回传，区别于 final content）
   toolCalls?: ToolCall[]
   activity?: AgentActivity[]
   runId?: string
