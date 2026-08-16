@@ -65,3 +65,7 @@ release/
 /pi-main/
 /deepseek-harness-master/
 /workspaces.json
+
+# Real-model benchmark artifacts
+/pico-legacy-runtime/benchmarks/results/
+
