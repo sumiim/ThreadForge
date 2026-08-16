@@ -3,6 +3,7 @@ from dataclasses import replace
 
 import pytest
 
+from threadforge_api.application.provider_service import ProviderService
 from threadforge_api.domain.errors import ProviderNotFoundError
 from threadforge_api.domain.providers import (
     Provider,
@@ -81,3 +82,31 @@ def test_provider_repository_crud(tmp_path):
     repo.delete(provider.provider_id, provider.owner_id)
     with pytest.raises(ProviderNotFoundError):
         repo.get(provider.provider_id, provider.owner_id)
+
+
+def test_provider_service_crud_and_activate(tmp_path):
+    store = SqliteStore(tmp_path / "control.sqlite3")
+    repo = SqliteProviderRepository(store, json_root=tmp_path / "providers")
+    service = ProviderService(repo)
+    owner = str(uuid.uuid4())
+
+    created = service.create_provider(owner, "", {
+        "name": "DeepSeek",
+        "protocol": "openai_compatible",
+        "base_url": "https://api.example.com/v1",
+        "api_key": "sk-secret-not-stored",
+    })
+    provider_id = created["provider_id"]
+    assert created["name"] == "DeepSeek"
+    assert "api_key" not in created  # 中央不落密钥
+
+    assert [p["name"] for p in service.list_providers(owner)] == ["DeepSeek"]
+
+    updated = service.update_provider(provider_id, owner, {"name": "Renamed"})
+    assert updated["name"] == "Renamed"
+
+    service.activate_provider(provider_id, owner)
+    assert service.get_provider(provider_id, owner)["is_default"] is True
+
+    service.delete_provider(provider_id, owner)
+    assert service.list_providers(owner) == []

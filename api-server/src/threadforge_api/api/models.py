@@ -88,6 +88,42 @@ class ApprovalDecisionRequest(BaseModel):
     decision: Literal["approved", "rejected"]
 
 
+_PROVIDER_PROTOCOLS = Literal["openai_compatible", "anthropic", "deepseek", "ollama"]
+
+
+class ProviderCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    protocol: _PROVIDER_PROTOCOLS
+    base_url: str
+    model: str = ""
+    models: list[str] = Field(default_factory=list)
+    reasoning_tier: str = "none"
+    timeout: int = Field(default=45, ge=5, le=600)
+    concurrency: int = Field(default=1, ge=1, le=16)
+    # api_key 只写 device 本地，中央不落；这里仅作 has_key 判断。
+    api_key: str = ""
+
+    @field_validator("name")
+    @classmethod
+    def _name_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("name must not be blank")
+        return value
+
+
+class ProviderUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    protocol: _PROVIDER_PROTOCOLS | None = None
+    base_url: str | None = None
+    model: str | None = None
+    models: list[str] | None = None
+    reasoning_tier: str | None = None
+    timeout: int | None = Field(default=None, ge=5, le=600)
+    concurrency: int | None = Field(default=None, ge=1, le=16)
+    state: Literal["active", "disabled", "error"] | None = None
+    api_key: str | None = None
+
+
 class AppendMessageRequest(BaseModel):
     content: str = Field(min_length=1, max_length=100000)
     wake: bool = True

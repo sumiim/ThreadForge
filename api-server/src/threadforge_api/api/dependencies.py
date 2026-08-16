@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import Request
 
 from ..application.artifact_service import ArtifactService
+from ..application.provider_service import ProviderService
 from ..application.session_service import SessionService
 from ..application.task_service import TaskService
 from ..config import Settings
@@ -79,3 +80,7 @@ def get_task_service(request: Request) -> TaskService:
 
 def get_artifact_service(request: Request) -> ArtifactService:
     return request.app.state.container.artifact_service
+
+
+def get_provider_service(request: Request) -> ProviderService:
+    return request.app.state.container.provider_service
