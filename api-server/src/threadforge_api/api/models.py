@@ -92,6 +92,9 @@ _PROVIDER_PROTOCOLS = Literal["openai_compatible", "anthropic", "deepseek", "oll
 
 
 class ProviderCreateRequest(BaseModel):
+    # Provider 按 Worker 设备绑定：创建时必须指明归属 device，否则任务按
+    # device_id 查找默认 Provider 时永远匹配不到（task_service.create_task）。
+    device_id: str = Field(min_length=1, max_length=200)
     name: str = Field(min_length=1, max_length=200)
     protocol: _PROVIDER_PROTOCOLS
     base_url: str
@@ -109,6 +112,12 @@ class ProviderCreateRequest(BaseModel):
         if not value.strip():
             raise ValueError("name must not be blank")
         return value
+
+
+class ProviderActivateRequest(BaseModel):
+    # 激活（设为默认）时按设备作用域：缺省 "" 表示跨全部设备，携带 device_id
+    # 则只在该设备的 Provider 之间切换默认。
+    device_id: str = Field(default="", max_length=200)
 
 
 class ProviderUpdateRequest(BaseModel):

@@ -68,10 +68,12 @@ class ProviderService:
     def delete_provider(self, provider_id: str, owner_id: str) -> None:
         self._repo.delete(provider_id, canonical_owner_id(owner_id))
 
-    def activate_provider(self, provider_id: str, owner_id: str) -> dict:
+    def activate_provider(self, provider_id: str, owner_id: str, device_id: str = "") -> dict:
         owner_id = canonical_owner_id(owner_id)
         self._repo.get(provider_id, owner_id)  # 404 if absent
-        for item in self._repo.list(owner_id):
+        # 激活只在该设备（或跨全部设备，device_id 为空时）的 Provider 之间切换默认，
+        # 不能把别的设备的默认 Provider 一并清掉。
+        for item in self._repo.list(owner_id, device_id):
             if item.provider_id != provider_id and item.is_default:
                 self._repo.update(item.provider_id, owner_id, lambda p: _set_default(p, False))
         return self._repo.update(
