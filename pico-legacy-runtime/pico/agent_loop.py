@@ -66,6 +66,7 @@ STAGNATION_TOLERANCE = 3          # 连续坏 turn 阈值（固定）
 STAGNATION_WINDOW = 6             # 滑动窗口长度（≥ tolerance 即可，留余量）
 TOOL_REPEAT_WINDOW = 6            # 工具重复判定窗口（复用 repeated_tool_call 的窗口宽度）
 READ_OVERLAP_RATIO = 0.6          # read_file 区间重叠比例 ≥ 60% 才算重复读
+MAX_PARALLEL_TOOLS = 8            # §7.8.9 P1：声明并行数截断，一次 >8 个砍到 8
 
 # 只读工具：写工具会改变工作区，之后重新 list/read 是合理的，不算停滞。
 _READ_ONLY_TOOL_NAMES = frozenset({"list_files", "read_file", "search"})
@@ -184,9 +185,253 @@ def _tool_call_repeats(name, args, recent_tool_fps, recent_tool_names):
     return False
 
 
+# §7.8.9 P3/P4 读工具声明预防：切片行数/字节上限。
+MAX_READ_CHUNK_LINES = 200
+MAX_READ_CHUNK_BYTES = 64 * 1024
+
+
+def _merge_read_intervals(intervals):
+    """同文件 read_file 区间归并：重叠/相邻区间取并集。
+
+    输入 [(start, end), ...]，输出归并后的 [(start, end), ...]。
+    None 端视为全文件（不参与归并，保持原样）。
+    """
+    definite = [iv for iv in intervals if iv[0] is not None and iv[1] is not None]
+    open_ended = [iv for iv in intervals if iv[0] is None or iv[1] is None]
+    if not definite:
+        return intervals
+    ordered = sorted(definite)
+    merged = [ordered[0]]
+    for start, end in ordered[1:]:
+        prev_start, prev_end = merged[-1]
+        if start <= prev_end + 1:  # 重叠或相邻（end+1 相邻算连续）
+            merged[-1] = (prev_start, max(prev_end, end))
+        else:
+            merged.append((start, end))
+    return merged + open_ended
+
+
+def _chunk_read_intervals(merged):
+    """按 MAX_READ_CHUNK_LINES 把合并后的区间切片。
+
+    每片 ≤ 200 行；返回 (chunks, original_count)。open-ended 区间不切。
+    """
+    chunks = []
+    for start, end in merged:
+        if start is None or end is None:
+            chunks.append((start, end))
+            continue
+        length = end - start + 1
+        if length <= MAX_READ_CHUNK_LINES:
+            chunks.append((start, end))
+            continue
+        cursor = start
+        while cursor <= end:
+            chunk_end = min(end, cursor + MAX_READ_CHUNK_LINES - 1)
+            chunks.append((cursor, chunk_end))
+            cursor = chunk_end + 1
+    return chunks
+
+
+def _normalize_batch_reads(tools):
+    """§7.8.9 P3 读归并 + P4 读切片（批内 read_file 声明预防）。
+
+    - 同文件重叠/相邻区间 → 归并成并集区间（不同文件不合并）。
+    - 归并后 >200 行 → 切成多片。
+    返回 (normalized_tools, merged_count)。
+    """
+    # 先按文件分组 read_file 动作
+    read_groups: dict[str, list] = {}
+    others = []
+    for item in tools:
+        name = str(item.get("name", ""))
+        if name == "read_file":
+            args = item.get("args", {}) if isinstance(item.get("args"), dict) else {}
+            path = str(args.get("path", "") or ".").strip().replace("\\", "/")
+            read_groups.setdefault(path, []).append(item)
+        else:
+            others.append(item)
+    normalized = list(others)
+    merged_count = 0
+    for path, group in read_groups.items():
+        intervals = []
+        for item in group:
+            args = item.get("args", {})
+            intervals.append(
+                _normalize_read_interval(args.get("start"), args.get("end"))
+            )
+        merged = _merge_read_intervals(intervals)
+        merged_count += len(group) - len(merged)
+        for start, end in merged:
+            # open-ended 区间：保留原动作（无行号限制）
+            if start is None or end is None:
+                original = group[0]
+                normalized.append(
+                    {"name": "read_file", "args": {"path": path}}
+                )
+                continue
+            for chunk_start, chunk_end in _chunk_read_intervals([(start, end)]):
+                normalized.append(
+                    {
+                        "name": "read_file",
+                        "args": {"path": path, "start": chunk_start, "end": chunk_end},
+                    }
+                )
+    return normalized, merged_count
+
+
 class AgentLoop:
     def __init__(self, agent):
         self.agent = agent
+
+    def _execute_tool_action(
+        self,
+        task_state,
+        attempts,
+        name,
+        args,
+        tool_call_id,
+        recent_tool_fps,
+        recent_tool_names,
+        started_at,
+    ):
+        """执行单个工具动作（§7.8.9 阶段 2：串行队列的最小单元）。
+
+        批内每个动作独立走完整链路：P4 重复拦截 → 预算拒绝 → 执行 →
+        工具信号（窗口）→ evidence 记录。返回 ToolExecutionResult。
+        """
+        agent = self.agent
+        agent.emit_progress(f"step {attempts}: running tool {name}")
+        # P4 重复动作执行前拦截。
+        pre_repeat = _tool_call_repeats(
+            name,
+            args,
+            tuple(recent_tool_fps),
+            tuple(recent_tool_names),
+        )
+        if pre_repeat:
+            tool_result = ToolExecutionResult(
+                content=(
+                    f"error: repeated identical call ({name}); "
+                    "use the existing evidence or try a different action"
+                ),
+                metadata={
+                    "tool_status": "rejected",
+                    "tool_error_code": "repeated_identical_call",
+                    "read_only": bool(name in _READ_ONLY_TOOL_NAMES),
+                    "affected_paths": [],
+                },
+            )
+            task_state.record_malformed_output_recovered()
+            agent.emit_trace(
+                task_state,
+                "tool_rejected_repeat",
+                {
+                    "name": name,
+                    "args": args,
+                    "error_code": "repeated_identical_call",
+                },
+            )
+        elif name == "read_file" and task_state.read_files >= task_state.max_read_files:
+            tool_result = ToolExecutionResult(
+                content=(
+                    f"error: read_file budget exhausted ({task_state.max_read_files}); "
+                    "use the existing evidence or return a final answer"
+                ),
+                metadata={
+                    "tool_status": "rejected",
+                    "tool_error_code": "read_file_budget_exhausted",
+                    "read_only": True,
+                    "affected_paths": [],
+                },
+            )
+        else:
+            if name == "read_file":
+                task_state.record_read_file()
+            tool_result = agent.execute_tool(name, args, tool_call_id=tool_call_id)
+        task_state.record_affected_paths(tool_result.metadata.get("affected_paths", []))
+        tool_status = str(tool_result.metadata.get("tool_status", "unknown"))
+        # 工具信号：本轮是否调了工具、是否与窗口内重复（写工具介入豁免）。
+        repeated = _tool_call_repeats(
+            name,
+            args,
+            tuple(recent_tool_fps),
+            tuple(recent_tool_names),
+        )
+        recent_tool_fps.append(_tool_fingerprint(name, args))
+        recent_tool_names.append(name)
+        if tool_status in {"ok", "partial_success"}:
+            affected_paths = list(tool_result.metadata.get("affected_paths", []))
+            relative_paths = list(affected_paths)
+            requested_path = args.get("path") if isinstance(args, dict) else None
+            if isinstance(requested_path, str) and requested_path.strip():
+                relative_paths.append(requested_path.strip().replace("\\", "/"))
+            task_state.record_evidence(
+                {
+                    "tool_call_id": tool_call_id,
+                    "tool_name": name,
+                    "status": tool_status,
+                    "read_only": bool(tool_result.metadata.get("read_only", False)),
+                    "affected_paths": affected_paths,
+                    "relative_paths": sorted(set(relative_paths)),
+                    "freshness": "current_run",
+                    "sensitivity": "workspace",
+                    "summary": agent.summarize_tool_result(name, args, tool_result),
+                }
+            )
+        agent.emit_progress(
+            f"step {attempts}: tool {name} finished "
+            f"({tool_result.metadata.get('tool_status', 'unknown')})"
+        )
+        result = tool_result.content
+        summary = agent.summarize_tool_result(name, args, tool_result)
+        task_state.begin_post_tool_reasoning(name)
+        agent.record(
+            {
+                "role": "tool",
+                "name": name,
+                "args": args,
+                "content": result,
+                "created_at": now(),
+            }
+        )
+        agent.run_store.write_task_state(task_state)
+        agent.emit_trace(
+            task_state,
+            "tool_executed",
+            {
+                "name": name,
+                "args": args,
+                "result": clip(result, 500),
+                "summary": summary,
+                "duration_ms": int((time.monotonic() - started_at) * 1000),
+                **dict(tool_result.metadata or {}),
+            },
+        )
+        if agent.allow_checkpoint:
+            checkpoint = agent.create_checkpoint(task_state, task_state.user_request, trigger="tool_executed")
+            agent.run_store.write_task_state(task_state)
+            agent.emit_trace(
+                task_state,
+                "checkpoint_created",
+                {
+                    "checkpoint_id": checkpoint["checkpoint_id"],
+                    "trigger": "tool_executed",
+                },
+            )
+        agent.emit_trace(
+            task_state,
+            "post_tool_reasoning",
+            {
+                "tool": name,
+                "summary": summary,
+                "decision": "continue_or_final",
+            },
+        )
+        task_state.finish_post_tool_reasoning("continue")
+        agent.run_store.write_task_state(task_state)
+        agent.emit_agent_state(task_state, "post_tool_reasoning")
+        return tool_result, repeated
 
     def run(self, user_message, *, task_id=None, run_id=None):
         agent = self.agent
@@ -585,145 +830,116 @@ class AgentLoop:
                 args = payload.get("args", {})
                 task_state.record_tool(name)
                 tool_started_at = time.monotonic()
-                agent.emit_progress(f"step {attempts}: running tool {name}")
                 tool_call_id = _new_tool_call_id()
-                # §7.8.9 P4 重复动作执行前拦截：与历史窗口重复（且匹配后无写工具）
-                # → 拒绝执行，防空转动作真的跑。与 evidence 截停互补：
-                # P4 事前挡这一次，证据截停事后发现连续空转。
-                pre_repeat = _tool_call_repeats(
+                tool_result, repeated = self._execute_tool_action(
+                    task_state,
+                    attempts,
                     name,
                     args,
-                    tuple(recent_tool_fps),
-                    tuple(recent_tool_names),
+                    tool_call_id,
+                    recent_tool_fps,
+                    recent_tool_names,
+                    tool_started_at,
                 )
-                if pre_repeat:
-                    tool_result = ToolExecutionResult(
-                        content=(
-                            f"error: repeated identical call ({name}); "
-                            "use the existing evidence or try a different action"
-                        ),
-                        metadata={
-                            "tool_status": "rejected",
-                            "tool_error_code": "repeated_identical_call",
-                            "read_only": bool(
-                                name in _READ_ONLY_TOOL_NAMES
-                            ),
-                            "affected_paths": [],
-                        },
-                    )
+                turn_tool_called = True
+                turn_tool_repeated = bool(repeated)
+                continue
+
+            if kind == "tool_batch":
+                # §7.8.9 阶段 2：声明并行 → 串行队列逐个执行。
+                # 批内每个动作独立走完整链路；批内动作按声明顺序入窗口。
+                consecutive_talks = 0
+                tools = list(payload.get("tools", []))
+                if not tools:
                     task_state.record_malformed_output_recovered()
                     agent.emit_trace(
                         task_state,
-                        "tool_rejected_repeat",
+                        "tool_batch_rejected",
+                        {"error_code": "empty_tool_batch"},
+                    )
+                    continue
+                # §7.8.9 P1 并行数截断：一次 > MAX_PARALLEL_TOOLS 个 → 砍到前 8。
+                truncated = False
+                if len(tools) > MAX_PARALLEL_TOOLS:
+                    tools = tools[:MAX_PARALLEL_TOOLS]
+                    truncated = True
+                # §7.8.9 P2 批内去重：同批 (name, 归一化args) 重复 → 合并只留首个。
+                from .runtime import _normalize_tool_args
+
+                seen = set()
+                deduped = []
+                deduped_count = 0
+                for item in tools:
+                    name = str(item.get("name", ""))
+                    args = item.get("args", {})
+                    key = (
+                        name,
+                        json.dumps(_normalize_tool_args(name, args), sort_keys=True, ensure_ascii=False),
+                    )
+                    if key in seen:
+                        deduped_count += 1
+                        continue
+                    seen.add(key)
+                    deduped.append(item)
+                if deduped_count:
+                    tools = deduped
+                # §7.8.9 P3 读归并 + P4 读切片（同文件重叠合并、超长切片）。
+                tools, merged_reads = _normalize_batch_reads(tools)
+                batch_started_at = time.monotonic()
+                agent.emit_trace(
+                    task_state,
+                    "tool_batch_started",
+                    {
+                        "count": len(tools),
+                        "names": [str(item.get("name", "")) for item in tools],
+                        "truncated": truncated,
+                        "limit": MAX_PARALLEL_TOOLS,
+                        "deduped": deduped_count,
+                        "merged_reads": merged_reads,
+                    },
+                )
+                batch_results = []
+                batch_all_bad = True  # 批内所有动作都重复/失败才计本轮坏
+                for item in tools:
+                    name = str(item.get("name", ""))
+                    args = item.get("args", {})
+                    tool_steps += 1
+                    turn_actions += 1
+                    task_state.record_tool(name)
+                    tool_started_at = time.monotonic()
+                    tool_call_id = _new_tool_call_id()
+                    tool_result, repeated = self._execute_tool_action(
+                        task_state,
+                        attempts,
+                        name,
+                        args,
+                        tool_call_id,
+                        recent_tool_fps,
+                        recent_tool_names,
+                        tool_started_at,
+                    )
+                    status = str(tool_result.metadata.get("tool_status", "unknown"))
+                    if status in {"ok", "partial_success"} and not repeated:
+                        batch_all_bad = False
+                    batch_results.append(
                         {
                             "name": name,
                             "args": args,
-                            "error_code": "repeated_identical_call",
-                        },
-                    )
-                elif name == "read_file" and task_state.read_files >= task_state.max_read_files:
-                    tool_result = ToolExecutionResult(
-                        content=(
-                            f"error: read_file budget exhausted ({task_state.max_read_files}); "
-                            "use the existing evidence or return a final answer"
-                        ),
-                        metadata={
-                            "tool_status": "rejected",
-                            "tool_error_code": "read_file_budget_exhausted",
-                            "read_only": True,
-                            "affected_paths": [],
-                        },
-                    )
-                else:
-                    if name == "read_file":
-                        task_state.record_read_file()
-                    tool_result = agent.execute_tool(name, args, tool_call_id=tool_call_id)
-                task_state.record_affected_paths(tool_result.metadata.get("affected_paths", []))
-                tool_status = str(tool_result.metadata.get("tool_status", "unknown"))
-                # §7.8.7-③ 工具信号：本轮是否调了工具、是否与窗口内重复（写工具介入豁免）。
-                turn_tool_called = True
-                turn_tool_repeated = _tool_call_repeats(
-                    name,
-                    args,
-                    tuple(recent_tool_fps),
-                    tuple(recent_tool_names),
-                )
-                recent_tool_fps.append(_tool_fingerprint(name, args))
-                recent_tool_names.append(name)
-                if tool_status in {"ok", "partial_success"}:
-                    affected_paths = list(tool_result.metadata.get("affected_paths", []))
-                    relative_paths = list(affected_paths)
-                    requested_path = args.get("path") if isinstance(args, dict) else None
-                    if isinstance(requested_path, str) and requested_path.strip():
-                        relative_paths.append(requested_path.strip().replace("\\", "/"))
-                    task_state.record_evidence(
-                        {
-                            "tool_call_id": tool_call_id,
-                            "tool_name": name,
-                            "status": tool_status,
-                            "read_only": bool(tool_result.metadata.get("read_only", False)),
-                            "affected_paths": affected_paths,
-                            "relative_paths": sorted(set(relative_paths)),
-                            "freshness": "current_run",
-                            "sensitivity": "workspace",
+                            "status": status,
                             "summary": agent.summarize_tool_result(name, args, tool_result),
                         }
                     )
-                agent.emit_progress(
-                    f"step {attempts}: tool {name} finished "
-                    f"({tool_result.metadata.get('tool_status', 'unknown')})"
-                )
-                result = tool_result.content
-                summary = agent.summarize_tool_result(name, args, tool_result)
-                task_state.begin_post_tool_reasoning(name)
-                agent.record(
-                    {
-                        "role": "tool",
-                        "name": name,
-                        "args": args,
-                        "content": result,
-                        "created_at": now(),
-                    }
-                )
-                agent.run_store.write_task_state(task_state)
                 agent.emit_trace(
                     task_state,
-                    "tool_executed",
+                    "tool_batch_completed",
                     {
-                        "name": name,
-                        "args": args,
-                        "result": clip(result, 500),
-                        "summary": summary,
-                        "duration_ms": int((time.monotonic() - tool_started_at) * 1000),
-                        **dict(tool_result.metadata or {}),
+                        "count": len(batch_results),
+                        "duration_ms": int((time.monotonic() - batch_started_at) * 1000),
+                        "results": batch_results,
                     },
                 )
-                if agent.allow_checkpoint:
-                    checkpoint = agent.create_checkpoint(task_state, user_message, trigger="tool_executed")
-                    agent.run_store.write_task_state(task_state)
-                    agent.emit_trace(
-                        task_state,
-                        "checkpoint_created",
-                        {
-                            "checkpoint_id": checkpoint["checkpoint_id"],
-                            "trigger": "tool_executed",
-                        },
-                    )
-                # 边界 7 由下一轮顶部的边界 2 承担。
-                # The next iteration is an explicit post-tool reasoning
-                # boundary. It must choose another tool or a final answer.
-                agent.emit_trace(
-                    task_state,
-                    "post_tool_reasoning",
-                    {
-                        "tool": name,
-                        "summary": summary,
-                        "decision": "continue_or_final",
-                    },
-                )
-                task_state.finish_post_tool_reasoning("continue")
-                agent.run_store.write_task_state(task_state)
-                agent.emit_agent_state(task_state, "post_tool_reasoning")
+                turn_tool_called = True
+                turn_tool_repeated = batch_all_bad
                 continue
 
             if kind == "retry":

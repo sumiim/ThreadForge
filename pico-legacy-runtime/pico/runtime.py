@@ -871,6 +871,8 @@ class Pico:
         """
         # §7.7.1 阶段 3（2.1 原生 tool calling）：客户端原生返回 dict
         # {"name", "args"} 时直接消费，不再走 <tool> 文本协议解析。
+        # §7.8.9 阶段 2：客户端返回 {"tools": [...]}（声明并行批）时，
+        # 返回 "tool_batch"，由 AgentLoop 串行执行批内动作。
         if isinstance(raw, dict) and raw.get("name"):
             args = raw.get("args")
             if args is None:
@@ -878,6 +880,18 @@ class Pico:
             elif not isinstance(args, dict):
                 return "retry", Pico.retry_notice("native tool args must be an object")
             return "tool", raw
+        if isinstance(raw, dict) and isinstance(raw.get("tools"), list) and raw["tools"]:
+            tools = []
+            for item in raw["tools"]:
+                if not isinstance(item, dict) or not str(item.get("name", "")).strip():
+                    return "retry", Pico.retry_notice("native tool batch contains an invalid item")
+                args = item.get("args")
+                if args is None:
+                    item["args"] = {}
+                elif not isinstance(args, dict):
+                    return "retry", Pico.retry_notice("native tool batch args must be objects")
+                tools.append(item)
+            return "tool_batch", {"tools": tools}
         raw = str(raw)
         # A few OpenAI-compatible gateways ignore the XML examples and return
         # the same tool decision as a JSON object (sometimes inside a
@@ -1010,6 +1024,51 @@ class Pico:
         if not isinstance(args, dict):
             return None
         return {"name": name, "args": args}
+
+    @staticmethod
+    def parse_tool_calls(raw):
+        """从原生 tool_calls 列表提取工具批（阶段 2：声明并行）。
+
+        与 parse_json_tool 的兼容区别：parse_json_tool 只取第一个（单工具语义），
+        这里把 list 里的全部 tool_call 提取成批，供 AgentLoop 串行执行。
+        返回 (list[dict], error_message)；error_message 非空表示无效。
+        """
+        text = str(raw or "").strip()
+        if text.startswith("```") and text.endswith("```"):
+            lines = text.splitlines()
+            if len(lines) >= 3:
+                text = "\n".join(lines[1:-1]).strip()
+        if not text.startswith("{") or not text.endswith("}"):
+            return None, "model returned non-JSON tool batch"
+        try:
+            value = json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None, "model returned malformed tool batch JSON"
+        if not isinstance(value, dict):
+            return None, "tool batch must be a JSON object"
+        raw_calls = value.get("tool_calls")
+        if not isinstance(raw_calls, list) or not raw_calls:
+            return None, "tool batch is missing tool_calls"
+        tools = []
+        for item in raw_calls:
+            if not isinstance(item, dict):
+                return None, "tool batch contains an invalid tool_call"
+            function = item.get("function", item) if isinstance(item.get("function"), dict) else item
+            name = str(function.get("name") or function.get("tool") or "").strip()
+            if not name:
+                return None, "tool batch contains a tool call without a name"
+            args = function.get("args", function.get("arguments", {}))
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    return None, "tool batch contains non-object args"
+            if args is None:
+                args = {}
+            if not isinstance(args, dict):
+                return None, "tool batch contains non-object args"
+            tools.append({"name": name, "args": args})
+        return tools, ""
 
     @staticmethod
     def is_deferred_action_answer(answer):
