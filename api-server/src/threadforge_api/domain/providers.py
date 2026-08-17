@@ -26,10 +26,19 @@ class ProviderState(str, Enum):
 
 _PROVIDER_ID = re.compile(r"^prv_[a-f0-9]{32}$")
 _HTTP_URL = re.compile(r"^https?://")
-_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
+# 通用档位（OpenAI 兼容 + DeepSeek max）：none 表示不思考。
+# 前端/API 始终暴露完整档位；deepseek 发送时由客户端把
+# medium/xhigh → high、minimal → none 兼容映射（api-docs.deepseek.com/guides/thinking_mode）。
+_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max"})
 
 
-def _normalize_reasoning_efforts(payload: dict) -> list[str]:
+def _normalize_reasoning_efforts(payload: dict, protocol: str = "") -> list[str]:
+    """按 protocol 归一化 reasoning_efforts。
+
+    所有协议都保留完整档位（兼容：用户选的档位原样保存，前端照常展示）；
+    deepseek 发送时的映射在客户端完成（OpenAICompletionsModelClient）。
+    """
+    del protocol
     raw = payload.get("reasoning_efforts")
     if raw is None:
         tier = str(payload.get("reasoning_tier", "none")).strip().lower()
@@ -127,7 +136,7 @@ def validate_provider_payload(payload: dict) -> dict:
         "base_url": base_url,
         "model": str(payload.get("model", "")).strip(),
         "models": [str(item).strip() for item in payload.get("models", []) if str(item).strip()],
-        "reasoning_efforts": _normalize_reasoning_efforts(payload),
+        "reasoning_efforts": _normalize_reasoning_efforts(payload, protocol=protocol),
         "timeout": timeout,
         "concurrency": concurrency,
         "state": state,

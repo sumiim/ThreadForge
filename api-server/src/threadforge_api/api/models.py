@@ -73,7 +73,7 @@ class CreateTaskRequest(BaseModel):
     input: str = Field(min_length=1, max_length=100000)
     max_steps: int | None = Field(default=None, ge=1, le=25)
     model_id: str | None = Field(default=None, min_length=1, max_length=200)
-    reasoning_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh"] = "none"
+    reasoning_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] = "none"
     permission_mode: Literal["plan", "acceptEdits", "default", "bypass"] = "default"
 
     @field_validator("input")

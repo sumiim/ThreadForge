@@ -2008,7 +2008,7 @@ def _parse_model_capabilities(raw, fallback_model: str) -> dict:
     if not isinstance(raw_models, list) or len(raw_models) > 20:
         raise WorkerProtocolError("model capabilities must contain a bounded model list")
     models = []
-    allowed_efforts = {"none", "minimal", "low", "medium", "high", "xhigh"}
+    allowed_efforts = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
     for raw_model in raw_models:
         if not isinstance(raw_model, dict):
             raise WorkerProtocolError("model capability must be an object")

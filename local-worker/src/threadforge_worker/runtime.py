@@ -892,6 +892,9 @@ def _create_model_client(
             temperature=temperature,
             timeout=timeout,
             max_attempts=max_attempts,
+            # §2.1 兼容：DeepSeek 思考档位（medium/xhigh 映射 high，见客户端）。
+            reasoning_effort=reasoning_effort,
+            supported_reasoning_efforts=supported_reasoning_efforts,
         )
     if model_provider == "anthropic":
         return AnthropicCompatibleModelClient(
@@ -939,7 +942,7 @@ def _supported_reasoning_efforts() -> tuple[str, ...]:
             if hostname == "api.openai.com" or reasoning_model
             else ("none",)
         )
-    allowed = {"none", "minimal", "low", "medium", "high", "xhigh"}
+    allowed = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
     normalized = tuple(dict.fromkeys(value for value in values if value in allowed))
     return normalized or ("none",)
 
