@@ -8,6 +8,7 @@ from .checkpoint import (
     CHECKPOINT_PARTIAL_STALE_STATUS,
     CHECKPOINT_WORKSPACE_MISMATCH_STATUS,
 )
+from .evaluation.review_gate import STAGNATION_ROUNDS_LIMIT, _round_signature
 from .execution_hooks import ProcessCleanupFailed, RunCancelled
 from .task_state import (
     PHASE_ACT_OR_ANSWER,
@@ -155,6 +156,11 @@ class AgentLoop:
             max(agent.max_steps * 3, agent.max_steps + 4),
             task_state.max_total_steps,
         )
+        # §7.8.7-③ 停滞检测：连续 K 轮「证据/checklist/工具集」三信号零增量 → 强制收敛。
+        # 轮 = 一次模型决策 turn（含其后的工具执行）。签名取自本轮执行完后的
+        # task_state，下一轮开头比较：同签名 → 停滞轮 +1，否则归零。
+        last_round_signature = ""
+        stagnation_rounds = 0
 
         # 边界 1：进入控制循环前。
         token.raise_if_cancelled()
@@ -164,9 +170,35 @@ class AgentLoop:
         ):
             # 边界 2：每轮开始、构建 prompt 前。
             token.raise_if_cancelled()
-            finalization_only = tool_steps >= agent.max_steps
-            if finalization_only:
+            # 停滞检测（滞后一轮比较：本轮开始时的签名 = 上一轮执行完后的状态）。
+            # 达到阈值 → 强制进入 finalization，不再允许新工具。
+            current_signature = _round_signature(task_state)
+            if last_round_signature and current_signature == last_round_signature:
+                stagnation_rounds += 1
+            else:
+                stagnation_rounds = 0
+            last_round_signature = current_signature
+            if stagnation_rounds >= STAGNATION_ROUNDS_LIMIT:
+                task_state.record_malformed_output_recovered()
+                task_state.set_phase(
+                    PHASE_ACT_OR_ANSWER,
+                    next_step="Converge on a grounded final answer using the collected evidence",
+                )
+                agent.emit_trace(
+                    task_state,
+                    "stagnation_detected",
+                    {
+                        "error_code": "stagnation",
+                        "limit": STAGNATION_ROUNDS_LIMIT,
+                        "signature": current_signature,
+                    },
+                )
+                finalization_only = True
                 finalization_attempted = True
+            else:
+                finalization_only = tool_steps >= agent.max_steps
+                if finalization_only:
+                    finalization_attempted = True
             attempts += 1
             task_state.record_attempt()
             task_state.set_phase(PHASE_ACT_OR_ANSWER, next_step="Choose a tool or prepare a final answer")

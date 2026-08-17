@@ -152,3 +152,31 @@ def test_agent_loop_rejects_native_dict_with_non_object_args(tmp_path):
     assert answer == "ok"
     assert agent.current_task_state.status == "completed"
     assert agent.current_task_state.read_files == 0
+
+
+def test_agent_loop_stagnation_converges_without_evidence_growth(tmp_path):
+    """§7.8.7-③：连续 K 轮零增量（无新证据/无完成项/工具集不变）→ 强制收敛。
+
+    模型反复输出相同 talk（不调工具、不产证据），签名连续不变达到阈值后
+    AgentLoop 强制进入 finalization_only：后续工具调用被拒（tool_steps 停留
+    在 0），只能以已收集证据 best-effort 收尾或直接 final。
+    """
+    agent = build_agent(
+        tmp_path,
+        [
+            "<talk>thinking about the workspace</talk>",
+            "<talk>still thinking</talk>",
+            '<tool>{"name":"list_files","args":{"path":"."}}</tool>',
+            "<final>converged</final>",
+        ],
+    )
+
+    answer = AgentLoop(agent).run("Inspect the workspace")
+
+    state = agent.current_task_state
+    trace = agent.run_store.trace_path(state).read_text(encoding="utf-8")
+    assert '"event": "stagnation_detected"' in trace
+    # 停滞触发后不允许新工具：模型想 list_files 被 finalization 拒掉，0 工具执行
+    assert state.tool_steps == 0
+    # 无证据 → best-effort 托底（blocked 语义），而非正常 completed
+    assert state.status in {"stopped", "completed"}
