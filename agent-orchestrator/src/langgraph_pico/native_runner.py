@@ -66,13 +66,8 @@ MODEL_ERROR_MESSAGES = {
     "model_call_failed": "模型调用失败，请稍后再试。",
 }
 
-# intent 硬顶预算（断路器；方案 C 的 soft 预算来自 planner 自报，原生路径
-# 无 planner 时直接用 intent 硬顶作为单循环预算）。
-INTENT_STEP_BUDGETS = {
-    INTENT_CONVERSATION: 2,
-    INTENT_READ_ONLY: 16,
-    INTENT_CODE_CHANGE: 24,
-}
+# §7.8.9 阶段 4：intent 硬顶预算已移除——步数预算由墙钟/token 硬顶接管，
+# intent 分类（conversation/read_only/code_change）已取消（大取消最后一块）。
 
 RUN_METADATA_KEYS = (
     "requested_task_mode",
@@ -104,29 +99,6 @@ def _initial_state_snapshot(agent):
     }
 
 
-def _intent_context(agent, max_messages=4, max_chars=2000):
-    messages = [
-        item
-        for item in agent.session.get("history", [])
-        if item.get("role") in {"user", "assistant"}
-    ][-max_messages:]
-    lines = [f"{item.get('role', '')}: {item.get('content', '')}" for item in messages]
-    return agent.redact_text("\n".join(lines))[-max_chars:]
-
-
-def _continuation_context(agent, task_input, max_chars=1200):
-    """Return the preceding user task for a short explicit continuation request."""
-    if not is_continuation_request(task_input):
-        return ""
-    for item in reversed(agent.session.get("history", [])):
-        if item.get("role") != "user":
-            continue
-        previous = str(item.get("content", "")).strip()
-        if previous and not is_continuation_request(previous):
-            return agent.redact_text(previous)[-max_chars:]
-    return ""
-
-
 def _materialize_focus_paths(focus_paths):
     if focus_paths is None:
         return ()
@@ -155,54 +127,6 @@ def _normalized_focus_paths(agent, focus_paths):
         if relative not in normalized:
             normalized.append(relative)
     return normalized
-
-
-def _resolve_intent(agent, task_input, *, task_mode, router_model_client):
-    """intent 路由（复用 intent.py 纯函数）。
-
-    返回 (intent, requires_research, source, attempts)。
-    task_mode 显式指定时直接采用；auto 时用 router 模型分类。
-    """
-    from .intent import (
-        MAX_INTENT_ATTEMPTS,
-        build_intent_prompt,
-        parse_intent_output,
-    )
-
-    if task_mode in {INTENT_CONVERSATION, INTENT_READ_ONLY, INTENT_CODE_CHANGE}:
-        return task_mode, False, "explicit", 0
-    if is_plain_conversation_request(task_input):
-        return INTENT_CONVERSATION, False, "plain_conversation", 0
-    if is_continuation_request(task_input):
-        # 继续请求：保持只读（原生无重路由，保守收敛）
-        return INTENT_READ_ONLY, False, "continuation", 0
-
-    if router_model_client is None:
-        return INTENT_CODE_CHANGE, False, "default_code_change", 0
-
-    context = _intent_context(agent)
-    for attempt in range(1, MAX_INTENT_ATTEMPTS + 1):
-        prompt = build_intent_prompt(task_input, context, retry=attempt > 1)
-        agent.cancellation_token.raise_if_cancelled()
-        agent.execution_hooks.before_model(agent.current_task_state)
-        raw = router_model_client.complete(
-            prompt,
-            96,
-            on_retry=lambda details: getattr(
-                agent.execution_hooks, "model_retrying", lambda *_args: None
-            )(agent.current_task_state, "intent", details),
-            on_text_delta=lambda delta: getattr(
-                agent.execution_hooks, "model_text_delta", lambda *_args: None
-            )(agent.current_task_state, "intent", delta),
-        )
-        agent.current_task_state.record_attempt()
-        try:
-            intent, requires_research = parse_intent_output(str(raw))
-            return intent, requires_research, "router", attempt
-        except Exception:
-            agent.current_task_state.record_malformed_output_recovered()
-            continue
-    return INTENT_CODE_CHANGE, False, "router_failed", MAX_INTENT_ATTEMPTS
 
 
 def _run_native_loop(agent, task_input, *, task_id, run_id):
@@ -298,29 +222,19 @@ def run_native(
             max_total_steps=agent.max_total_steps,
         )
         agent.current_task_state = task_state
-        # auto 模式：router 未显式提供时用主 model_client 分类（对齐 run_agent，
-        # backend.py resolved_router_client = agent.model_client）。
-        resolved_router = (
-            router_model_client if router_model_client is not None else agent.model_client
-        )
-        intent, requires_research, intent_source, intent_attempts = _resolve_intent(
-            agent,
-            task_input,
-            task_mode=normalized_mode,
-            router_model_client=resolved_router,
-        )
+        # §7.8.9 阶段 4：取消 intent 路由——不再分类（conversation/read_only/code_change）。
+        # 行为由权限档 + 工具行为 + R1 验证决定（objective，非模型自报意图）。
+        # intent 保留为审计字段（恒取 normalized_mode，供向后兼容 trace/report）。
+        intent = normalized_mode
         run_metadata_collector.update(
             {
                 "resolved_intent": intent,
-                "intent_source": intent_source,
-                "intent_attempts": intent_attempts,
+                "intent_source": "removed",
+                "intent_attempts": 0,
             }
         )
-        # 显式 step_budget 优先；否则 intent 硬顶（方案 C 的断路器）。
-        if not step_budget_explicit:
-            hard_cap = int(INTENT_STEP_BUDGETS.get(intent, 0))
-            if hard_cap:
-                step_budget = min(step_budget, hard_cap)
+        # 显式 step_budget 优先；否则用默认（不按 intent 分级——预算已由墙钟/token
+        # 硬顶接管，step_budget 仅作 AgentLoop 内部步数宽松上限）。
         agent.max_steps = step_budget
 
         # 原生单循环跑（AgentLoop 自己创建 TaskState 并挂到 agent.current_task_state）。
@@ -339,7 +253,7 @@ def run_native(
         if task_state is not None:
             task_state.intent = intent
 
-        # 收尾 review gate（写触发 + checklist 派生预算）。
+        # 收尾 review gate（写触发，确定性兜底）。
         if task_state is not None and task_state.status == "completed" and task_state.final_answer:
             decision = run_review_gate(
                 task_state,
@@ -347,11 +261,11 @@ def run_native(
                 step_budget=step_budget,
                 coordinator_steps_used=int(getattr(task_state, "tool_steps", 0) or 0),
                 step_budget_explicit=step_budget_explicit,
-                hard_cap=int(INTENT_STEP_BUDGETS.get(intent, 0)),
+                hard_cap=0,
             )
             if decision.status == "needs_fix":
                 # 确定性完成门禁未通过：标记 review_status + blocked 语义。
-                # code_change 无写证据 → no_changes_to_review（对齐 run_agent）；
+                # 按工具行为（有写/shell 但无验证）→ no_changes_to_review；
                 # 其余（checklist 未完成等）→ review_retry_limit_reached。
                 has_write_evidence = any(
                     item.get("status") in {"ok", "partial_success"}
@@ -365,7 +279,7 @@ def run_native(
                 )
                 stop_reason = (
                     STOP_REASON_NO_CHANGES_TO_REVIEW
-                    if intent == INTENT_CODE_CHANGE and not has_write_evidence
+                    if not has_write_evidence
                     else STOP_REASON_REVIEW_RETRY_LIMIT_REACHED
                 )
                 task_state.stop(

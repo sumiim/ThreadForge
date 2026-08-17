@@ -129,16 +129,18 @@ def test_native_code_change_rejects_fake_completion(tmp_path):
     shutil.rmtree(fixture_root, ignore_errors=True)
 
 
-def test_native_auto_router_uses_router_client(tmp_path):
-    # auto 模式：router 返回 code_change，主 client 执行改文件
-    router_outputs = [json.dumps({"intent": "code_change", "requires_research": False})]
+def test_native_auto_mode_ignores_router(tmp_path):
+    # §7.8.9 阶段 4：intent 路由已取消——auto 模式不再用 router 分类，
+    # intent 恒为 normalized_mode（auto），行为由权限档 + 工具行为决定。
     main_outputs = [
         '<tool>{"name": "read_file", "args": {"path": "README.md"}}</tool>',
         '<tool>{"name": "patch_file", "args": {"path": "README.md", "old_text": "This is a placeholder benchmark fixture.", "new_text": "This fixture is a locked benchmark workspace."}}</tool>',
         "<final>Done</final>",
     ]
     agent, _, fixture_root = _build_runtime(tmp_path, main_outputs)
-    router = FakeModelClient(router_outputs)
+    router = FakeModelClient(
+        [json.dumps({"intent": "code_change", "requires_research": False})]
+    )
     result = run_native(
         agent,
         "Change the README placeholder.",
@@ -147,9 +149,10 @@ def test_native_auto_router_uses_router_client(tmp_path):
     )
     state = result.task_state
     assert state.status == "completed"
-    assert state.intent == INTENT_CODE_CHANGE
-    assert result.run_metadata["intent_source"] == "router"
-    assert result.run_metadata["intent_attempts"] == 1
+    # intent 不再由 router 分类——保留为审计字段，恒取 normalized_mode
+    assert state.intent == "auto"
+    assert result.run_metadata["intent_source"] == "removed"
+    assert result.run_metadata["intent_attempts"] == 0
     shutil.rmtree(fixture_root, ignore_errors=True)
 
 

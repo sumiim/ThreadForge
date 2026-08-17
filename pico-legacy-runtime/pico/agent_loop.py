@@ -675,6 +675,46 @@ class AgentLoop:
         ):
             # 边界 2：每轮开始、构建 prompt 前。
             token.raise_if_cancelled()
+            # §7.8.9 阶段 4：墙钟/token 硬顶（唯一保留的外部尺子，防烧钱）。
+            # 超限 → 托底收尾（best-effort 用已收集证据给结论）。
+            elapsed_s = int(time.monotonic() - run_started_at)
+            tokens_used = task_state.input_tokens + task_state.output_tokens
+            cap_hit = elapsed_s >= agent.max_elapsed_seconds or tokens_used >= agent.max_total_tokens
+            if cap_hit:
+                reason = (
+                    "wall_clock_cap"
+                    if elapsed_s >= agent.max_elapsed_seconds
+                    else "token_budget_cap"
+                )
+                final = _best_effort_step_limit(
+                    task_state, f"运行超时或 token 预算耗尽（{reason}）"
+                )
+                task_state.stop(
+                    STOP_REASON_BUDGET_EXHAUSTED,
+                    status=STATUS_STOPPED,
+                    final_answer=final,
+                )
+                task_state.record_error(
+                    stage="budget_cap",
+                    code=reason,
+                    retryable=False,
+                    attempts=attempts,
+                )
+                agent.emit_trace(
+                    task_state,
+                    "budget_cap_hit",
+                    {
+                        "reason": reason,
+                        "elapsed_seconds": elapsed_s,
+                        "max_elapsed_seconds": agent.max_elapsed_seconds,
+                        "tokens_used": tokens_used,
+                        "max_total_tokens": agent.max_total_tokens,
+                    },
+                )
+                agent.run_store.write_task_state(task_state)
+                agent.emit_agent_state(task_state, "run_stopped")
+                agent.record({"role": "assistant", "content": final, "created_at": now()})
+                return final
             # §7.8.9 坏轮判定（上一轮）：current = 上轮结束状态，prev_end = 上上轮结束。
             # 坏轮 = 完全失联（无 talk 无工具无证据）或 工具动作全失败/全被重复拦截。
             # talk 轮不坏（思考信号，trace + 前端可见）；checklist 退出坏轮判定。

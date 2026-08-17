@@ -133,6 +133,10 @@ class Pico:
         max_read_files=4,
         max_total_steps=None,
         shell_factory=None,
+        # §7.8.9 阶段 4：墙钟/token 硬顶（唯一保留的外部尺子，防烧钱）。
+        # 默认 1 小时 / 50 万 token——正常任务永远碰不到，死循环烧到上限被切。
+        max_elapsed_seconds=3600,
+        max_total_tokens=500_000,
     ):
         self.model_client = model_client
         self.workspace = workspace
@@ -149,6 +153,9 @@ class Pico:
         self.max_read_files = max(0, int(max_read_files))
         self.max_total_steps = max_total_steps
         self.max_new_tokens = max_new_tokens
+        # §7.8.9 阶段 4：墙钟/token 硬顶（防烧钱，唯一保留的外部尺子）。
+        self.max_elapsed_seconds = max(1, int(max_elapsed_seconds))
+        self.max_total_tokens = max(1, int(max_total_tokens))
         self.depth = depth
         self.max_depth = max_depth
         self.read_only = read_only

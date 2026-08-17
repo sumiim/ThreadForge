@@ -234,14 +234,14 @@ def test_delegate_depth_limit_is_enforced(tmp_path):
         raise AssertionError("delegate depth validation did not fail")
 
 
-def test_delegate_child_is_read_only(tmp_path):
+def test_delegate_child_is_no_longer_invokable(tmp_path):
+    # §7.8.9 阶段 4：取消可调用 delegate——模型调 delegate 被拒绝（unknown tool），
+    # 不产生任何子 agent 副作用（原「子 agent 只读」由 review subagent 程序强制承担）。
     target = tmp_path / "child-was-not-allowed.txt"
     agent = build_agent(
         tmp_path,
         [
             '<tool>{"name":"delegate","args":{"task":"write a file","max_steps":2}}</tool>',
-            '<tool>{"name":"write_file","args":{"path":"child-was-not-allowed.txt","content":"nope"}}</tool>',
-            "<final>child done</final>",
             "<final>parent done</final>",
         ],
     )
@@ -251,8 +251,9 @@ def test_delegate_child_is_read_only(tmp_path):
     assert result == "parent done"
     assert not target.exists()
     tool_events = [item for item in agent.session["history"] if item["role"] == "tool"]
-    assert tool_events[0]["name"] == "delegate"
-    assert "delegate_result" in tool_events[0]["content"]
+    delegate_events = [item for item in tool_events if item["name"] == "delegate"]
+    assert delegate_events, "delegate call should be recorded as rejected"
+    assert "unknown tool" in delegate_events[0]["content"]
 
 
 def test_configured_secret_env_names_are_redacted_in_trace_and_report(tmp_path):
