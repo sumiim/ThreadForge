@@ -161,11 +161,15 @@ def run_review_gate(
         decision.text = "stagnation detected; converged"
         return decision
 
-    # 正常路径：read_only 有证据即收敛；conversation 直接通过。
+    # 正常路径：read_only 有证据即收敛；无证据但有 final answer 也收敛
+    # （对话式 read_only 直接回答，不强制读文件）；conversation 直接通过。
     if intent == "read_only":
         if _has_evidence(task_state):
             decision.status = "pass"
             decision.text = "read-only evidence sufficient; converged"
+        elif str(getattr(task_state, "final_answer", "") or "").strip():
+            decision.status = "pass"
+            decision.text = "read-only answered directly without workspace evidence"
         else:
             decision.status = "needs_fix"
             decision.text = "read-only task lacks current-run evidence"
