@@ -303,22 +303,27 @@ def test_agent_saves_and_resumes_session(tmp_path):
     assert resumed.ask("Continue") == "Resumed."
 
 
-def test_delegate_uses_child_agent(tmp_path):
+def test_delegate_tool_is_no_longer_exposed(tmp_path):
+    # §7.8.9 阶段 4：取消可调用 delegate——delegate 工具不再暴露给模型，
+    # 模型调用它会被当作未知工具（retry），而不是执行子 agent。
     agent = build_agent(
         tmp_path,
         [
             '<tool>{"name":"delegate","args":{"task":"inspect README","max_steps":2}}</tool>',
-            "<final>Child result.</final>",
-            "<final>Parent incorporated the child result.</final>",
+            "<final>Parent result.</final>",
         ],
     )
 
     answer = agent.ask("Use delegation")
 
-    assert answer == "Parent incorporated the child result."
+    # delegate 不在工具面 → 模型第一轮 delegate 调用被拒绝（unknown tool），
+    # 第二轮给 final → completed
+    assert answer == "Parent result."
     tool_events = [item for item in agent.session["history"] if item["role"] == "tool"]
-    assert tool_events[0]["name"] == "delegate"
-    assert "delegate_result" in tool_events[0]["content"]
+    # delegate 未执行——history 里的 delegate 条目是"unknown tool"拒绝结果
+    delegate_events = [item for item in tool_events if item["name"] == "delegate"]
+    assert delegate_events, "delegate call should be recorded as rejected"
+    assert "unknown tool" in delegate_events[0]["content"]
 
 
 def test_patch_file_replaces_exact_match(tmp_path):

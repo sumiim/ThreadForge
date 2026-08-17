@@ -104,10 +104,10 @@ class ToolRegistry:
             name: {**spec, "run": partial(self.runners[name], context)}
             for name, spec in self.specs.items()
         }
-        # 子 agent 是刻意做成受限能力的：一旦深度耗尽，
-        # 就连 delegate 这个工具都不再暴露给模型。
-        if context.depth < context.max_depth:
-            tools["delegate"] = {**DELEGATE_TOOL_SPEC, "run": partial(tool_delegate, context)}
+        # §7.8.9 阶段 4：取消可调用 delegate——子 agent 从「模型可调用的工具」
+        # 降级为「程序调用的验证子流程」（review subagent）。delegate 不再暴露
+        # 给模型（模型无法绕过质量门），spawn_delegate/tool_delegate 实现保留
+        # 作 review 执行引擎复用，后续版本彻底删除。
         return tools
 
     def definitions(self, tools):
@@ -115,6 +115,9 @@ class ToolRegistry:
 
 
 def legal_tool_names():
+    # §7.8.9 阶段 4：delegate 不再暴露给模型（build() 不注册），但保留在
+    # legal 集合——LangGraph 兼容层（回归参照）仍显式传 allowed_tools 含
+    # delegate，避免 allowlist 校验报错。后续彻底删除兼容层时一并移除。
     return set(BASE_TOOL_SPECS) | {"delegate"}
 
 

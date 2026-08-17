@@ -360,3 +360,35 @@ def test_agent_loop_batch_merges_and_chunks_reads(tmp_path):
     assert len(read_big) == 2  # 50-300 → 切 50-249 + 250-300（每片 ≤200 行）
     assert read_big[0]["args"] == {"path": "big.py", "start": 50, "end": 249}
     assert read_big[1]["args"] == {"path": "big.py", "start": 250, "end": 300}
+
+
+def test_agent_loop_repeated_actions_do_not_pollute_repeat_window(tmp_path):
+    """§7.8.9 边界：重复动作（P4 拦截）不入重复窗口。
+
+    重复 read 被拦截后不 append 指纹；真正的新动作（不同文件）不被重复污染，
+    后续仍可基于最早的原始动作正确判定。
+    """
+    (tmp_path / "a.txt").write_text("a\n", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("b\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"read_file","args":{"path":"a.txt","start":1,"end":1}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"a.txt","start":1,"end":1}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"a.txt","start":1,"end":1}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"b.txt","start":1,"end":1}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"b.txt","start":1,"end":1}}</tool>',
+            "<final>done</final>",
+        ],
+        max_steps=6,
+    )
+
+    answer = AgentLoop(agent).run("Inspect files")
+
+    state = agent.current_task_state
+    trace = agent.run_store.trace_path(state).read_text(encoding="utf-8")
+    # 4 次重复 a.txt（第 1 次成功，后 2 次被拦）+ 2 次 b.txt（第 1 次成功，第 2 次被拦）
+    # 若重复动作污染窗口，b.txt 第 1 次可能被误判（窗口被 a 挤满）——修复后不会。
+    # 验证：b.txt 成功执行了（read_files 至少 2：a 和 b 各一次成功）
+    assert state.read_files == 2
+    assert answer == "done"
