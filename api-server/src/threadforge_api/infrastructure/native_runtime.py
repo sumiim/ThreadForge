@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 import urllib.error
 
-from langgraph_pico import run_agent
+from langgraph_pico import run_native
 from pico import Pico
 from pico.event_sink import CompositeSink, EventCollector, JsonlSink
 from pico.providers.clients import ModelProviderError
@@ -155,7 +155,7 @@ class NativeRuntimeAdapter:
         started = time.monotonic()
         try:
             try:
-                run_agent(
+                run_native(
                     self._pico,
                     user_message,
                     task_mode="auto",

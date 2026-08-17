@@ -32,8 +32,10 @@ from pico.run_lifecycle import finalize_run
 from pico.runtime import Pico
 from pico.task_state import (
     STATUS_FAILED,
+    STATUS_STOPPED,
     STOP_REASON_BUDGET_EXHAUSTED,
     STOP_REASON_MODEL_ERROR,
+    STOP_REASON_NO_CHANGES_TO_REVIEW,
     STOP_REASON_REVIEW_RETRY_LIMIT_REACHED,
     STOP_REASON_RUNTIME_ERROR,
     STOP_REASON_STEP_LIMIT_REACHED,
@@ -50,6 +52,19 @@ from .intent import (
 )
 from .planning import is_continuation_request, is_plain_conversation_request
 from .review_gate import ReviewDecision  # noqa: F401  (re-export for callers)
+
+# 与 backend.py 的 _safe_execution_failure 对齐的模型错误中文消息。
+MODEL_ERROR_MESSAGES = {
+    "model_rate_limited": "模型服务当前请求过多，已自动重试，请稍后再试。",
+    "model_timeout": "模型服务响应超时，已自动重试，请稍后再试。",
+    "model_connection_error": "无法稳定连接模型服务，已自动重试，请检查网络后再试。",
+    "model_server_error": "模型服务暂时不可用，已自动重试，请稍后再试。",
+    "model_auth_error": "模型服务认证失败，请在 Worker 中重新配置 API 密钥。",
+    "model_request_rejected": "模型服务拒绝了请求，请检查模型与推理强度配置。",
+    "model_response_invalid": "模型服务返回了无法解析的响应，请稍后再试。",
+    "model_provider_error": "模型服务返回错误，请检查供应商配置后再试。",
+    "model_call_failed": "模型调用失败，请稍后再试。",
+}
 
 # intent 硬顶预算（断路器；方案 C 的 soft 预算来自 planner 自报，原生路径
 # 无 planner 时直接用 intent 硬顶作为单循环预算）。
@@ -283,11 +298,16 @@ def run_native(
             max_total_steps=agent.max_total_steps,
         )
         agent.current_task_state = task_state
+        # auto 模式：router 未显式提供时用主 model_client 分类（对齐 run_agent，
+        # backend.py resolved_router_client = agent.model_client）。
+        resolved_router = (
+            router_model_client if router_model_client is not None else agent.model_client
+        )
         intent, requires_research, intent_source, intent_attempts = _resolve_intent(
             agent,
             task_input,
             task_mode=normalized_mode,
-            router_model_client=router_model_client,
+            router_model_client=resolved_router,
         )
         run_metadata_collector.update(
             {
@@ -330,10 +350,28 @@ def run_native(
                 hard_cap=int(INTENT_STEP_BUDGETS.get(intent, 0)),
             )
             if decision.status == "needs_fix":
+                # 确定性完成门禁未通过：标记 review_status + blocked 语义。
+                # code_change 无写证据 → no_changes_to_review（对齐 run_agent）；
+                # 其余（checklist 未完成等）→ review_retry_limit_reached。
+                has_write_evidence = any(
+                    item.get("status") in {"ok", "partial_success"}
+                    and not item.get("read_only", True)
+                    for item in (getattr(task_state, "evidence", None) or [])
+                )
                 task_state.review_status = "needs_fix"
                 task_state.record_error(
                     stage="completion_gate",
                     code="completion_gate_failed",
+                )
+                stop_reason = (
+                    STOP_REASON_NO_CHANGES_TO_REVIEW
+                    if intent == INTENT_CODE_CHANGE and not has_write_evidence
+                    else STOP_REASON_REVIEW_RETRY_LIMIT_REACHED
+                )
+                task_state.stop(
+                    stop_reason,
+                    status=STATUS_STOPPED,
+                    final_answer=task_state.final_answer,
                 )
                 final_answer = task_state.final_answer
         if task_state is not None:
@@ -362,6 +400,13 @@ def run_native(
                 retryable=getattr(exc, "retryable", False),
                 attempts=getattr(exc, "attempts", 1),
             )
+            # 模型错误给可读中文消息（对齐 run_agent 的 _safe_execution_failure）。
+            if stop_reason == STOP_REASON_MODEL_ERROR:
+                final_answer = MODEL_ERROR_MESSAGES.get(
+                    error_code, MODEL_ERROR_MESSAGES["model_call_failed"]
+                )
+            elif not final_answer:
+                final_answer = "Agent 运行失败，请稍后重试。"
             task_state.stop(stop_reason, status=STATUS_FAILED, final_answer=final_answer)
             final_answer = task_state.final_answer
     finally:
