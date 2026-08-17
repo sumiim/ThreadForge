@@ -1316,11 +1316,37 @@ class AnthropicCompatibleModelClient:
 class OpenAICompletionsModelClient:
     """OpenAI chat/completions 协议原生适配（流式 + 工具调用 + usage）。
 
-    面向 SiliconFlow 等只提供 /chat/completions 的平台；与 Anthropic 客户端
-    共享 _run_provider_request 重试骨架与 <tool>/<final> 文本协议序列化。
+    面向 SiliconFlow、DeepSeek 等只提供 /chat/completions 的平台；与 Anthropic
+    客户端共享 _run_provider_request 重试骨架与 <tool>/<final> 文本协议序列化。
+
+    §2.1 兼容：DeepSeek 的思考档位通过 ``reasoning_effort`` + ``thinking``
+    传递；``medium/xhigh`` 在构造时映射为 ``high``（DeepSeek 官方枚举仅
+    low/high/max，见 api-docs.deepseek.com/guides/thinking_mode）。
     """
 
-    def __init__(self, model, base_url, api_key, temperature, timeout, max_attempts=3):
+    # DeepSeek 官方档位 → 实际发送值（兼容映射）。
+    _DEEPSEEK_EFFORT_COMPAT = {
+        "none": None,  # thinking disabled
+        "minimal": None,
+        "low": "low",
+        "medium": "high",
+        "high": "high",
+        "xhigh": "high",
+        "max": "max",
+    }
+
+    def __init__(
+        self,
+        model,
+        base_url,
+        api_key,
+        temperature,
+        timeout,
+        max_attempts=3,
+        *,
+        reasoning_effort="",
+        supported_reasoning_efforts=(),
+    ):
         self.model = model
         self.base_url = _normalize_completions_base_url(base_url)
         self.api_key = api_key
@@ -1332,6 +1358,14 @@ class OpenAICompletionsModelClient:
         self.supports_prompt_cache = False
         self.supports_native_tools = True
         self.last_completion_metadata = {}
+        self.supported_reasoning_efforts = tuple(
+            str(value).strip()
+            for value in supported_reasoning_efforts
+            if str(value).strip()
+        )
+        self.reasoning_effort = str(reasoning_effort or "").strip().lower()
+        if self.reasoning_effort and self.reasoning_effort not in self.supported_reasoning_efforts:
+            raise ValueError("reasoning_effort is not supported by this provider/model")
 
     def complete(
         self,
@@ -1358,6 +1392,15 @@ class OpenAICompletionsModelClient:
             "max_tokens": max_new_tokens,
             "stream": True,
         }
+        # §2.1 兼容：DeepSeek 思考模式（thinking + reasoning_effort）。
+        # none/minimal → thinking disabled（不思考）；low/high/max → 映射后发送。
+        if self.reasoning_effort:
+            compat_effort = self._DEEPSEEK_EFFORT_COMPAT.get(self.reasoning_effort, "high")
+            if compat_effort is None:
+                payload["thinking"] = {"type": "disabled"}
+            else:
+                payload["reasoning_effort"] = compat_effort
+                payload["thinking"] = {"type": "enabled"}
         native_tools_enabled = bool(tool_definitions) and self.supports_native_tools
         if native_tools_enabled:
             payload["tools"] = [
