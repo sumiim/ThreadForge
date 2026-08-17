@@ -15,6 +15,7 @@ import sqlite3
 import tempfile
 from collections.abc import Callable
 from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
 
 from ..domain.entities import Approval, Task, utc_now
@@ -806,6 +807,47 @@ class SqliteProviderRepository:
         if self.mirror is not None:
             self.mirror.write(provider_id, payload)
         return updated
+
+    def bind_device(self, provider_id: str, owner_id: str, device_id: str) -> Provider:
+        """把 provider 绑定到指定设备（列 + payload 同步）。
+
+        设备绑定修复：旧版本创建的 provider 可能 device_id 为空，导致
+        get_active_provider 按设备精确匹配不到。key 实际推送到哪台设备
+        是最可靠的绑定来源，调用方（configure 完成回调 / 启动迁移）负责
+        提供该设备。
+        """
+        owner_id = canonical_owner_id(owner_id)
+        with self._store.transaction() as conn:
+            row = conn.execute(
+                "SELECT payload FROM providers WHERE provider_id=? AND owner_id=?",
+                (provider_id, owner_id),
+            ).fetchone()
+            if row is None:
+                raise ProviderNotFoundError(provider_id)
+            current = _provider_from_payload(_json_loads(row["payload"], provider_id), provider_id)
+            updated = replace(current, device_id=device_id)
+            payload = updated.to_dict()
+            conn.execute(
+                "UPDATE providers SET device_id=?, payload=? WHERE provider_id=? AND owner_id=?",
+                (device_id, _json_dumps(payload), provider_id, owner_id),
+            )
+        if self.mirror is not None:
+            self.mirror.write(provider_id, payload)
+        return updated
+
+    def list_unbound(self, owner_id: str) -> list[Provider]:
+        """返回 device_id 为空（未绑定设备）的 provider，供启动迁移处理。"""
+        owner_id = canonical_owner_id(owner_id)
+        rows = self._store.query(
+            "SELECT payload FROM providers WHERE owner_id=? AND device_id='' ORDER BY name",
+            (owner_id,),
+        )
+        out = []
+        for row in rows:
+            payload = _json_loads(row["payload"], "provider")
+            provider_id = str(payload.get("provider_id", ""))
+            out.append(_provider_from_payload(payload, provider_id))
+        return out
 
     def delete(self, provider_id: str, owner_id: str) -> None:
         owner_id = canonical_owner_id(owner_id)

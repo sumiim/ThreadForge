@@ -80,6 +80,21 @@ class ProviderService:
             provider_id, owner_id, lambda p: _set_default(p, True)
         ).to_dict()
 
+    def bind_device(self, provider_id: str, owner_id: str, device_id: str) -> dict:
+        """把 provider 绑定到指定设备（列 + payload 同步）。
+
+        设备绑定修复：旧版本 provider 可能 device_id 为空，按设备查询
+        get_active_provider 匹配不到，任务以 provider_id='' 派发后 Worker
+        端会拒绝静默回退 .env。key 实际推送到哪台设备（configure 完成
+        回调 / 启动迁移）是最可靠的绑定来源。
+        """
+        owner_id = canonical_owner_id(owner_id)
+        return self._repo.bind_device(provider_id, owner_id, device_id).to_dict()
+
+    def list_unbound(self, owner_id: str) -> list[dict]:
+        owner_id = canonical_owner_id(owner_id)
+        return [item.to_dict() for item in self._repo.list_unbound(owner_id)]
+
     def record_models(
         self, provider_id: str, owner_id: str, models: list[str], *, error: str = ""
     ) -> dict:

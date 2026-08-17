@@ -222,6 +222,43 @@ class AppContainer:
         for path in self.device_store.root.glob("dev_*.json"):
             self.device_store.get(path.stem)
 
+    def _migrate_unbound_providers(self) -> None:
+        """把 device_id 为空的旧 provider 绑定到设备。
+
+        旧版本创建的 provider 可能 device_id 为空，任务按设备查默认 Provider
+        匹配不到，Worker 端（≥0.3.49 拒绝静默回退 .env）会报 worker_runtime_error。
+        单设备 owner 可直接绑定；多设备无法确定时跳过，等 configure 完成回调
+        （key 推送目标即绑定目标）再绑定。
+        """
+        import logging
+
+        logger = logging.getLogger("threadforge.migrate")
+        owners = {self.owner_id}
+        for provider in self.provider_service.list_unbound(self.owner_id):
+            owners.add(provider["owner_id"])
+        for owner_id in owners:
+            devices = self.device_store.list_for_owner(owner_id)
+            unbound = self.provider_service.list_unbound(owner_id)
+            if not unbound or len(devices) != 1:
+                continue
+            device_id = devices[0].device_id
+            for provider in unbound:
+                try:
+                    self.provider_service.bind_device(
+                        provider["provider_id"], owner_id, device_id
+                    )
+                    logger.info(
+                        "provider %s bound to device %s (legacy device_id migration)",
+                        provider["provider_id"],
+                        device_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "provider %s device binding failed; retry on next configure",
+                        provider["provider_id"],
+                        exc_info=True,
+                    )
+
     def _default_model_client_factory(self):
         settings = self.settings
         if settings.model_provider == "anthropic":
@@ -272,6 +309,10 @@ class AppContainer:
             ok = False
         try:
             self.isolation.recover_expired()
+        except Exception:
+            ok = False
+        try:
+            self._migrate_unbound_providers()
         except Exception:
             ok = False
         for task_id in self.task_repo.list_stable():
