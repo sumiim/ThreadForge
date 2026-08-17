@@ -143,3 +143,33 @@ def test_provider_service_create_binds_device_and_activate_scopes_to_device(tmp_
     service.activate_provider(created_b["provider_id"], owner, device_b)
     assert service.get_active_provider(owner, device_a)["provider_id"] == created_a["provider_id"]
     assert service.get_active_provider(owner, device_b)["provider_id"] == created_b["provider_id"]
+
+
+def test_provider_service_bind_device_fixes_unbound_legacy_provider(tmp_path):
+    store = SqliteStore(tmp_path / "control.sqlite3")
+    repo = SqliteProviderRepository(store, json_root=tmp_path / "providers")
+    service = ProviderService(repo)
+    owner = str(uuid.uuid4())
+    device = "dev_" + "a" * 32
+
+    # 旧版本创建的 provider：device_id 为空（未绑定设备）。
+    created = service.create_provider(owner, "", {
+        "name": "DeepSeek",
+        "protocol": "openai_compatible",
+        "base_url": "https://api.example.com/v1",
+    })
+    provider_id = created["provider_id"]
+    assert created["device_id"] == ""
+    assert service.get_active_provider(owner, device) is None
+    assert [p["provider_id"] for p in service.list_unbound(owner)] == [provider_id]
+
+    # bind_device 后：列 + payload 同步；激活后按设备可查到默认 provider。
+    bound = service.bind_device(provider_id, owner, device)
+    assert bound["device_id"] == device
+    assert service.list_unbound(owner) == []
+    service.activate_provider(provider_id, owner, device)
+    assert service.get_active_provider(owner, device)["provider_id"] == provider_id
+
+    # 重新加载后绑定仍生效（持久化列）。
+    reloaded = service.get_provider(provider_id, owner)
+    assert reloaded["device_id"] == device

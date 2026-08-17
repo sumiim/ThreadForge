@@ -480,13 +480,18 @@ class WorkerClient:
         request_id = str(message.get("request_id", ""))
         provider_id = str(message.get("provider_id", ""))
         try:
+            # 与本地完整档位求并集：旧版本推送的 providers.json 可能缺新档位
+            # （如 max），下次更新 provider 时顺带补齐，避免能力上报不完整。
+            incoming = [str(item).strip() for item in message.get("reasoning_efforts", []) if str(item).strip()]
+            local = list(_runtime_reasoning_efforts())
+            efforts = tuple(dict.fromkeys([*incoming, *local]))
             self.store.save_provider(
                 provider_id,
                 base_url=str(message.get("base_url", "")),
                 api_key=str(message.get("api_key", "")),
                 model=str(message.get("model", "")),
                 protocol=str(message.get("protocol", "")),
-                reasoning_efforts=tuple(str(item) for item in message.get("reasoning_efforts", [])),
+                reasoning_efforts=efforts,
             )
             response = {
                 "type": "provider.configuration.completed",

@@ -26,6 +26,7 @@ const REASONING_EFFORT_OPTIONS = [
   { value: 'medium', label: '中' },
   { value: 'high', label: '高' },
   { value: 'xhigh', label: '极高' },
+  { value: 'max', label: '最高' },
 ]
 
 interface FormValues {

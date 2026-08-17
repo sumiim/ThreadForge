@@ -105,7 +105,7 @@ async def configure_provider(
 ) -> dict:
     # 校验 provider 归属后，把 key 经 Worker socket 转发到 device 本地；中央不落。
     provider_service.get_provider(provider_id, actor.owner_id)
-    return await worker_hub.configure_provider(
+    result = await worker_hub.configure_provider(
         device_id=body.device_id,
         owner_id=actor.owner_id,
         provider_id=provider_id,
@@ -115,6 +115,12 @@ async def configure_provider(
         protocol=body.protocol,
         reasoning_efforts=body.reasoning_efforts,
     )
+    if result.get("status") == "completed" and body.device_id:
+        # 设备绑定修复：key 实际推送到哪台设备，就把 provider 绑定到哪台设备。
+        # 旧版本创建的 provider 可能 device_id 为空，任务按设备查默认 Provider
+        # 匹配不到，Worker 端会拒绝静默回退 .env 而报 worker_runtime_error。
+        provider_service.bind_device(provider_id, actor.owner_id, body.device_id)
+    return result
 
 
 @router.post(
