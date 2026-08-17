@@ -11,6 +11,7 @@ from .checkpoint import (
     CHECKPOINT_PARTIAL_STALE_STATUS,
     CHECKPOINT_WORKSPACE_MISMATCH_STATUS,
 )
+from .evaluation.review_subagent import REVIEW_POLL_ACTIONS
 from .execution_hooks import ProcessCleanupFailed, RunCancelled
 from .task_state import (
     PHASE_ACT_OR_ANSWER,
@@ -284,6 +285,42 @@ class AgentLoop:
     def __init__(self, agent):
         self.agent = agent
 
+    def _maybe_run_review(
+        self,
+        task_state,
+        user_message,
+        *,
+        trigger,
+        has_write_or_shell,
+        verification_passed,
+        prior_feedback,
+    ):
+        """§7.8.9 阶段 3：程序强制触发 review subagent。
+
+        由 AgentLoop 在「每 REVIEW_POLL_ACTIONS 个动作」或「final 前」调用，
+        不进 tool_definitions，模型无法绕过。返回 ReviewDecision（dict）。
+
+        feature flag `review_subagent` 关闭时跳过（阶段推进中；测试用
+        FakeModelClient 不开启，避免 review 消费其顺序输出）。
+        """
+        if not self.agent.feature_enabled("review_subagent"):
+            return {
+                "verdict": "continue",
+                "feedback": "",
+                "reason": "review_subagent_disabled",
+            }
+        from .evaluation.review_subagent import run_review
+
+        return run_review(
+            self.agent,
+            task_state,
+            request=user_message,
+            trigger=trigger,
+            has_write_or_shell=has_write_or_shell,
+            verification_passed=verification_passed,
+            prior_feedback=prior_feedback,
+        )
+
     def _execute_tool_action(
         self,
         task_state,
@@ -549,6 +586,13 @@ class AgentLoop:
         turn_tool_repeated = False
         turn_talked = False
         turn_actions = 0
+        # §7.8.9 Review subagent 状态（阶段 3）：程序强制触发。
+        # 每 REVIEW_POLL_ACTIONS 个动作触发一次；final 前必确认。
+        actions_since_review = 0
+        has_write_or_shell = False
+        verification_passed = False
+        prior_review_feedback = ""
+        review_triggered = False
 
         # 边界 1：进入控制循环前。
         token.raise_if_cancelled()
@@ -843,6 +887,24 @@ class AgentLoop:
                 )
                 turn_tool_called = True
                 turn_tool_repeated = bool(repeated)
+                # §7.8.9 阶段 3：动作统计 + 周期 review 触发。
+                actions_since_review += 1
+                if name in {"write_file", "patch_file", "run_shell"}:
+                    has_write_or_shell = True
+                if actions_since_review >= REVIEW_POLL_ACTIONS:
+                    review_decision = self._maybe_run_review(
+                        task_state,
+                        user_message,
+                        trigger="action_poll",
+                        has_write_or_shell=has_write_or_shell,
+                        verification_passed=verification_passed,
+                        prior_feedback=prior_review_feedback,
+                    )
+                    actions_since_review = 0
+                    review_triggered = True
+                    if review_decision.get("verdict") == "redirect":
+                        prior_review_feedback = str(review_decision.get("feedback", "") or "")
+                        protocol_feedback = str(review_decision.get("feedback", "") or "")
                 continue
 
             if kind == "tool_batch":
@@ -940,6 +1002,26 @@ class AgentLoop:
                 )
                 turn_tool_called = True
                 turn_tool_repeated = batch_all_bad
+                # §7.8.9 阶段 3：动作统计 + 周期 review 触发（批内每个动作计一次）。
+                for item in tools:
+                    actions_since_review += 1
+                    iname = str(item.get("name", ""))
+                    if iname in {"write_file", "patch_file", "run_shell"}:
+                        has_write_or_shell = True
+                if actions_since_review >= REVIEW_POLL_ACTIONS:
+                    review_decision = self._maybe_run_review(
+                        task_state,
+                        user_message,
+                        trigger="action_poll",
+                        has_write_or_shell=has_write_or_shell,
+                        verification_passed=verification_passed,
+                        prior_feedback=prior_review_feedback,
+                    )
+                    actions_since_review = 0
+                    review_triggered = True
+                    if review_decision.get("verdict") == "redirect":
+                        prior_review_feedback = str(review_decision.get("feedback", "") or "")
+                        protocol_feedback = str(review_decision.get("feedback", "") or "")
                 continue
 
             if kind == "retry":
@@ -974,6 +1056,33 @@ class AgentLoop:
 
             # 边界 8：写最终回答和 durable memory 前。
             token.raise_if_cancelled()
+            # §7.8.9 阶段 3：final 前确认——模型想 final 时先过 review。
+            # verdict=finalize（且对抗性验证通过）→ 放行；redirect → 注入
+            # feedback 继续；continue → 继续。review 由程序强制调用。
+            review_decision = self._maybe_run_review(
+                task_state,
+                user_message,
+                trigger="final_before",
+                has_write_or_shell=has_write_or_shell,
+                verification_passed=verification_passed,
+                prior_feedback=prior_review_feedback,
+            )
+            if review_decision.get("verdict") == "redirect":
+                # 方向/验证有问题：注入 feedback，继续循环（不 final）。
+                prior_review_feedback = str(review_decision.get("feedback", "") or "")
+                task_state.set_phase(
+                    PHASE_ACT_OR_ANSWER,
+                    next_step="Apply review feedback and converge on a verified final answer",
+                )
+                agent.emit_trace(
+                    task_state,
+                    "final_rejected_by_review",
+                    {
+                        "feedback": str(review_decision.get("feedback", ""))[:500],
+                        "reason": str(review_decision.get("reason", ""))[:200],
+                    },
+                )
+                continue
             consecutive_talks = 0
             final = (payload or raw).strip()
             if task_state.requires_post_tool_reasoning:

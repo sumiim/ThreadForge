@@ -55,6 +55,10 @@ DEFAULT_FEATURE_FLAGS = {
     "relevant_memory": True,
     "context_reduction": True,
     "prompt_cache": True,
+    # §7.8.9 阶段 3：review subagent（程序强制）。默认关——阶段推进中，
+    # 真实环境（run_native）开启时再置 True；测试用 FakeModelClient 不开启，
+    # 避免 review 调用消费 FakeModelClient 的顺序输出。
+    "review_subagent": False,
 }
 DURABLE_MEMORY_INTENT_PATTERN = re.compile(r"(?i)\b(capture|remember|save|store|persist|note)\b")
 DURABLE_MEMORY_INTENT_ZH_PATTERN = re.compile(r"(记住|保存|记录|沉淀|长期记忆|持久记忆)")
