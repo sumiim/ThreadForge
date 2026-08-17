@@ -321,6 +321,73 @@ class AgentLoop:
             prior_feedback=prior_feedback,
         )
 
+    def _initial_plan(self, task_state, user_message):
+        """§7.8.9 阶段 3.5：run 开始时一次 planning，生成真实 checklist。
+
+        feature flag `planning` 关闭或规划失败时降级（保留默认阶段模板）。
+        返回是否生成真实 checklist。
+        """
+        if not self.agent.feature_enabled("planning"):
+            return False
+        from .planning import run_planning
+
+        steps = run_planning(
+            self.agent,
+            task_state,
+            task=user_message,
+            context=str(getattr(self.agent, "memory_text", lambda: "")())[:2000],
+            replan=False,
+        )
+        if not steps:
+            return False
+        task_state.checklist = list(steps)
+        task_state.done_when = [str(step) for step in steps]
+        self.agent.run_store.write_task_state(task_state)
+        self.agent.emit_trace(
+            task_state,
+            "plan_checklist_created",
+            {"step_count": len(steps), "steps": steps},
+        )
+        return True
+
+    def _replan(self, task_state, user_message, feedback):
+        """§7.8.9 阶段 3.5：review redirect 时 replan，更新 checklist。
+
+        保留已完成项 + 已探索摘要（explored_summary），防重复规划。
+        规划失败 → 保留原 checklist。
+        """
+        if not self.agent.feature_enabled("planning"):
+            return False
+        from .planning import run_planning
+
+        completed = list(getattr(task_state, "completed_items", []) or [])
+        explored = "已完成: " + "；".join(completed) if completed else ""
+        steps = run_planning(
+            self.agent,
+            task_state,
+            task=user_message,
+            context=str(getattr(self.agent, "memory_text", lambda: "")())[:2000],
+            explored_summary=explored,
+            replan=True,
+        )
+        if not steps:
+            return False
+        task_state.checklist = list(steps)
+        task_state.done_when = [str(step) for step in steps]
+        task_state.replan_reasons.append(str(feedback or "")[:200])
+        self.agent.run_store.write_task_state(task_state)
+        self.agent.emit_trace(
+            task_state,
+            "plan_replanned",
+            {
+                "step_count": len(steps),
+                "steps": steps,
+                "feedback": str(feedback or "")[:300],
+                "preserved_completed": completed,
+            },
+        )
+        return True
+
     def _execute_tool_action(
         self,
         task_state,
@@ -395,8 +462,11 @@ class AgentLoop:
             tuple(recent_tool_fps),
             tuple(recent_tool_names),
         )
-        recent_tool_fps.append(_tool_fingerprint(name, args))
-        recent_tool_names.append(name)
+        # §7.8.9 边界：重复动作（P4 拦截）不入重复窗口——入队会污染「有效历史」，
+        # 未来相同调用仍应基于最早的原始动作判定重复；窗口只存真实执行过的动作。
+        if not repeated:
+            recent_tool_fps.append(_tool_fingerprint(name, args))
+            recent_tool_names.append(name)
         if tool_status in {"ok", "partial_success"}:
             affected_paths = list(tool_result.metadata.get("affected_paths", []))
             relative_paths = list(affected_paths)
@@ -511,6 +581,9 @@ class AgentLoop:
         agent.emit_agent_state(task_state, "context_requested")
 
         try:
+            # §7.8.9 阶段 3.5：初始 planning（run 开始一次）——生成真实 checklist，
+            # 修复「无 planning = checklist 退化」。失败/未开启 → 默认阶段模板。
+            self._initial_plan(task_state, user_message)
             return self._run_loop(
                 task_state,
                 user_message,
@@ -905,6 +978,8 @@ class AgentLoop:
                     if review_decision.get("verdict") == "redirect":
                         prior_review_feedback = str(review_decision.get("feedback", "") or "")
                         protocol_feedback = str(review_decision.get("feedback", "") or "")
+                        # §7.8.9 阶段 3.5：review redirect → replan。
+                        self._replan(task_state, user_message, str(review_decision.get("feedback", "") or ""))
                 continue
 
             if kind == "tool_batch":
@@ -1022,6 +1097,8 @@ class AgentLoop:
                     if review_decision.get("verdict") == "redirect":
                         prior_review_feedback = str(review_decision.get("feedback", "") or "")
                         protocol_feedback = str(review_decision.get("feedback", "") or "")
+                        # §7.8.9 阶段 3.5：review redirect → replan。
+                        self._replan(task_state, user_message, str(review_decision.get("feedback", "") or ""))
                 continue
 
             if kind == "retry":
@@ -1082,6 +1159,8 @@ class AgentLoop:
                         "reason": str(review_decision.get("reason", ""))[:200],
                     },
                 )
+                # §7.8.9 阶段 3.5：review redirect → replan（保留已完成项）。
+                self._replan(task_state, user_message, str(review_decision.get("feedback", "") or ""))
                 continue
             consecutive_talks = 0
             final = (payload or raw).strip()
