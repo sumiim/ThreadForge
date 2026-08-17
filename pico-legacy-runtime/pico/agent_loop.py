@@ -1,14 +1,16 @@
 """Agent control loop extracted from the runtime facade."""
 
+import hashlib
+import json
 import time
 import uuid
+from collections import deque
 
 from .checkpoint import (
     CHECKPOINT_NONE_STATUS,
     CHECKPOINT_PARTIAL_STALE_STATUS,
     CHECKPOINT_WORKSPACE_MISMATCH_STATUS,
 )
-from .evaluation.review_gate import STAGNATION_ROUNDS_LIMIT, _round_signature
 from .execution_hooks import ProcessCleanupFailed, RunCancelled
 from .task_state import (
     PHASE_ACT_OR_ANSWER,
@@ -51,6 +53,135 @@ def _best_effort_step_limit(task_state, reason):
 
 MAX_CONSECUTIVE_TALKS = 2
 MAX_PROTOCOL_REPAIRS = 1
+
+# §7.8.7-③ / §7.8.9 停滞检测（滑动窗口）：
+# - 一个 turn = 一次模型决策 + 其后的工具执行（或无工具）。
+# - 每 turn 结束算三个坏信号：checklist 无新增、evidence 无新增、工具重复/无工具。
+# - 滑动窗口内最近 n 个 turn 三信号全坏 → 强制收敛。
+# n 固定 3（§7.8.9 定）：不随剩余预算动态——动态化的初衷「剩余多→宽容」
+# 由 review 轮询承担（模型慢思考时 review 给 continue 确认方向），证据截停
+# 只管「evidence 不涨」。深思熟虑的模型（前 2 轮 talk，第 3 轮行动）不会被
+# 杀——第 3 轮 evidence 涨了窗口重置。
+STAGNATION_TOLERANCE = 3          # 连续坏 turn 阈值（固定）
+STAGNATION_WINDOW = 6             # 滑动窗口长度（≥ tolerance 即可，留余量）
+TOOL_REPEAT_WINDOW = 6            # 工具重复判定窗口（复用 repeated_tool_call 的窗口宽度）
+READ_OVERLAP_RATIO = 0.6          # read_file 区间重叠比例 ≥ 60% 才算重复读
+
+# 只读工具：写工具会改变工作区，之后重新 list/read 是合理的，不算停滞。
+_READ_ONLY_TOOL_NAMES = frozenset({"list_files", "read_file", "search"})
+
+
+def _stagnation_threshold(remaining_turns):
+    """连续坏 turn 阈值 n：固定 3（§7.8.9 定）。
+
+    remaining_turns 参数保留仅作 trace 记录；n 不随剩余预算变化。
+    """
+    return STAGNATION_TOLERANCE
+
+
+def _normalize_read_interval(start, end):
+    """read_file 区间归一化：(start, end) 数字元组；缺省视为全文件。"""
+    try:
+        s = int(start) if start is not None else None
+        e = int(end) if end is not None else None
+    except (TypeError, ValueError):
+        return (None, None)
+    return (s, e)
+
+
+def _interval_overlap_ratio(interval_a, interval_b):
+    """当前读取区间相对较早区间的重叠比例（0~1）。
+
+    语义：读同一文件时，当前区间的大部分内容（≥ READ_OVERLAP_RATIO）若在
+    历史区间内读过，则视为重复读（防模型靠微调行号绕过重复检测）。缺省端
+    视为全文件。分母取「当前区间长度」，保证「读全文 vs 读其中一段」这种
+    大范围重叠也被判为重复。
+    """
+    a_start, a_end = interval_a
+    b_start, b_end = interval_b
+    if a_start is None:
+        a_start = b_start if b_start is not None else 1
+    if a_end is None:
+        a_end = b_end if b_end is not None else a_start
+    if b_start is None:
+        b_start = a_start
+    if b_end is None:
+        b_end = a_end
+    # 零长度区间（start == end，如 read 单行 {start:1, end:1}）：视为单行，
+    # 同 start 且同 end 完全重叠；不同位置则无重叠。
+    if a_end <= a_start:
+        if b_end <= b_start:
+            return 1.0 if (a_start == b_start and a_end == b_end) else 0.0
+        # 当前是单行，历史是区间：单行落在历史区间内算重叠
+        return 1.0 if b_start <= a_start <= b_end else 0.0
+    if a_end < b_start or b_end < a_start:
+        return 0.0
+    overlap = min(a_end, b_end) - max(a_start, b_start)
+    if overlap <= 0:
+        return 0.0
+    len_current = max(1, a_end - a_start)
+    return overlap / len_current
+
+
+def _tool_fingerprint(name, args):
+    """工具调用指纹：语义等价归一化（复用 runtime._normalize_tool_args 思路）。
+
+    - read_file → (name, path, 行区间)：行区间保留用于重叠判定（读不同区段不算重复）。
+    - run_shell → (name, command)：命令内容相同才算重复。
+    - search → (name, path, pattern)。
+    - 其余 → (name, 归一化 args)。
+    """
+    from .runtime import _normalize_tool_args
+
+    args = args if isinstance(args, dict) else {}
+    if name == "read_file":
+        normalized = _normalize_tool_args(name, args)
+        path = str(normalized.get("path", "") or ".")
+        interval = _normalize_read_interval(args.get("start"), args.get("end"))
+        return ("read_file", path, interval)
+    if name == "run_shell":
+        command = str(args.get("command", "") or "").strip()
+        return ("run_shell", command)
+    if name == "search":
+        normalized = _normalize_tool_args(name, args)
+        path = str(normalized.get("path", "") or ".")
+        pattern = str(args.get("pattern", "") or "").strip()
+        return ("search", path, pattern)
+    return (name, json.dumps(_normalize_tool_args(name, args), sort_keys=True, ensure_ascii=False))
+
+
+def _tool_fingerprints_match(fp_a, fp_b):
+    """两个指纹是否构成「重复调用」：
+    - read_file 同路径且行区间重叠比例 ≥ 阈值（读不同区段不算重复）；
+    - 其余完全相等。
+    """
+    if fp_a[0] != fp_b[0]:
+        return False
+    if fp_a[0] == "read_file":
+        path_a, interval_a = fp_a[1], fp_a[2]
+        path_b, interval_b = fp_b[1], fp_b[2]
+        if path_a != path_b:
+            return False
+        return _interval_overlap_ratio(interval_a, interval_b) >= READ_OVERLAP_RATIO
+    return fp_a == fp_b
+
+
+def _tool_call_repeats(name, args, recent_tool_fps, recent_tool_names):
+    """当前工具调用是否与滑动窗口内的历史调用重复。
+
+    - 窗口内匹配到同指纹 → 重复；
+    - 但若「匹配之后有写工具介入」，工作区已变，重读/重列是合理的 → 不重复
+      （对齐 runtime.repeated_tool_call 的语义）。
+    """
+    fp = _tool_fingerprint(name, args)
+    for index, prev_fp in enumerate(recent_tool_fps):
+        if not _tool_fingerprints_match(fp, prev_fp):
+            continue
+        tail = recent_tool_names[index + 1:]
+        if any(tool not in _READ_ONLY_TOOL_NAMES for tool in tail):
+            continue
+        return True
+    return False
 
 
 class AgentLoop:
@@ -156,11 +287,23 @@ class AgentLoop:
             max(agent.max_steps * 3, agent.max_steps + 4),
             task_state.max_total_steps,
         )
-        # §7.8.7-③ 停滞检测：连续 K 轮「证据/checklist/工具集」三信号零增量 → 强制收敛。
-        # 轮 = 一次模型决策 turn（含其后的工具执行）。签名取自本轮执行完后的
-        # task_state，下一轮开头比较：同签名 → 停滞轮 +1，否则归零。
-        last_round_signature = ""
-        stagnation_rounds = 0
+        # §7.8.7-③ 停滞检测（滑动窗口）：每 turn 结束记录三信号
+        # （checklist 无新增 / evidence 无新增 / 工具重复或零工具），
+        # 窗口内最近 n 个 turn 全坏（n 随剩余预算自适应）→ 强制收敛。
+        #
+        # 数据流：循环顶部 = 「上一轮执行完后的状态」。
+        #   - prev_end = 上上轮结束状态（首次 None，跳过第一轮判定，给开局机会）
+        #   - 顶部比较 current(上轮结束) vs prev_end(上上轮结束) → 上轮是否有增量
+        #   - 工具分支记录本轮调用 → 下轮顶部判定工具信号
+        # 工具重复判定窗口（只读工具指纹 + 工具名序列，供写工具介入豁免）。
+        recent_tool_fps: deque = deque(maxlen=TOOL_REPEAT_WINDOW)
+        recent_tool_names: deque = deque(maxlen=TOOL_REPEAT_WINDOW)
+        prev_end: tuple[int, int] | None = None
+        # 上一轮的工具信号（本轮结束时更新，下轮顶部读取）。
+        turn_tool_called = False
+        turn_tool_repeated = False
+        turn_talked = False
+        turn_actions = 0
 
         # 边界 1：进入控制循环前。
         token.raise_if_cancelled()
@@ -170,35 +313,85 @@ class AgentLoop:
         ):
             # 边界 2：每轮开始、构建 prompt 前。
             token.raise_if_cancelled()
-            # 停滞检测（滞后一轮比较：本轮开始时的签名 = 上一轮执行完后的状态）。
-            # 达到阈值 → 强制进入 finalization，不再允许新工具。
-            current_signature = _round_signature(task_state)
-            if last_round_signature and current_signature == last_round_signature:
-                stagnation_rounds += 1
+            # §7.8.9 坏轮判定（上一轮）：current = 上轮结束状态，prev_end = 上上轮结束。
+            # 坏轮 = 完全失联（无 talk 无工具无证据）或 工具动作全失败/全被重复拦截。
+            # talk 轮不坏（思考信号，trace + 前端可见）；checklist 退出坏轮判定。
+            current = (len(task_state.evidence), len(task_state.completed_items))
+            if prev_end is not None:
+                evidence_grew = current[0] > prev_end[0]
+                reasons = []
+                if not turn_tool_called and not turn_talked:
+                    reasons.append("silent_turn_no_output")
+                elif turn_tool_called and turn_tool_repeated:
+                    reasons.append("tool_repeated_or_failed")
+                elif turn_tool_called and not evidence_grew:
+                    reasons.append("tool_no_new_evidence")
+                is_bad = bool(reasons)
+                if is_bad:
+                    task_state.stagnation_audit.append(
+                        {
+                            "turn": attempts,
+                            "bad": True,
+                            "reasons": reasons,
+                            "evidence_count": current[0],
+                            "tool_name": task_state.last_tool,
+                            "actions": turn_actions,
+                        }
+                    )
+                else:
+                    task_state.stagnation_audit.append(
+                        {
+                            "turn": attempts,
+                            "bad": False,
+                            "reasons": [],
+                            "evidence_count": current[0],
+                            "tool_name": task_state.last_tool,
+                            "actions": turn_actions,
+                        }
+                    )
+                bad_window = [
+                    item.get("bad", False) for item in task_state.stagnation_audit
+                ][-STAGNATION_WINDOW:]
+                remaining_turns = max(0, agent.max_steps - tool_steps)
+                threshold = _stagnation_threshold(remaining_turns)
+                if len(bad_window) >= threshold and all(bad_window[-threshold:]):
+                    # 证据截停触发：完整审计链（坏轮明细 + 阈值 + 窗口）。
+                    task_state.record_malformed_output_recovered()
+                    task_state.set_phase(
+                        PHASE_ACT_OR_ANSWER,
+                        next_step="Converge on a grounded final answer using the collected evidence",
+                    )
+                    audit_tail = list(task_state.stagnation_audit)[-threshold:]
+                    agent.emit_trace(
+                        task_state,
+                        "stagnation_detected",
+                        {
+                            "error_code": "stagnation",
+                            "threshold": threshold,
+                            "window": bad_window,
+                            "remaining_turns": remaining_turns,
+                            "audit": audit_tail,
+                            "reasons_all": [item.get("reasons", []) for item in audit_tail],
+                        },
+                    )
+                    finalization_only = True
+                    finalization_attempted = True
+                else:
+                    finalization_only = tool_steps >= agent.max_steps
+                    if finalization_only:
+                        finalization_attempted = True
             else:
-                stagnation_rounds = 0
-            last_round_signature = current_signature
-            if stagnation_rounds >= STAGNATION_ROUNDS_LIMIT:
-                task_state.record_malformed_output_recovered()
-                task_state.set_phase(
-                    PHASE_ACT_OR_ANSWER,
-                    next_step="Converge on a grounded final answer using the collected evidence",
-                )
-                agent.emit_trace(
-                    task_state,
-                    "stagnation_detected",
-                    {
-                        "error_code": "stagnation",
-                        "limit": STAGNATION_ROUNDS_LIMIT,
-                        "signature": current_signature,
-                    },
-                )
-                finalization_only = True
-                finalization_attempted = True
-            else:
+                # 第一轮：只记录起点，不判定（给模型开局机会）。
                 finalization_only = tool_steps >= agent.max_steps
                 if finalization_only:
                     finalization_attempted = True
+            # 本轮结束时的状态 = 下轮顶部的 prev_end 基准。
+            prev_end = current
+            # 本轮信号重置，供本轮执行分支设置。
+            turn_tool_called = False
+            turn_tool_repeated = False
+            turn_talked = False
+            turn_actions = 0
             attempts += 1
             task_state.record_attempt()
             task_state.set_phase(PHASE_ACT_OR_ANSWER, next_step="Choose a tool or prepare a final answer")
@@ -353,6 +546,9 @@ class AgentLoop:
                 break
 
             if kind == "talk":
+                # §7.8.9：talk 是思考信号（trace + 前端 commentary 可见），
+                # 不判坏；连续 talk 由 MAX_CONSECUTIVE_TALKS 兜底。
+                turn_talked = True
                 if consecutive_talks >= MAX_CONSECUTIVE_TALKS:
                     task_state.record_malformed_output_recovered()
                     task_state.set_phase(
@@ -384,13 +580,48 @@ class AgentLoop:
             if kind == "tool":
                 consecutive_talks = 0
                 tool_steps += 1
+                turn_actions += 1
                 name = payload.get("name", "")
                 args = payload.get("args", {})
                 task_state.record_tool(name)
                 tool_started_at = time.monotonic()
                 agent.emit_progress(f"step {attempts}: running tool {name}")
                 tool_call_id = _new_tool_call_id()
-                if name == "read_file" and task_state.read_files >= task_state.max_read_files:
+                # §7.8.9 P4 重复动作执行前拦截：与历史窗口重复（且匹配后无写工具）
+                # → 拒绝执行，防空转动作真的跑。与 evidence 截停互补：
+                # P4 事前挡这一次，证据截停事后发现连续空转。
+                pre_repeat = _tool_call_repeats(
+                    name,
+                    args,
+                    tuple(recent_tool_fps),
+                    tuple(recent_tool_names),
+                )
+                if pre_repeat:
+                    tool_result = ToolExecutionResult(
+                        content=(
+                            f"error: repeated identical call ({name}); "
+                            "use the existing evidence or try a different action"
+                        ),
+                        metadata={
+                            "tool_status": "rejected",
+                            "tool_error_code": "repeated_identical_call",
+                            "read_only": bool(
+                                name in _READ_ONLY_TOOL_NAMES
+                            ),
+                            "affected_paths": [],
+                        },
+                    )
+                    task_state.record_malformed_output_recovered()
+                    agent.emit_trace(
+                        task_state,
+                        "tool_rejected_repeat",
+                        {
+                            "name": name,
+                            "args": args,
+                            "error_code": "repeated_identical_call",
+                        },
+                    )
+                elif name == "read_file" and task_state.read_files >= task_state.max_read_files:
                     tool_result = ToolExecutionResult(
                         content=(
                             f"error: read_file budget exhausted ({task_state.max_read_files}); "
@@ -409,6 +640,16 @@ class AgentLoop:
                     tool_result = agent.execute_tool(name, args, tool_call_id=tool_call_id)
                 task_state.record_affected_paths(tool_result.metadata.get("affected_paths", []))
                 tool_status = str(tool_result.metadata.get("tool_status", "unknown"))
+                # §7.8.7-③ 工具信号：本轮是否调了工具、是否与窗口内重复（写工具介入豁免）。
+                turn_tool_called = True
+                turn_tool_repeated = _tool_call_repeats(
+                    name,
+                    args,
+                    tuple(recent_tool_fps),
+                    tuple(recent_tool_names),
+                )
+                recent_tool_fps.append(_tool_fingerprint(name, args))
+                recent_tool_names.append(name)
                 if tool_status in {"ok", "partial_success"}:
                     affected_paths = list(tool_result.metadata.get("affected_paths", []))
                     relative_paths = list(affected_paths)

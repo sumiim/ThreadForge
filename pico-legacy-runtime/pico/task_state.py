@@ -98,6 +98,15 @@ class TaskState:
     error_code: str = ""
     error_retryable: bool = False
     error_attempts: int = 0
+    # §7.8.9 证据截停审计：逐轮坏轮判定记录 + 截停时的完整证据链。
+    # 每条坏轮记录：{turn, reasons: [...], evidence_count, tool_name}。
+    # 截停时：{triggered: true, threshold, window, reasons_all}。
+    # 全部写入 task_state.json 与 trace，保证「为什么停」可解释、可复盘。
+    stagnation_audit: list[dict] = field(default_factory=list)
+    # §7.8.9 Review subagent 审计：每次 review 判决的完整记录。
+    # 每条：{seq, trigger, verdict, feedback, reason, 理由清单, 反驳结果, duration_ms}。
+    # 与停滞审计并列，共同构成「主循环怎么走、为什么停、review 怎么判」的完整审计链。
+    review_audit: list[dict] = field(default_factory=list)
 
     @classmethod
     def create(
@@ -172,6 +181,12 @@ class TaskState:
             error_code=str(data.get("error_code", "")),
             error_retryable=bool(data.get("error_retryable", False)),
             error_attempts=max(0, int(data.get("error_attempts", 0) or 0)),
+            stagnation_audit=[
+                dict(item) for item in data.get("stagnation_audit", []) if isinstance(item, dict)
+            ],
+            review_audit=[
+                dict(item) for item in data.get("review_audit", []) if isinstance(item, dict)
+            ],
         )
 
     def set_phase(self, phase, *, next_step="", completed_item=""):
@@ -335,4 +350,6 @@ class TaskState:
             "error_code": self.error_code,
             "error_retryable": self.error_retryable,
             "error_attempts": self.error_attempts,
+            "stagnation_audit": [dict(item) for item in self.stagnation_audit],
+            "review_audit": [dict(item) for item in self.review_audit],
         }
