@@ -19,6 +19,7 @@ from threadforge_worker.updater import (
     _verify_manifest,
     _version_tuple,
     apply_update,
+    load_update_status,
 )
 
 
@@ -310,3 +311,62 @@ def test_update_lock_rejects_a_second_updater(tmp_path):
         _update_lock(tmp_path),
     ):
         pass
+
+
+def _write_update_status(store: ConfigStore, payload: dict) -> None:
+    path = store.root / "update-status.json"
+    store.root.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_load_update_status_normalizes_stale_download_when_current_reaches_target(tmp_path):
+    """当前版本不低于旧目标时，残留 downloading 状态归一为 current 并持久化清理。"""
+    store = ConfigStore(tmp_path)
+    _write_update_status(
+        store,
+        {
+            "status": "downloading",
+            "current_version": "0.3.37",
+            "target_version": "0.3.40",
+            "downloaded_bytes": 17432576,
+            "total_bytes": 42665517,
+            "updated_at": "2026-08-17T00:00:00Z",
+        },
+    )
+    status = load_update_status(store)
+    assert status["status"] == "current"
+    assert status["current_version"] == __import__("threadforge_worker", fromlist=["__version__"]).__version__
+    assert status["downloaded_bytes"] == 0
+    # 归一结果已持久化：再次读取直接是 current，不会再触发重写。
+    persisted = json.loads((store.root / "update-status.json").read_text(encoding="utf-8"))
+    assert persisted["status"] == "current"
+
+
+def test_load_update_status_keeps_residual_state_when_target_is_newer(tmp_path):
+    """旧目标版本仍高于当前版本时，不得把未完成更新误标为 current。"""
+    store = ConfigStore(tmp_path)
+    _write_update_status(
+        store,
+        {
+            "status": "downloading",
+            "current_version": "0.3.37",
+            "target_version": "99.0.0",
+            "downloaded_bytes": 1024,
+            "total_bytes": 2048,
+        },
+    )
+    status = load_update_status(store)
+    assert status["status"] == "downloading"
+    assert status["target_version"] == "99.0.0"
+    assert status["downloaded_bytes"] == 1024
+
+
+def test_load_update_status_ignores_malformed_target_version(tmp_path):
+    """损坏的 target_version 不归一、不崩溃，按原状态返回。"""
+    store = ConfigStore(tmp_path)
+    _write_update_status(
+        store,
+        {"status": "downloading", "current_version": "0.3.37", "target_version": "not-a-version"},
+    )
+    status = load_update_status(store)
+    assert status["status"] == "downloading"

@@ -116,3 +116,39 @@ def test_tool_result_enters_post_tool_reasoning_and_persists_agent_state(tmp_pat
     assert '"event": "agent_state_changed"' in trace
     assert '"event": "post_tool_reasoning"' in trace
     assert '"reason": "post_tool_reasoning"' in trace
+
+
+def test_agent_loop_consumes_native_dict_tool_calls(tmp_path):
+    # §2.1 原生 tool calling：客户端直接返回 dict {"name", "args"}，
+    # AgentLoop 不再依赖 <tool> 文本协议解析。
+    (tmp_path / "hello.txt").write_text("alpha\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [
+            {"name": "read_file", "args": {"path": "hello.txt", "start": 1, "end": 1}},
+            "<final>Done.</final>",
+        ],
+    )
+
+    answer = AgentLoop(agent).run("Inspect hello.txt")
+
+    assert answer == "Done."
+    assert agent.current_task_state.status == "completed"
+    assert agent.current_task_state.read_files == 1
+
+
+def test_agent_loop_rejects_native_dict_with_non_object_args(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [
+            {"name": "read_file", "args": "not-an-object"},
+            "<final>ok</final>",  # retry 后模型给 final
+        ],
+    )
+
+    answer = AgentLoop(agent).run("Inspect")
+
+    # args 非对象 → parse 返回 retry → 模型给 final → completed，且未执行工具
+    assert answer == "ok"
+    assert agent.current_task_state.status == "completed"
+    assert agent.current_task_state.read_files == 0

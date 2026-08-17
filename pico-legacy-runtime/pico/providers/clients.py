@@ -186,14 +186,19 @@ def _extract_openai_text(data):
 
 
 def _extract_openai_function_call(data):
-    """Convert one provider-native function call into the runtime protocol."""
+    """Convert one provider-native function call into the runtime protocol.
+
+    §7.7.1 阶段 3（2.1 原生 tool calling）：直接返回原生 dict
+    ``{"name": ..., "args": ...}``，AgentLoop/Pico.parse 直接消费，
+    不再序列化成 ``<tool>`` 文本往返。
+    """
 
     def normalize(item):
         if not isinstance(item, dict) or item.get("type") != "function_call":
-            return ""
+            return None
         name = str(item.get("name", "")).strip()
         if not name:
-            return ""
+            return None
         arguments = item.get("arguments", {})
         if isinstance(arguments, str):
             try:
@@ -201,9 +206,8 @@ def _extract_openai_function_call(data):
             except json.JSONDecodeError:
                 # Preserve the invalid shape for Pico.parse() to reject via
                 # the bounded protocol-repair path without exposing its text.
-                pass
-        payload = {"name": name, "args": arguments}
-        return "<tool>" + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "</tool>"
+                arguments = arguments
+        return {"name": name, "args": arguments}
 
     for item in data.get("output", []):
         action = normalize(item)
@@ -1297,7 +1301,8 @@ class AnthropicCompatibleModelClient:
         tool = result.get("tool")
         if tool and tool.get("name"):
             self.last_completion_metadata["native_tool_call"] = True
-            return _serialize_tool_call(tool["name"], tool["arguments"])
+            # §2.1 原生 tool calling：直接返回 dict，不序列化 <tool> 文本。
+            return {"name": tool["name"], "args": tool.get("arguments") or {}}
         text = (result.get("text") or "").strip()
         normalized_text = _normalize_openai_native_text(
             text,
@@ -1462,7 +1467,8 @@ class OpenAICompletionsModelClient:
         tool = result.get("tool")
         if tool and tool.get("name"):
             self.last_completion_metadata["native_tool_call"] = True
-            return _serialize_tool_call(tool["name"], tool["arguments"])
+            # §2.1 原生 tool calling：直接返回 dict，不序列化 <tool> 文本。
+            return {"name": tool["name"], "args": tool.get("arguments") or {}}
         text = (result.get("text") or "").strip()
         normalized_text = _normalize_openai_native_text(
             text,

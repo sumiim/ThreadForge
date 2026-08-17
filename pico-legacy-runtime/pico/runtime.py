@@ -869,6 +869,15 @@ class Pico:
         它位于 `model_client.complete()` 之后、`run_tool()` 之前，是模型输出
         进入平台控制流的第一道结构化关口。
         """
+        # §7.7.1 阶段 3（2.1 原生 tool calling）：客户端原生返回 dict
+        # {"name", "args"} 时直接消费，不再走 <tool> 文本协议解析。
+        if isinstance(raw, dict) and raw.get("name"):
+            args = raw.get("args")
+            if args is None:
+                raw["args"] = {}
+            elif not isinstance(args, dict):
+                return "retry", Pico.retry_notice("native tool args must be an object")
+            return "tool", raw
         raw = str(raw)
         # A few OpenAI-compatible gateways ignore the XML examples and return
         # the same tool decision as a JSON object (sometimes inside a

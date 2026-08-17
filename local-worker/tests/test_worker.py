@@ -335,6 +335,54 @@ def test_provider_factory_uses_provider_cfg_when_present(tmp_path):
     assert profile["reasoning_effort"] == "high"
 
 
+def test_provider_factory_refuses_silent_env_fallback_when_provider_configured(tmp_path):
+    """本机已配置 Provider 但任务未携带可用的 provider_id：禁止回退旧 .env。"""
+    store = ConfigStore(tmp_path / "state")
+    store.save_provider(
+        "prv_local",
+        base_url="https://api.deepseek.com",
+        api_key="sk-local",
+        model="deepseek-v4-flash",
+        protocol="deepseek",
+        reasoning_efforts=("none", "high"),
+    )
+    with patch.dict(
+        "os.environ",
+        {
+            "PICO_OPENAI_API_BASE": "https://api.deepseek.com",
+            "PICO_OPENAI_MODEL": "deepseek-v4-flash",
+        },
+        clear=True,
+    ):
+        # 任务没带 provider_id
+        factory = ModelProviderFactory(data_dir=tmp_path / "state", settings={})
+        with pytest.raises(RuntimeError, match="refusing silent .env fallback"):
+            factory.resolve()
+        # 任务带了本机不存在的 provider_id
+        factory = ModelProviderFactory(
+            data_dir=tmp_path / "state",
+            settings={"provider_id": "prv_unknown"},
+        )
+        with pytest.raises(RuntimeError, match="refusing silent .env fallback"):
+            factory.resolve()
+
+
+def test_provider_factory_still_allows_env_fallback_without_local_providers(tmp_path):
+    """本机从未配置 Provider 的纯 env 旧模式仍然允许回退。"""
+    with patch.dict(
+        "os.environ",
+        {
+            "PICO_OPENAI_API_BASE": "https://provider.example/v1",
+            "PICO_OPENAI_MODEL": "gpt-5.5",
+        },
+        clear=True,
+    ):
+        factory = ModelProviderFactory(data_dir=tmp_path / "state", settings={})
+        profile = factory.resolve()
+        assert profile["provider_id"] == ""
+        assert profile["model"] == "gpt-5.5"
+
+
 def test_provider_factory_create_clients_uses_injected_factory(tmp_path):
     from pico.providers.clients import FakeModelClient
 

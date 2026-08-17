@@ -569,6 +569,15 @@ class ModelProviderFactory:
                 "supported_reasoning_efforts": supported_efforts,
                 "reasoning_effort": requested_effort,
             }
+        # 本机已配置 Provider 却未能按任务的 provider_id 解析到（通常是对应
+        # device 的 Provider 未绑定/未激活）：禁止静默回退 .env，否则会用旧密钥
+        # 或错误的推理档位继续跑。只有本机从未配置任何 Provider 的纯 env 旧模式
+        # 才允许回退。
+        if ConfigStore(self.data_dir).list_providers():
+            raise RuntimeError(
+                "the local Worker has configured providers but none matches this task; "
+                "refusing silent .env fallback"
+            )
         configured_model = os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4").strip() or "gpt-5.4"
         requested_model = (
             str(self.settings.get("model_id", configured_model)).strip() or configured_model

@@ -110,3 +110,36 @@ def test_provider_service_crud_and_activate(tmp_path):
 
     service.delete_provider(provider_id, owner)
     assert service.list_providers(owner) == []
+
+
+def test_provider_service_create_binds_device_and_activate_scopes_to_device(tmp_path):
+    store = SqliteStore(tmp_path / "control.sqlite3")
+    repo = SqliteProviderRepository(store, json_root=tmp_path / "providers")
+    service = ProviderService(repo)
+    owner = str(uuid.uuid4())
+    device_a = "dev_" + "a" * 32
+    device_b = "dev_" + "b" * 32
+
+    base = {
+        "name": "DeepSeek",
+        "protocol": "openai_compatible",
+        "base_url": "https://api.example.com/v1",
+    }
+    created_a = service.create_provider(owner, device_a, base)
+    created_b = service.create_provider(owner, device_b, base)
+
+    # 创建时绑定 device_id：get_active_provider 只能按对应 device 查到。
+    assert created_a["device_id"] == device_a
+    assert created_b["device_id"] == device_b
+    assert service.get_active_provider(owner, device_a) is None
+    assert service.get_active_provider(owner, "") is None
+
+    # 激活设备 A 的 Provider 时，设备 B 的默认状态不受影响。
+    service.activate_provider(created_a["provider_id"], owner, device_a)
+    assert service.get_active_provider(owner, device_a)["provider_id"] == created_a["provider_id"]
+    assert service.get_active_provider(owner, device_b) is None
+
+    # 激活设备 B 的 Provider 后，A 的默认仍保留。
+    service.activate_provider(created_b["provider_id"], owner, device_b)
+    assert service.get_active_provider(owner, device_a)["provider_id"] == created_a["provider_id"]
+    assert service.get_active_provider(owner, device_b)["provider_id"] == created_b["provider_id"]

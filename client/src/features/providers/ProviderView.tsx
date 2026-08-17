@@ -106,7 +106,13 @@ export default function ProviderView({ deviceId }: { deviceId?: string }) {
         providerId = updated.provider_id
         message.success('已保存')
       } else {
-        const created = await createProvider(values)
+        // Provider 按设备绑定：创建时必须带当前 Worker 的 device_id，否则任务按
+        // device_id 查默认 Provider 会匹配不到，静默回退到旧 .env。
+        if (!deviceId) {
+          message.error('请先选择本地设备/工作区再创建供应商')
+          return
+        }
+        const created = await createProvider({ ...values, device_id: deviceId })
         providerId = created.provider_id
         message.success('已创建')
       }
@@ -136,7 +142,7 @@ export default function ProviderView({ deviceId }: { deviceId?: string }) {
 
   const onActivate = async (p: Provider) => {
     try {
-      await activateProvider(p.provider_id)
+      await activateProvider(p.provider_id, deviceId)
       message.success(`已切换默认供应商为 ${p.name}`)
       void load()
     } catch {

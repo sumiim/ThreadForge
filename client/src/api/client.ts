@@ -610,8 +610,11 @@ export function deleteProvider(providerId: string): Promise<void> {
   return request(`/api/v1/providers/${encodeURIComponent(providerId)}`, { method: 'DELETE' })
 }
 
-export function activateProvider(providerId: string): Promise<Provider> {
-  return request(`/api/v1/providers/${encodeURIComponent(providerId)}/activate`, { method: 'POST' })
+export function activateProvider(providerId: string, deviceId?: string): Promise<Provider> {
+  return request(`/api/v1/providers/${encodeURIComponent(providerId)}/activate`, {
+    method: 'POST',
+    body: JSON.stringify({ device_id: deviceId ?? '' }),
+  })
 }
 
 export function testProvider(providerId: string, deviceId: string): Promise<Provider> {

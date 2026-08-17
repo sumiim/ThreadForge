@@ -11,6 +11,7 @@ from ...infrastructure.worker_hub import WorkerHub
 from ..dependencies import get_actor, get_provider_service, get_worker_hub, require_csrf
 from ..models import (
     ConfigureProviderRequest,
+    ProviderActivateRequest,
     ProviderCreateRequest,
     ProviderTestRequest,
     ProviderUpdateRequest,
@@ -37,7 +38,7 @@ def create_provider(
     actor: Actor = Depends(get_actor),
     provider_service: ProviderService = Depends(get_provider_service),
 ) -> dict:
-    return provider_service.create_provider(actor.owner_id, "", body.model_dump())
+    return provider_service.create_provider(actor.owner_id, body.device_id, body.model_dump())
 
 
 @router.get("/api/v1/providers/{provider_id}")
@@ -84,10 +85,11 @@ def delete_provider(
 )
 def activate_provider(
     provider_id: str,
+    body: ProviderActivateRequest,
     actor: Actor = Depends(get_actor),
     provider_service: ProviderService = Depends(get_provider_service),
 ) -> dict:
-    return provider_service.activate_provider(provider_id, actor.owner_id)
+    return provider_service.activate_provider(provider_id, actor.owner_id, body.device_id)
 
 
 @router.post(

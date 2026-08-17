@@ -580,10 +580,8 @@ def test_openai_compatible_client_sends_native_tools_and_normalizes_function_cal
     with patch("urllib.request.urlopen", fake_urlopen):
         result = client.complete("hello", 42, tool_definitions=tools)
 
-    assert json.loads(result.removeprefix("<tool>").removesuffix("</tool>")) == {
-        "name": "list_files",
-        "args": {"path": "."},
-    }
+    # §2.1 原生 tool calling：客户端直接返回 dict，不再 <tool> 文本
+    assert result == {"name": "list_files", "args": {"path": "."}}
     assert captured["body"]["tools"] == tools
     assert captured["body"]["parallel_tool_calls"] is False
     assert client.last_completion_metadata["native_tool_call"] is True
@@ -906,10 +904,8 @@ def test_openai_compatible_client_extracts_function_call_from_event_stream():
     with patch("urllib.request.urlopen", return_value=FakeResponse()):
         result = client.complete("hello", 42, tool_definitions=[{"type": "function"}])
 
-    assert json.loads(result.removeprefix("<tool>").removesuffix("</tool>")) == {
-        "name": "read_file",
-        "args": {"path": "README.md", "start": 1, "end": 20},
-    }
+    # §2.1 原生 tool calling：客户端直接返回 dict
+    assert result == {"name": "read_file", "args": {"path": "README.md", "start": 1, "end": 20}}
     assert client.last_completion_metadata["native_tool_call"] is True
 
 
@@ -2399,10 +2395,8 @@ def test_anthropic_compatible_client_accumulates_tool_use_across_chunks():
             "hello", 42, tool_definitions=[{"type": "function", "name": "read_file"}]
         )
 
-    assert json.loads(result.removeprefix("<tool>").removesuffix("</tool>")) == {
-        "name": "read_file",
-        "args": {"path": "README.md"},
-    }
+    # §2.1 原生 tool calling：客户端直接返回 dict
+    assert result == {"name": "read_file", "args": {"path": "README.md"}}
     assert client.last_completion_metadata["native_tool_call"] is True
 
 
@@ -2489,10 +2483,8 @@ def test_anthropic_compatible_client_tool_precedence_over_text():
     with patch("urllib.request.urlopen", return_value=FakeResponse()):
         result = client.complete("hello", 42)
 
-    assert json.loads(result.removeprefix("<tool>").removesuffix("</tool>")) == {
-        "name": "list_dir",
-        "args": {},
-    }
+    # §2.1 原生 tool calling：客户端直接返回 dict
+    assert result == {"name": "list_dir", "args": {}}
     assert client.last_completion_metadata["native_tool_call"] is True
 
 
@@ -2776,10 +2768,8 @@ def test_chat_completions_client_accumulates_tool_call_arguments_by_index():
             "hello", 42, tool_definitions=[{"type": "function", "name": "read_file"}]
         )
 
-    assert json.loads(result.removeprefix("<tool>").removesuffix("</tool>")) == {
-        "name": "read_file",
-        "args": {"path": "README.md"},
-    }
+    # §2.1 原生 tool calling：客户端直接返回 dict
+    assert result == {"name": "read_file", "args": {"path": "README.md"}}
     assert client.last_completion_metadata["native_tool_call"] is True
 
 
@@ -2907,10 +2897,8 @@ def test_chat_completions_client_json_fallback_and_retry():
             "hello", 42, tool_definitions=[{"type": "function", "name": "read_file"}]
         )
 
-    assert json.loads(result.removeprefix("<tool>").removesuffix("</tool>")) == {
-        "name": "read_file",
-        "args": {"path": "README.md"},
-    }
+    # §2.1 原生 tool calling：客户端直接返回 dict
+    assert result == {"name": "read_file", "args": {"path": "README.md"}}
     assert client.last_completion_metadata["input_tokens"] == 5
 
     # 非 JSON body -> model_response_invalid（retryable，重试耗尽后抛）。
