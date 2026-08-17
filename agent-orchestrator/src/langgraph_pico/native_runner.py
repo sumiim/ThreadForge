@@ -14,6 +14,7 @@ local-worker 切换与 benchmark 等价性验证。
 
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path, PureWindowsPath
 
@@ -338,10 +339,14 @@ def run_native(
         if task_state is not None:
             run_metadata_collector["answer_attempts"] = int(getattr(task_state, "attempts", 0))
     except RunCancelled:
-        if task_state is not None:
-            task_state.stop_user_cancelled()
+        # AgentLoop 可能已创建正式 TaskState；异常时取当前 state。
+        if agent.current_task_state is not None:
+            agent.current_task_state.stop_user_cancelled()
         final_answer = ""
     except Exception as exc:
+        # 异常可能发生在 AgentLoop 内（它创建了自己的 TaskState）或 intent 阶段
+        # （临时 TaskState）。统一用 agent.current_task_state 处理。
+        task_state = agent.current_task_state
         if task_state is not None:
             _answer_candidate(agent, "discard")
             error_code = str(getattr(exc, "code", "") or "runtime_error")
@@ -360,6 +365,7 @@ def run_native(
             task_state.stop(stop_reason, status=STATUS_FAILED, final_answer=final_answer)
             final_answer = task_state.final_answer
     finally:
+        task_state = agent.current_task_state or task_state
         if task_state is not None and task_state.status == "running":
             task_state.stop(
                 STOP_REASON_RUNTIME_ERROR,

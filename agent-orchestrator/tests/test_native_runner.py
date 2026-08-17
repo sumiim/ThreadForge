@@ -177,3 +177,46 @@ def test_native_invalid_mode_and_focus_combinations(tmp_path):
             router_model_client=object(),
         )
     shutil.rmtree(fixture_root, ignore_errors=True)
+
+
+def test_native_model_error_in_loop_classifies_correctly(tmp_path):
+    # AgentLoop 内模型调用抛带 stop_reason=model_error 的异常时，
+    # run_native 应正确分类（此前误用临时 TaskState 导致 runtime_error）。
+    import urllib.error
+
+    import pico
+    from pico.evaluation.backends import ModelBoundaryError
+    from pathlib import Path as _Path
+
+    class FailingClient:
+        supports_prompt_cache = False
+
+        def __init__(self):
+            self.last_completion_metadata = {}
+
+        def complete(self, *args, **kwargs):
+            cause = urllib.error.HTTPError(
+                "https://provider.example/v1", 401, "secret body", {}, None
+            )
+            raise RuntimeError("provider body must not be public") from cause
+
+    pico_root = _Path(pico.__file__).resolve().parent.parent
+    source = pico_root / "tests" / "fixtures" / "bench_repo_readme"
+    fixture_root = tmp_path / "model-error-workspace"
+    shutil.copytree(source, fixture_root)
+    agent = Pico(
+        model_client=FailingClient(),
+        workspace=WorkspaceContext.build(fixture_root, repo_root_override=fixture_root),
+        session_store=SessionStore(fixture_root / ".pico" / "sessions"),
+        run_store=RunStore(fixture_root / ".pico" / "runs"),
+        approval_policy="auto",
+        max_steps=6,
+        allowed_tools=["read_file", "patch_file"],
+        event_sink=NullSink(),
+    )
+    result = run_native(agent, "hello", task_mode=INTENT_CODE_CHANGE)
+    state = result.task_state
+    assert state.status == "failed"
+    assert state.stop_reason == "model_error"
+    assert state.error_code == "model_call_failed"
+    shutil.rmtree(fixture_root, ignore_errors=True)
