@@ -23,6 +23,7 @@ const effortLabels: Record<ReasoningEffort, string> = {
   medium: '中',
   high: '高',
   xhigh: '极高',
+  max: '最高',
 }
 
 const permissionModeLabels: Record<PermissionMode, string> = {
