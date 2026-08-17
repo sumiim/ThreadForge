@@ -69,3 +69,7 @@ release/
 # Real-model benchmark artifacts
 /pico-legacy-runtime/benchmarks/results/
 
+
+# Parallel-workflow scratch
+/.ptmp/
+
