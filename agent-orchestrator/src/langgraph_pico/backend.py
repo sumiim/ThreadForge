@@ -331,7 +331,13 @@ def run_agent(
     planning_deadline_seconds=75,
     inbox=None,
 ):
-    """Run the routed LangGraph workflow with an already configured Pico instance."""
+    """Run the routed LangGraph workflow with an already configured Pico instance.
+
+    DEPRECATED（§7.7.1 大取消）：生产路径已全部切换 run_native（local-worker /
+    CLI / api-server backend_process）。本函数仅为 test_langgraph_backend.py 的
+    历史行为回归保留；新代码必须使用 run_native（langgraph_pico.native_runner）。
+    LangGraph 编排将在 2.1 原生 tool calling 完整落地后整体移除。
+    """
     task_input = str(task_input).strip()
     if not task_input:
         raise ValueError("task_input must not be empty")
