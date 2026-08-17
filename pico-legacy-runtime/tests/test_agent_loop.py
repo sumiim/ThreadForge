@@ -155,28 +155,70 @@ def test_agent_loop_rejects_native_dict_with_non_object_args(tmp_path):
 
 
 def test_agent_loop_stagnation_converges_without_evidence_growth(tmp_path):
-    """§7.8.7-③：连续 K 轮零增量（无新证据/无完成项/工具集不变）→ 强制收敛。
+    """§7.8.9：连续坏轮（工具重复/失败，talk 豁免）→ 证据截停，审计链完整。
 
-    模型反复输出相同 talk（不调工具、不产证据），签名连续不变达到阈值后
-    AgentLoop 强制进入 finalization_only：后续工具调用被拒（tool_steps 停留
-    在 0），只能以已收集证据 best-effort 收尾或直接 final。
+    模型反复调用相同工具（同名同参 read_file）：第 1 次执行成功，之后被 P4
+    重复拦截（tool_repeated_or_failed），连续 3 个坏轮 → 截停。验证：
+    ① stagnation_audit 逐轮记录（含坏轮原因）；② stagnation_detected trace
+    带完整审计链；③ 后续工具调用被 finalization 拒掉。
     """
+    (tmp_path / "hello.txt").write_text("alpha\n", encoding="utf-8")
     agent = build_agent(
         tmp_path,
         [
-            "<talk>thinking about the workspace</talk>",
-            "<talk>still thinking</talk>",
-            '<tool>{"name":"list_files","args":{"path":"."}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"hello.txt","start":1,"end":1}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"hello.txt","start":1,"end":1}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"hello.txt","start":1,"end":1}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"hello.txt","start":1,"end":1}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"hello.txt","start":1,"end":1}}</tool>',
             "<final>converged</final>",
         ],
+        max_steps=6,
     )
 
-    answer = AgentLoop(agent).run("Inspect the workspace")
+    answer = AgentLoop(agent).run("Inspect hello.txt")
 
     state = agent.current_task_state
     trace = agent.run_store.trace_path(state).read_text(encoding="utf-8")
     assert '"event": "stagnation_detected"' in trace
-    # 停滞触发后不允许新工具：模型想 list_files 被 finalization 拒掉，0 工具执行
-    assert state.tool_steps == 0
-    # 无证据 → best-effort 托底（blocked 语义），而非正常 completed
+    # 停滞触发后不允许新工具：重复读被 finalization 拒掉，执行数远小于供给数
+    assert state.tool_steps < 5
+    # 审计链：stagnation_audit 逐轮记录坏轮，且坏轮原因可解释
+    assert state.stagnation_audit, "stagnation_audit must record per-turn bad decisions"
+    bad_reasons = {reason for entry in state.stagnation_audit for reason in entry.get("reasons", [])}
+    assert "tool_repeated_or_failed" in bad_reasons
+    # trace 里截停事件带审计明细
+    assert '"audit"' in trace
+
+
+def test_agent_loop_talk_rounds_are_not_bad(tmp_path):
+    """§7.8.9：talk 轮是思考信号（trace + 前端可见），不判坏。
+
+    模型 talk → 工具 → talk → 工具 的交替轮次，坏轮判定不把 talk 计为坏，
+    停滞窗口不会因思考轮误触发。连续 talk 由 MAX_CONSECUTIVE_TALKS 兜底。
+    """
+    (tmp_path / "hello.txt").write_text("alpha\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [
+            "<talk>let me look at this</talk>",
+            '<tool>{"name":"read_file","args":{"path":"hello.txt","start":1,"end":1}}</tool>',
+            "<talk>i see the content</talk>",
+            '<tool>{"name":"list_files","args":{"path":"."}}</tool>',
+            "<final>Done.</final>",
+        ],
+    )
+
+    answer = AgentLoop(agent).run("Inspect hello.txt")
+
+    assert answer == "Done."
+    state = agent.current_task_state
+    assert state.status == "completed"
+    # talk 轮不产生坏轮记录（reasons 为空且 bad=False）
+    for entry in state.stagnation_audit:
+        if not entry.get("bad"):
+            continue
+        assert "silent_turn_no_output" not in entry.get("reasons", []), (
+            "talk rounds must not be counted as silent bad rounds"
+        )
     assert state.status in {"stopped", "completed"}
