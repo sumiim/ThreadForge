@@ -489,8 +489,9 @@ def test_result_fingerprint_distinguishes_changed_file_reload(tmp_path):
 def test_partition_batch_tools(tmp_path):
     """§7.8.9 P5：批内分区纯函数——并发组 vs 串行组判定。
 
-    只读且批内早于它没有写冲突 → 并发；写工具 / shell 与「读到已写路径」的
-    只读工具 → 串行；list_files / search 在批内已有写时保守串行。
+    只读且批内早于它没有写冲突 → 并发；**不同文件的写可并行**（同路径被
+    触碰过才串行）；run_shell 与「读到批内已写路径」的只读工具 → 串行；
+    list_files / search 在批内已有写时保守串行。
     """
     from pico.agent_loop import _partition_batch_tools
 
@@ -505,7 +506,8 @@ def test_partition_batch_tools(tmp_path):
     assert [i for i, _ in concurrent] == [0, 1, 2]
     assert serial == []
 
-    # read(A) → write(A) → read(A)：首个读并发；写串行；写后同路径读串行
+    # read(A) → write(A) → read(A)：首个读并发；写串行（A 已被读过）；
+    # 写后同路径读串行
     concurrent, serial = _partition_batch_tools(
         [
             {"name": "read_file", "args": {"path": "a.txt", "start": 1, "end": 1}},
@@ -516,6 +518,36 @@ def test_partition_batch_tools(tmp_path):
     assert [i for i, _ in concurrent] == [0]
     assert [i for i, _ in serial] == [1, 2]
 
+    # write(A) → read(A)：写 A 并发（A 未被触碰），写后同路径读串行
+    concurrent, serial = _partition_batch_tools(
+        [
+            {"name": "write_file", "args": {"path": "a.txt", "content": "v2"}},
+            {"name": "read_file", "args": {"path": "a.txt", "start": 1, "end": 1}},
+        ]
+    )
+    assert [i for i, _ in concurrent] == [0]
+    assert [i for i, _ in serial] == [1]
+
+    # 不同文件的写 → 全部并发（写 A、写 B 互不依赖）
+    concurrent, serial = _partition_batch_tools(
+        [
+            {"name": "write_file", "args": {"path": "a.txt", "content": "va"}},
+            {"name": "write_file", "args": {"path": "b.txt", "content": "vb"}},
+        ]
+    )
+    assert [i for i, _ in concurrent] == [0, 1]
+    assert serial == []
+
+    # 同文件两次写 → 首个并发、第二个串行（同路径写必须按声明顺序）
+    concurrent, serial = _partition_batch_tools(
+        [
+            {"name": "patch_file", "args": {"path": "a.txt", "old_text": "x", "new_text": "y"}},
+            {"name": "patch_file", "args": {"path": "a.txt", "old_text": "y", "new_text": "z"}},
+        ]
+    )
+    assert [i for i, _ in concurrent] == [0]
+    assert [i for i, _ in serial] == [1]
+
     # write(A) → read(B)：B 未被批内写污染 → read(B) 仍并发（读 A 前状态无妨）
     concurrent, serial = _partition_batch_tools(
         [
@@ -523,8 +555,8 @@ def test_partition_batch_tools(tmp_path):
             {"name": "read_file", "args": {"path": "b.txt", "start": 1, "end": 1}},
         ]
     )
-    assert [i for i, _ in concurrent] == [1]
-    assert [i for i, _ in serial] == [0]
+    assert [i for i, _ in concurrent] == [0, 1]
+    assert serial == []
 
     # read(A) → write(B) → list_files：批内已有写 → list_files 保守串行
     concurrent, serial = _partition_batch_tools(
@@ -534,8 +566,18 @@ def test_partition_batch_tools(tmp_path):
             {"name": "list_files", "args": {"path": "."}},
         ]
     )
+    assert [i for i, _ in concurrent] == [0, 1]
+    assert [i for i, _ in serial] == [2]
+
+    # list_files 之后写 A：list 并发（记 "*"），写 A 只能串行（list 看到写前状态）
+    concurrent, serial = _partition_batch_tools(
+        [
+            {"name": "list_files", "args": {"path": "."}},
+            {"name": "write_file", "args": {"path": "a.txt", "content": "v2"}},
+        ]
+    )
     assert [i for i, _ in concurrent] == [0]
-    assert [i for i, _ in serial] == [1, 2]
+    assert [i for i, _ in serial] == [1]
 
     # run_shell 影响面未知 → 其后所有只读只能串行
     concurrent, serial = _partition_batch_tools(
@@ -547,16 +589,6 @@ def test_partition_batch_tools(tmp_path):
     )
     assert concurrent == []
     assert [i for i, _ in serial] == [0, 1, 2]
-
-    # patch_file 同文件多条 = P5 写切片：天然串行（无 schema 变更）
-    concurrent, serial = _partition_batch_tools(
-        [
-            {"name": "patch_file", "args": {"path": "a.txt", "old_text": "x", "new_text": "y"}},
-            {"name": "patch_file", "args": {"path": "a.txt", "old_text": "y", "new_text": "z"}},
-        ]
-    )
-    assert concurrent == []
-    assert [i for i, _ in serial] == [0, 1]
 
 
 def test_agent_loop_concurrent_batch_commits_in_declaration_order(tmp_path):
@@ -597,7 +629,7 @@ def test_agent_loop_concurrent_batch_commits_in_declaration_order(tmp_path):
 
 
 def test_agent_loop_batch_same_path_write_then_read_serial(tmp_path):
-    """§7.8.9 P5：同路径写→读分区强制串行——读必须看到写后状态。
+    """§7.8.9 P5：同路径写→读强制串行——读必须看到写后状态。
 
     批内 write_file(a.txt) 后紧跟 read_file(a.txt)：read 落串行组（写后
     读取），若并发先读会读到旧内容 v1。验证读结果含写后内容 v2。
@@ -630,5 +662,46 @@ def test_agent_loop_batch_same_path_write_then_read_serial(tmp_path):
     assert tool_records, "read_file must execute after the write"
     assert "v2" in tool_records[-1]["content"]
     trace = agent.run_store.trace_path(state).read_text(encoding="utf-8")
-    assert '"concurrent": 0' in trace
-    assert '"serial": 2' in trace
+    assert '"concurrent": 1' in trace
+    assert '"serial": 1' in trace
+
+
+def test_agent_loop_batch_parallel_writes_different_files(tmp_path):
+    """§7.8.9 P5：不同文件的写可并行——互不依赖，affected_paths 不被污染。
+
+    batch [write a.txt, write b.txt] 都进并发组并行执行；各 evidence 的
+    affected_paths 只含自己的文件（路径级 snapshot diff 保证不把并行兄弟
+    写的文件算进来）。
+    """
+    agent = build_agent(
+        tmp_path,
+        [
+            {
+                "tools": [
+                    {"name": "write_file", "args": {"path": "a.txt", "content": "va\n"}},
+                    {"name": "write_file", "args": {"path": "b.txt", "content": "vb\n"}},
+                ]
+            },
+            "<final>Wrote both.</final>",
+        ],
+    )
+
+    answer = AgentLoop(agent).run("Write a.txt and b.txt")
+
+    assert answer == "Wrote both."
+    state = agent.current_task_state
+    assert state.status == "completed"
+    assert state.tool_steps == 2
+    # 两个文件都写好了
+    assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "va\n"
+    assert (tmp_path / "b.txt").read_text(encoding="utf-8") == "vb\n"
+    # 各写工具的 affected_paths 只含自己的文件（无并行污染）
+    write_evidence = [e for e in state.evidence if e.get("tool_name") == "write_file"]
+    assert len(write_evidence) == 2
+    for ev in write_evidence:
+        assert len(ev.get("affected_paths", [])) == 1
+    paths_by_call = {tuple(sorted(ev["affected_paths"])) for ev in write_evidence}
+    assert paths_by_call == {("a.txt",), ("b.txt",)}
+    trace = agent.run_store.trace_path(state).read_text(encoding="utf-8")
+    assert '"concurrent": 2' in trace
+    assert '"serial": 0' in trace

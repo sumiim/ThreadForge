@@ -186,7 +186,22 @@ class ToolExecutor:
             agent.cancellation_token.raise_if_cancelled()
             agent.execution_hooks.before_tool(agent.current_task_state, tool_call)
 
-            before_snapshot = agent.capture_workspace_snapshot() if tool["risky"] else {}
+            # §7.8.9 P5 写并行：有 path 的写工具只 diff 自己的文件（全量
+            # snapshot 在并行写时会互相污染 affected_paths）；run_shell 无
+            # 固定 path、影响面未知 → 仍全量 snapshot。
+            snapshot_path = (
+                str(args.get("path", "")).strip().replace("\\", "/")
+                if tool["risky"] and isinstance(args.get("path"), str)
+                else ""
+            )
+            if tool["risky"]:
+                before_snapshot = (
+                    agent.capture_path_snapshot(snapshot_path)
+                    if snapshot_path
+                    else agent.capture_workspace_snapshot()
+                )
+            else:
+                before_snapshot = {}
             after_snapshot = before_snapshot
 
         # ── 执行段（唯一不加锁：并发批的多个只读工具在这里真正并行）──
@@ -198,7 +213,14 @@ class ToolExecutor:
         except Exception as exc:
             # ── 后置段（异常路径；共享状态，回锁）──
             with self._execution_lock:
-                after_snapshot = agent.capture_workspace_snapshot() if tool["risky"] else before_snapshot
+                if tool["risky"]:
+                    after_snapshot = (
+                        agent.capture_path_snapshot(snapshot_path)
+                        if snapshot_path
+                        else agent.capture_workspace_snapshot()
+                    )
+                else:
+                    after_snapshot = before_snapshot
                 affected_paths, diff_summary = agent.diff_workspace_snapshots(before_snapshot, after_snapshot)
                 workspace_changed = bool(affected_paths)
                 security_event_type = "path_escape" if "path escapes workspace" in str(exc) else ""
@@ -223,7 +245,14 @@ class ToolExecutor:
 
         # ── 后置段（成功路径；共享状态，回锁）──
         with self._execution_lock:
-            after_snapshot = agent.capture_workspace_snapshot() if tool["risky"] else before_snapshot
+            if tool["risky"]:
+                after_snapshot = (
+                    agent.capture_path_snapshot(snapshot_path)
+                    if snapshot_path
+                    else agent.capture_workspace_snapshot()
+                )
+            else:
+                after_snapshot = before_snapshot
             affected_paths, diff_summary = agent.diff_workspace_snapshots(before_snapshot, after_snapshot)
             workspace_changed = bool(affected_paths)
             tool_status = "ok"

@@ -341,7 +341,7 @@ def _extract_tool_path(name, args):
 
 
 def _partition_batch_tools(tools):
-    """§7.8.9 P5 批内分区：并发组（只读且无同路径写冲突） vs 串行组。
+    """§7.8.9 P5 批内分区：并发组（无数据依赖） vs 串行组。
 
     判定规则（按工具单位截断/拦阻，与 P1/P2/P4 一致）：
     - 只读工具（list_files / read_file / search）：
@@ -351,9 +351,13 @@ def _partition_batch_tools(tools):
         - list_files / search 枚举全工作区，无法预知写的影响面 → 保守串行；
         - read_file 只读指定路径，仅当该路径已被批内更早的写改过才串行
           （否则并发读到旧状态无妨，写不影响它）。
-    - 写工具（write_file / patch_file）与 run_shell → 串行组，并污染路径：
-      - 有 path 的写只污染该路径；
-      - run_shell 影响面未知，视为污染所有路径（其后所有只读只能串行）。
+    - 写工具（write_file / patch_file）：
+      - **不同文件的写可以并行**（2026-08-18 用户指出，原实现过度保守）：
+        有 path、批内早于它没人读过/写过该 path、且批内没有 run_shell
+        → 并发组。路径级 snapshot diff（`capture_path_snapshot`）保证
+        affected_paths 不被并行兄弟污染。
+      - 同路径已被触碰（读过或写过）、或批内已有 run_shell → 串行组。
+    - run_shell → 永远串行组，影响面未知，污染所有路径（其后只读只能串行）。
     - P5 写切片（plan B）：patch_file 单条 old_text→new_text 语义不变，
       同文件多条 patch_file 天然构成写切片，串行组按声明顺序执行即可。
 
@@ -361,30 +365,53 @@ def _partition_batch_tools(tools):
     index 用于按声明顺序合并执行结果与提交。
     """
     dirty_paths = set()   # 批内已被写过的具体路径
-    any_dirty = False     # 批内是否已出现写/shell
+    touched = set()       # 批内已被触碰（读过/写过）的路径 —— 写工具进并发组的判定
+    saw_write = False     # 批内是否已出现写/shell
+    saw_shell = False     # 批内是否已出现 run_shell（影响面未知）
     concurrent = []
     serial = []
     for index, item in enumerate(tools):
         name = str(item.get("name", ""))
         args = item.get("args", {}) if isinstance(item.get("args"), dict) else {}
         if name in _READ_ONLY_TOOL_NAMES:
-            if not any_dirty:
-                concurrent.append((index, item))
-                continue
             if name in {"list_files", "search"}:
-                # 枚举全工作区：批内已有写 → 保守串行。
-                serial.append((index, item))
+                # 枚举全工作区：批内已有写 → 保守串行；进入并发组则记录
+                # "*"（其后任何写只能串行，保证 list 看到写前状态）。
+                if not saw_write and not saw_shell:
+                    concurrent.append((index, item))
+                    touched.add("*")
+                else:
+                    serial.append((index, item))
                 continue
+            # read_file
             path = _extract_tool_path(name, args)
-            if path in dirty_paths or "*" in dirty_paths:
-                serial.append((index, item))
-            else:
+            if not saw_shell and path not in dirty_paths:
                 concurrent.append((index, item))
-        else:
-            path = _extract_tool_path(name, args)
-            any_dirty = True
-            dirty_paths.add(path if path else "*")
+                touched.add(path)
+            else:
+                serial.append((index, item))
+        elif name == "run_shell":
+            saw_write = True
+            saw_shell = True
+            dirty_paths.add("*")
+            touched.add("*")
             serial.append((index, item))
+        else:
+            # write_file / patch_file
+            path = _extract_tool_path(name, args)
+            if not saw_shell and path and path not in touched and "*" not in touched:
+                # 不同文件的写可并行：该路径批内未被触碰（没人读过/写过它）、
+                # 前面无 shell → 并发组。
+                concurrent.append((index, item))
+            else:
+                serial.append((index, item))
+            saw_write = True
+            if path:
+                dirty_paths.add(path)
+                touched.add(path)
+            else:
+                dirty_paths.add("*")
+                touched.add("*")
     return concurrent, serial
 
 
