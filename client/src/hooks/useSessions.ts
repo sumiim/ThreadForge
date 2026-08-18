@@ -554,14 +554,15 @@ export function useSessions(): UseSessions {
               status,
               result,
             }),
-            blocks: updateToolCallInBlocks(message.blocks, toolCallId, (tool) =>
-              applyToolEvent([tool], {
+            blocks: updateToolCallInBlocks(message.blocks, toolCallId, (tool) => {
+              const updated = applyToolEvent([tool], {
                 id: toolCallId,
                 toolName,
                 status,
                 result,
-              })[0] ?? tool,
-            ),
+              })
+              return updated?.[0] ?? tool
+            }),
           } : message,
         ))
       }

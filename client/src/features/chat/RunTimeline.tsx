@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { DownOutlined, RightOutlined } from '@ant-design/icons'
 import type { SessionRun } from '../../api/types'
 import {
+  barClass,
   eventTimeOf,
   groupTimelineItems,
   inputTimelineEvent,
