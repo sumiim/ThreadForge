@@ -30,13 +30,13 @@ _REVIEW_SYSTEM_TEMPLATE = (
     '"feedback": "...", "reason": "..."}}\n'
     "- finalize: the task is complete; if obstacles are listed, you MUST rebut "
     "each one with concrete evidence from the execution context (e.g. a passed test).\n"
-    "- continue: work is in progress and on track; no direction change needed.\n"
+    "- continue: work in progress and on track; no direction change needed.\n"
     "- redirect: the direction/plan is wrong; give actionable feedback the agent "
     "can apply next turn.\n"
-    "Base your verdict on the acceptance criteria and the run trail below. "
-    "If the request implies inspecting the workspace (e.g. asks about code, files, "
-    "or a bug) but the run trail shows no tool calls at all, the answer is not "
-    "grounded: redirect with feedback asking to inspect the relevant files first.\n"
+    # §7.8.9 修正（2026-08-18）：移除 grounded 判定——「请求是否涉及工作区」
+    # 无法程序精确判定（正则盖不全，误杀纯对话/continuation），且引入
+    # review 死循环（你是谁/继续 每轮 redirect）。瞎验收交给模型自判 +
+    # 用户可见性（交互式），harness 只做确定性障碍（写证据/验证/收敛兜底）。
     "Never emit prose outside the JSON object.\n"
 )
 
