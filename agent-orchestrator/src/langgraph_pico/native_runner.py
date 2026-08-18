@@ -18,7 +18,7 @@ import sys
 import time
 from pathlib import Path, PureWindowsPath
 
-from pico.agent_loop import AgentLoop, _best_effort_step_limit
+from pico.agent_loop import AgentLoop
 from pico.evaluation.backends import (
     BackendRunResult,
     HarnessModelClientAdapter,
@@ -33,12 +33,10 @@ from pico.runtime import Pico
 from pico.task_state import (
     STATUS_FAILED,
     STATUS_STOPPED,
-    STOP_REASON_BUDGET_EXHAUSTED,
     STOP_REASON_MODEL_ERROR,
     STOP_REASON_NO_CHANGES_TO_REVIEW,
     STOP_REASON_REVIEW_RETRY_LIMIT_REACHED,
     STOP_REASON_RUNTIME_ERROR,
-    STOP_REASON_STEP_LIMIT_REACHED,
     STOP_REASON_USER_CANCELLED,
     TaskState,
 )
@@ -76,9 +74,6 @@ RUN_METADATA_KEYS = (
     "intent_attempts",
     "answer_attempts",
 )
-
-# 预算耗尽且「有证据」时走收敛（completed + budget_converged），零证据仍 blocked。
-_BUDGET_CONVERGENCE_REASONS = frozenset({"budget_exhausted", "step_limit_reached"})
 
 
 def _answer_candidate(agent, action):
@@ -140,7 +135,6 @@ def run_native(
     task_input,
     *,
     acceptance=None,
-    step_budget=None,
     requires_research=None,
     focus_paths=None,
     task_mode=INTENT_CODE_CHANGE,
@@ -158,6 +152,10 @@ def run_native(
     §7.7.1 阶段 2：用 AgentLoop（原生 ReAct 循环）跑完整任务，收尾接
     review_gate 做确定性完成门禁（写触发 + checklist 派生预算）。
     产出与 run_agent 同形的 BackendRunResult。
+
+    §7.8.9 修正（2026-08-18）：移除 ``step_budget`` 参数——行动预算由
+    墙钟/token 硬顶 + AgentLoop 步数护栏（agent.max_steps）承接，外部不再
+    注入步数预算。与 run_agent 同形契约中残留的预算传递链一并清理。
     """
     task_input = str(task_input).strip()
     if not task_input:
@@ -174,12 +172,6 @@ def run_native(
         raise ValueError("conversation tasks cannot require research")
     if normalized_mode != TASK_MODE_AUTO and router_model_client is not None:
         raise ValueError("router_model_client is only valid for task_mode=auto")
-    if isinstance(step_budget, bool):
-        raise ValueError("step_budget must be a positive integer")
-    step_budget_explicit = step_budget is not None
-    step_budget = int(agent.max_steps if step_budget is None else step_budget)
-    if step_budget < 1:
-        raise ValueError("step_budget must be positive")
     review_paths = _normalized_focus_paths(agent, raw_focus_paths)
     initial_state = _initial_state_snapshot(agent)
 
@@ -233,15 +225,15 @@ def run_native(
                 "intent_attempts": 0,
             }
         )
-        # 显式 step_budget 优先；否则用默认（不按 intent 分级——预算已由墙钟/token
-        # 硬顶接管，step_budget 仅作 AgentLoop 内部步数宽松上限）。
-        agent.max_steps = step_budget
+        # §7.8.9 阶段 4：步数预算由 AgentLoop 步数护栏（agent.max_steps）承接，
+        # 外部不再注入；墙钟/token 硬顶兜底（AgentLoop 内）。
+        # 不再有 step_budget 覆盖 agent.max_steps。
 
         # 原生单循环跑（AgentLoop 自己创建 TaskState 并挂到 agent.current_task_state）。
         agent.emit_trace(
             agent.current_task_state,
             "native_loop_started",
-            {"intent": intent, "step_budget": step_budget},
+            {"intent": intent},
         )
         final_answer = _run_native_loop(
             agent,
@@ -254,13 +246,15 @@ def run_native(
             task_state.intent = intent
 
         # 收尾 review gate（写触发，确定性兜底）。
+        # §7.8.9 修正：不再有外部 step_budget——gate 用 AgentLoop 步数护栏
+        # （agent.max_steps）作为预算上限，墙钟/token 硬顶已在循环内兜底。
         if task_state is not None and task_state.status == "completed" and task_state.final_answer:
             decision = run_review_gate(
                 task_state,
                 intent=intent,
-                step_budget=step_budget,
+                step_budget=int(agent.max_steps),
                 coordinator_steps_used=int(getattr(task_state, "tool_steps", 0) or 0),
-                step_budget_explicit=step_budget_explicit,
+                step_budget_explicit=False,
                 hard_cap=0,
             )
             if decision.status == "needs_fix":

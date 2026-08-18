@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { DownOutlined, RightOutlined } from '@ant-design/icons'
 import Markdown from '../../components/Markdown'
 import type { Message } from '../../api/types'
 import ToolList from './ToolList'
@@ -55,30 +56,81 @@ function StreamingStatus() {
   )
 }
 
-/** 思考过程折叠区：灰色 + 等宽滚动条，流式中默认展开、结束后折叠。
- *  无 effect：open = 用户手动状态 ?? 流式中自动展开。 */
+/** 思考折叠区：灰色 + 等宽滚动条。无 effect：open = 手动 ?? 流式中展开。 */
 function ThinkingFold({ text, streaming }: { text: string; streaming: boolean }) {
   const [manualOpen, setManualOpen] = useState<boolean | null>(null)
   const open = manualOpen ?? (streaming && text.length > 0)
 
   return (
-    <div className="mb-2 max-w-full">
+    <div>
       <button
         type="button"
         onClick={() => setManualOpen((current) => !(current ?? (streaming && text.length > 0)))}
-        className="flex w-full cursor-pointer select-none items-center gap-2 rounded-lg border border-stone-200/80 bg-stone-100/80 px-3 py-1.5 text-left text-[11px] text-stone-500 transition-colors hover:bg-stone-200/70 dark:border-stone-700/60 dark:bg-stone-800/70 dark:text-stone-400 dark:hover:bg-stone-700/60"
+        className="flex w-full cursor-pointer select-none items-center gap-2 rounded-md px-2 py-1 text-left text-[11px] text-stone-500 transition-colors hover:bg-stone-100/80 dark:text-stone-400 dark:hover:bg-stone-700/40"
         aria-expanded={open}
       >
-        <span className="text-stone-400" aria-hidden>🧠</span>
-        <span className="font-medium">思考过程</span>
-        <span className="ml-auto font-mono text-stone-400">{text.length} 字</span>
+        <span aria-hidden>🧠</span>
+        <span className="font-medium">Thinking</span>
+        <span className="ml-auto font-mono text-stone-400">{text.length} chars</span>
         <span className="text-stone-400" aria-hidden>{open ? '▾' : '▸'}</span>
       </button>
       {open && (
-        <div className="mt-1 max-h-72 overflow-y-auto rounded-lg border border-stone-200/80 bg-stone-100/50 p-3 dark:border-stone-700/60 dark:bg-stone-800/40">
+        <div className="mt-1 max-h-72 overflow-y-auto rounded-md border border-stone-200/70 bg-stone-100/40 p-2.5 dark:border-stone-700/50 dark:bg-stone-800/40">
           <div className="whitespace-pre-wrap text-xs leading-relaxed text-stone-500 dark:text-stone-400">
             {text}
           </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * 每轮行为折叠面板（仿左侧 RunTimeline：折叠窄条 ↔ 展开面板，默认折叠）。
+ * 内容按三级组织：思考 → 工具（工具内并行最小行动）→ 中途对话。
+ */
+function BehaviorFold({ message, onApprove, onReject }: {
+  message: Message
+  onApprove: (messageId: string, toolCallId: string) => void
+  onReject: (messageId: string, toolCallId: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const streaming = message.status === 'streaming'
+  const toolCalls = message.toolCalls ?? []
+  const hasThinking = Boolean(message.thinking)
+  const hasTools = toolCalls.length > 0
+  // 中途对话（commentary）不进面板——与 final 同级直接展示。
+  if (!hasThinking && !hasTools) return null
+
+  const summary = [
+    hasThinking ? `${message.thinking!.length} chars` : null,
+    hasTools ? `${toolCalls.length} tool${toolCalls.length > 1 ? 's' : ''}` : null,
+  ].filter(Boolean).join(' · ')
+
+  return (
+    <div className="mb-2 max-w-full overflow-hidden rounded-lg border border-stone-200/80 bg-stone-50/60 dark:border-stone-700/50 dark:bg-stone-800/40">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full cursor-pointer select-none items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-stone-600 transition-colors hover:bg-stone-100/80 dark:text-stone-300 dark:hover:bg-stone-700/40"
+        aria-expanded={open}
+      >
+        <span className="text-stone-400" aria-hidden>{open ? <DownOutlined className="text-[9px]" /> : <RightOutlined className="text-[9px]" />}</span>
+        <span className="font-medium">行为</span>
+        {summary && <span className="ml-auto truncate font-mono text-stone-400 dark:text-stone-500">{summary}</span>}
+      </button>
+      {open && (
+        <div className="space-y-1 border-t border-stone-200/70 py-1.5 dark:border-stone-700/50">
+          {hasThinking && <ThinkingFold text={message.thinking!} streaming={streaming} />}
+          {hasTools && (
+            <div className="pt-0.5">
+              <ToolList
+                toolCalls={toolCalls}
+                onApprove={(toolCallId) => onApprove(message.id, toolCallId)}
+                onReject={(toolCallId) => onReject(message.id, toolCallId)}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -124,20 +176,15 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
             </div>
           </details>
         ) : null}
-        {message.thinking ? (
-          <ThinkingFold text={message.thinking} streaming={message.status === 'streaming'} />
-        ) : null}
+        <BehaviorFold
+          message={message}
+          onApprove={onApprove}
+          onReject={onReject}
+        />
         {message.commentary && (
-          <div className="py-1 whitespace-pre-wrap text-sm italic text-stone-500 dark:text-stone-400">
+          <div className="whitespace-pre-wrap py-1 text-sm italic text-stone-500 dark:text-stone-400">
             {message.commentary}
           </div>
-        )}
-        {(message.toolCalls?.length ?? 0) > 0 && (
-          <ToolList
-            toolCalls={message.toolCalls ?? []}
-            onApprove={(toolCallId) => onApprove(message.id, toolCallId)}
-            onReject={(toolCallId) => onReject(message.id, toolCallId)}
-          />
         )}
         {message.content && (
           <div className="py-1">

@@ -716,18 +716,20 @@ class AgentLoop:
                 agent.record({"role": "assistant", "content": final, "created_at": now()})
                 return final
             # §7.8.9 坏轮判定（上一轮）：current = 上轮结束状态，prev_end = 上上轮结束。
-            # 坏轮 = 完全失联（无 talk 无工具无证据）或 工具动作全失败/全被重复拦截。
+            # 坏轮 = 完全失联（无 talk 无工具）或 工具动作全失败/全被重复拦截。
             # talk 轮不坏（思考信号，trace + 前端可见）；checklist 退出坏轮判定。
+            # §7.8.9 修正（2026-08-18）：删除「工具成功但 evidence 未涨」条件——
+            # evidence 只在 ok/partial_success 时记录（record_evidence），成功工具
+            # 必涨，该条件实际只兜「失败/被拒」剩余情形，与 tool_repeated_or_failed
+            # 语义重叠（冗余）。工具级停滞判定只保留工具信号（层1）；任务级推进
+            # 由 checklist 增量（层2）另行判定。
             current = (len(task_state.evidence), len(task_state.completed_items))
             if prev_end is not None:
-                evidence_grew = current[0] > prev_end[0]
                 reasons = []
                 if not turn_tool_called and not turn_talked:
                     reasons.append("silent_turn_no_output")
                 elif turn_tool_called and turn_tool_repeated:
                     reasons.append("tool_repeated_or_failed")
-                elif turn_tool_called and not evidence_grew:
-                    reasons.append("tool_no_new_evidence")
                 is_bad = bool(reasons)
                 if is_bad:
                     task_state.stagnation_audit.append(

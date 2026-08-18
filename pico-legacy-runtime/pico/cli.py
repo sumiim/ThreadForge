@@ -448,7 +448,6 @@ def _run_request(agent, prompt, args, router_model_client=None):
         agent,
         prompt,
         acceptance=getattr(args, "acceptance", None),
-        step_budget=args.max_steps,
         requires_research=getattr(args, "requires_research", None),
         focus_paths=getattr(args, "focus_paths", ()),
         task_mode=getattr(args, "task_mode", "auto"),
