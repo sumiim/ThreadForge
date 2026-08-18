@@ -303,6 +303,37 @@ export default function RunArtifactsDrawer({ open, session, onClose, activeRunId
                   ),
               },
               {
+                key: 'review',
+                label: `审查对抗${current.trace.some((l) => l.event === 'review_completed') ? '' : '（无）'}`,
+                children: (() => {
+                  const battles = current.trace.filter((line) =>
+                    line.event === 'review_completed' || line.event === 'main_loop_rebuttal',
+                  )
+                  return battles.length > 0 ? (
+                    <div className="space-y-2">
+                      {battles.map((line, index) => (
+                        <div
+                          key={index}
+                          className="rounded-lg border border-orange-200/70 bg-orange-50/40 p-2 dark:border-orange-800/40 dark:bg-orange-900/15"
+                        >
+                          <div className="flex items-center gap-2 text-[11px]">
+                            <span className="font-medium text-orange-700 dark:text-orange-300">
+                              {line.event === 'review_completed' ? '🧐 Review' : '🤖 主循环反驳'}
+                            </span>
+                            <span className="font-mono text-stone-400">{formatTime(line.created_at)}</span>
+                          </div>
+                          <pre className="m-0 mt-1 whitespace-pre-wrap break-all font-mono text-[10px] leading-relaxed text-stone-600 dark:text-stone-400">
+                            {prettyJson(JSON.stringify(line.payload))}
+                          </pre>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <Empty description="无审查回合（review_subagent 未触发）" />
+                  )
+                })(),
+              },
+              {
                 key: 'report',
                 label: '报告',
                 children: current.report ? (

@@ -462,6 +462,9 @@ def test_tooled_final_rejected_does_not_trigger_quick_convergence(tmp_path):
             '<tool>{"name":"read_file","args":{"path":"a.txt","start":1,"end":1}}</tool>',
             "<final>最终通过</final>",
             '{"verdict": "finalize", "feedback": "verified by test, done", "reason": "done"}',  # review 3
+            # 双向对抗：review 同意后主循环需显式确认（重提 final）→ review #2 finalize
+            "<final>最终通过</final>",
+            '{"verdict": "finalize", "feedback": "confirmed; verified by test evidence, checklist done", "reason": "done"}',  # review 4（确认复核）
         ],
         feature_flags={"review_subagent": True},
     )
@@ -476,6 +479,94 @@ def test_tooled_final_rejected_does_not_trigger_quick_convergence(tmp_path):
     assert len(state.rejected_finals) == 2
     # 首次 read 记 evidence；后两次 read 是重复（被拦）不新增
     assert len(state.evidence) == 1
+
+
+def test_dual_confirmation_main_loop_rebuts_with_tool(tmp_path):
+    """§7.8.9 双向对抗：review 同意后主循环用工具反驳（还没完）→ 回循环不完成。
+
+    review #1 finalize → awaiting 确认；主循环继续调工具（行动即理由）→
+    结束确认流程；之后再 final → review 重新判（不沿用上次的同意）。
+    """
+    (tmp_path / "a.txt").write_text("v1\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [
+            "<final>answer one</final>",
+            '{"verdict": "finalize", "feedback": "ok for now, evidence reviewed", "reason": "done"}',  # review#1 finalize → awaiting
+            '<tool>{"name":"read_file","args":{"path":"a.txt","start":1,"end":1}}</tool>',  # 主循环反驳（行动）
+            "<final>answer final</final>",
+            '{"verdict": "finalize", "feedback": "confirmed; evidence covers it", "reason": "done"}',  # review#2 finalize → awaiting 再确认
+            "<final>answer final</final>",
+            '{"verdict": "finalize", "feedback": "confirmed again; test passed, verified", "reason": "done"}',  # review#3 确认轮
+        ],
+        feature_flags={"review_subagent": True},
+    )
+
+    answer = AgentLoop(agent).run("inspect a.txt")
+
+    assert answer == "answer final"
+    assert agent.current_task_state.status == "completed"
+    # 主循环用工具反驳过 review 的同意（review_audit 含 3 次 review：agree → redirect 后重判 → 确认）
+    assert len(agent.current_task_state.review_audit) == 3
+
+
+def test_redirect_tracking_converges_after_two_rejects(tmp_path):
+    """§7.8.9 redirect 跟踪：review 连续 2 次 redirect（模型未收敛）→ 程序强制收敛。
+
+    action_poll review#1 redirect → interval 6→3 提前复查；再 3 动作后 review#2
+    redirect → tracking_rejects=2 → 强制收敛（review_tracking_converged），
+    不再无限跑。
+    """
+    for index in range(9):
+        (tmp_path / f"f{index}.txt").write_text(f"content {index}\n", encoding="utf-8")
+    outputs = []
+    for index in range(6):
+        outputs.append(f'<tool>{{"name":"search","args":{{"pattern":"alpha{index}"}}}}</tool>')
+    outputs.append('{"verdict": "redirect", "feedback": "wrong direction", "reason": "wrong_dir"}')
+    for index in range(3):
+        outputs.append(f'<tool>{{"name":"search","args":{{"pattern":"beta{index}"}}}}</tool>')
+    outputs.append('{"verdict": "redirect", "feedback": "still wrong", "reason": "wrong_dir"}')
+    agent = build_agent(tmp_path, outputs, feature_flags={"review_subagent": True})
+
+    answer = AgentLoop(agent).run("inspect workspace")
+
+    state = agent.current_task_state
+    assert state.status in {"stopped", "blocked"}
+    trace = agent.run_store.trace_path(state).read_text(encoding="utf-8")
+    assert '"event": "review_tracking_converged"' in trace
+    assert "运行中断" in answer or "停滞收敛" in answer
+
+
+def test_review_can_list_files_for_direction_check(tmp_path):
+    """§7.8.9 方向监督：review 内部可用 list_files 验证路径（工具面含 list_files）。
+
+    主循环 final → review 先 list_files 实证路径再 verdict redirect → 主循环
+    按反馈行动 → 最终通过。
+    """
+    (tmp_path / "a.txt").write_text("demo\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [
+            "<final>ok</final>",
+            '{"name": "list_files", "args": {"path": "."}}',
+            '{"verdict": "redirect", "feedback": "path X does not exist, verified by listing", "reason": "wrong_dir"}',
+            '<tool>{"name":"search","args":{"pattern":"demo"}}</tool>',
+            "<final>found</final>",
+            '{"verdict": "finalize", "feedback": "verified by search evidence", "reason": "done"}',
+            "<final>found</final>",
+            '{"verdict": "finalize", "feedback": "confirmed; verified by search evidence", "reason": "done"}',
+        ],
+        feature_flags={"review_subagent": True},
+    )
+
+    answer = AgentLoop(agent).run("inspect")
+
+    assert answer == "found"
+    state = agent.current_task_state
+    assert state.status == "completed"
+    first = state.review_audit[0]
+    assert first["verdict"] == "redirect"
+    assert first.get("tool_rounds", 0) >= 1  # review 内部跑过 list_files 实证
 
 
 def test_result_fingerprint_distinguishes_changed_file_reload(tmp_path):

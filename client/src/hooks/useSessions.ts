@@ -35,6 +35,7 @@ import type {
   SessionDetail,
   SessionMessage,
   ReasoningEffort,
+  ReviewBattleEntry,
   RunIndexItem,
   SessionRun,
   SkillMetadata,
@@ -99,6 +100,19 @@ function updateToolCallInBlocks(
     }
     return { ...block, toolCalls: block.toolCalls.map((tool) => tool.id === toolCallId ? updater(tool) : tool) }
   })
+}
+
+function appendReviewBlock(blocks: MessageBlock[] | undefined, entry: ReviewBattleEntry): MessageBlock[] {
+  return [...(blocks ?? []), { kind: 'review', entries: [entry] }]
+}
+
+function appendReviewEntry(blocks: MessageBlock[] | undefined, entry: ReviewBattleEntry): MessageBlock[] {
+  const list = blocks ?? []
+  const last = list[list.length - 1]
+  if (last && last.kind === 'review') {
+    return [...list.slice(0, -1), { ...last, entries: [...last.entries, entry] }]
+  }
+  return [...list, { kind: 'review', entries: [entry] }]
 }
 
 let idCounter = 0
@@ -853,13 +867,18 @@ export function useSessions(): UseSessions {
             // DeepSeek 思考过程：独立于 content 累积，UI 折叠展示（不进正文）。
             const text = String(data.text ?? '')
             if (!text) return
+            // §7.8.9 决策（2026-08-18）：thinking 按 stage 分区——planning 思考
+            // 进 planningThinking（独立面板），每轮 turn 思考进 thinking + 行为块。
+            const stage = String(data.stage ?? 'execute')
             updateSessionMessages(sessionId, (messages) => messages.map((message) =>
               message.id === assistantId
-                ? {
-                    ...message,
-                    thinking: `${message.thinking ?? ''}${text}`,
-                    blocks: appendThinkingBlock(message.blocks, text),
-                  }
+                ? stage === 'planning'
+                  ? { ...message, planningThinking: `${message.planningThinking ?? ''}${text}` }
+                  : {
+                      ...message,
+                      thinking: `${message.thinking ?? ''}${text}`,
+                      blocks: appendThinkingBlock(message.blocks, text),
+                    }
                 : message,
             ))
             return
@@ -870,8 +889,39 @@ export function useSessions(): UseSessions {
             return
           }
           case 'review.completed': {
-            updateProgress(sessionId, (progress) => progress ? { ...progress, nextStep: `审查结果：${String(data.status ?? '')}` } : progress)
-            appendActivity(envelope, '审查完成', `结果：${String(data.status ?? '')}`)
+            // §7.8.9 决策（2026-08-18）：双向对抗——review 回合进 blocks 审查对抗块
+            //（谁发的、verdict、理由、obstacles、工具轮数）。
+            const verdict = String(data.verdict ?? '')
+            const entry: ReviewBattleEntry = {
+              side: 'review',
+              verdict: verdict as ReviewBattleEntry['verdict'],
+              feedback: String(data.feedback ?? ''),
+              reason: String(data.reason ?? ''),
+              obstacles: Array.isArray(data.obstacles) ? data.obstacles.map(String) : undefined,
+              result: verdict === 'finalize' ? 'passed' : verdict === 'redirect' ? 'rejected' : 'continue',
+            }
+            updateSessionMessages(sessionId, (messages) => messages.map((message) =>
+              message.id === assistantId
+                ? { ...message, blocks: appendReviewBlock(message.blocks, entry) }
+                : message,
+            ))
+            updateProgress(sessionId, (progress) => progress ? { ...progress, nextStep: `审查结果：${verdict || String(data.status ?? '')}` } : progress)
+            appendActivity(envelope, '审查完成', `结果：${verdict || String(data.status ?? '')}`)
+            return
+          }
+          case 'main_loop_rebuttal': {
+            // §7.8.9 决策（2026-08-18）：主循环反驳 review 的「可以结束」——行动即理由。
+            const entry: ReviewBattleEntry = {
+              side: 'main_loop',
+              action: String(data.action ?? ''),
+              feedback: String(data.feedback ?? ''),
+            }
+            updateSessionMessages(sessionId, (messages) => messages.map((message) =>
+              message.id === assistantId
+                ? { ...message, blocks: appendReviewEntry(message.blocks, entry) }
+                : message,
+            ))
+            appendActivity(envelope, '主循环反驳', String(data.action ?? ''))
             return
           }
           case 'tool.requested': {
@@ -1019,6 +1069,7 @@ export function useSessions(): UseSessions {
         'assistant.thinking',
         'review.started',
         'review.completed',
+        'main_loop_rebuttal',
         'tool.requested',
         'tool.started',
         'tool.completed',

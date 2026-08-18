@@ -22,7 +22,9 @@ REVIEW_MAX_NEW_TOKENS = 512
 # 路径（不 hooks/record/commit/审批），结果只回 feed review 上下文，不污染
 # 主循环 history/evidence。REVIEW_MAX_STEPS = 内部工具轮 + 判决轮上限。
 REVIEW_MAX_STEPS = 5
-REVIEW_ALLOWED_TOOLS = frozenset({"read_file", "search", "run_shell"})
+# §7.8.9 决策（2026-08-18）：方向监督——review 可调 list_files 验证 run trail 里
+# 搜索/读取的路径是否存在、目录结构是否正确（纯推断不可靠,工具实证兜底）。
+REVIEW_ALLOWED_TOOLS = frozenset({"list_files", "read_file", "search", "run_shell"})
 
 # finalize 判决需要反驳的「不能结束理由」清单（程序从客观状态生成）。
 OBSTACLE_VERIFICATION = "verification"      # R1：有写/shell 且验证未过
@@ -47,6 +49,14 @@ _REVIEW_SYSTEM_TEMPLATE = (
     "- continue: work in progress and on track; no direction change needed.\n"
     "- redirect: the direction/plan is wrong; give actionable feedback the agent "
     "can apply next turn.\n"
+    # §7.8.9 决策（2026-08-18）：方向监督——检查 run trail 的探索是否有效
+    # （搜索无命中 / 路径不存在 / evidence 不支撑任务）。可疑时用 list_files /
+    # read_file / search 验证路径与内容再下结论,并在 feedback 里引用具体观察
+    # （不是空口断言）。不做「请求是否涉及工作区」的判定（会误杀纯对话）。
+    "- Direction check: examine the run trail for ineffective exploration: searches "
+    "with no hits, reads of missing paths, or evidence that does not support the task. "
+    "If a path looks wrong, verify it with list_files / read_file / search before "
+    "redirecting, and cite the concrete result you observed.\n"
     # §7.8.9 修正（2026-08-18）：移除 grounded 判定——「请求是否涉及工作区」
     # 无法程序精确判定（正则盖不全，误杀纯对话/continuation），且引入
     # review 死循环（你是谁/继续 每轮 redirect）。瞎验收交给模型自判 +
@@ -228,6 +238,12 @@ def run_review(
         has_write_or_shell=has_write_or_shell,
         verification_passed=verification_passed,
     )
+    # §7.8.9 决策（2026-08-18）：review 内部验证持久化——某次 review 跑过成功的
+    # shell（review_verified），后续 review（如双向确认的 review #2）也认可,
+    # 否则确认轮没有验证证据会被 R1 gate 误拒。
+    verification_passed = verification_passed or bool(
+        getattr(task_state, "review_verified", False)
+    )
     checklist = list(getattr(task_state, "checklist", []) or [])
     completed = set(getattr(task_state, "completed_items", []) or [])
     remaining_count = max(0, len([item for item in checklist if item not in completed]))
@@ -267,6 +283,9 @@ def run_review(
                 "verdict": "continue",
                 "feedback": "",
                 "reason": f"review model call failed: {type(exc).__name__}",
+                # §7.8.9 决策（2026-08-18）：review 调用失败 → 降级放行
+                # （AgentLoop 不强制双向确认,避免 run 卡死）。
+                "review_failed": True,
             }
             duration_ms = int((time.monotonic() - started_at) * 1000)
             agent.emit_trace(
@@ -301,9 +320,11 @@ def run_review(
             result = _execute_review_tool(agent, name, args)
             tool_rounds += 1
             # review 内部 shell 成功（exit 0）→ 视为验证通过（review 用 bash
-            # 就是为了跑验证；finalize 时程序 gate 认可它）。
+            # 就是为了跑验证；finalize 时程序 gate 认可它）。持久化到 task_state,
+            # 供后续 review（双向确认轮）复用。
             if name == "run_shell" and "exit_code: 0" in result:
                 review_shell_ok = True
+                task_state.review_verified = True
             context += (
                 f"\n\n[review tool round {tool_rounds}] {name}("
                 + json.dumps(args, ensure_ascii=False)[:300]

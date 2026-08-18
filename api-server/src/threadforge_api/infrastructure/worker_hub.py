@@ -70,6 +70,7 @@ _PUBLIC_WORKER_EVENTS = {
     "assistant.commentary",
     "review.started",
     "review.completed",
+    "main_loop_rebuttal",
 }
 _WORKSPACE_ID = re.compile(r"^ws_[a-f0-9]{32}$")
 _SESSION_ID = re.compile(r"^ses_[a-f0-9]{32}$")
@@ -2450,11 +2451,35 @@ def _sanitize_event_data(event_type: str, data: dict) -> dict:
     if event_type == "review.started":
         return {"attempt": _nonnegative_int(data.get("attempt", 0))}
     if event_type == "review.completed":
-        return {
-            "status": str(data.get("status", ""))[:32],
-            "attempt": _nonnegative_int(data.get("attempt", 0)),
-            "issue_count": _nonnegative_int(data.get("issue_count", 0)),
-        }
+        return redact_artifact(
+            {
+                "status": str(data.get("status", ""))[:32],
+                "attempt": _nonnegative_int(data.get("attempt", 0)),
+                "issue_count": _nonnegative_int(data.get("issue_count", 0)),
+                # §7.8.9 决策（2026-08-18）：审查对抗明细——verdict/feedback/obstacles/
+                # 工具轮数透传前端审查卡片（双向对抗前端展示的数据基础）。
+                "trigger": str(data.get("trigger", ""))[:32],
+                "verdict": str(data.get("verdict", ""))[:32],
+                "feedback": str(data.get("feedback", ""))[:500],
+                "reason": str(data.get("reason", ""))[:100],
+                "obstacles": (
+                    [str(item)[:100] for item in data.get("obstacles", [])[:10]]
+                    if isinstance(data.get("obstacles"), list)
+                    else []
+                ),
+                "tool_rounds": _nonnegative_int(data.get("tool_rounds", 0)),
+                "review_shell_ok": bool(data.get("review_shell_ok", False)),
+            }
+        )
+    if event_type == "main_loop_rebuttal":
+        # §7.8.9 决策（2026-08-18）：主循环反驳 review 的「可以结束」——行动即理由。
+        return redact_artifact(
+            {
+                "against_verdict": str(data.get("against_verdict", ""))[:32],
+                "action": str(data.get("action", ""))[:100],
+                "feedback": str(data.get("feedback", ""))[:500],
+            }
+        )
     if event_type == "agent.state":
         def bounded_list(value):
             return [str(item)[:300] for item in value[:20]] if isinstance(value, list) else []

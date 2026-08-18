@@ -85,7 +85,15 @@ def run_planning(
     prompt = build_planning_prompt(task, context, explored_summary)
     started_at = time.monotonic()
     try:
-        raw = agent.model_client.complete(prompt, PLANNING_MAX_NEW_TOKENS)
+        raw = agent.model_client.complete(
+            prompt,
+            PLANNING_MAX_NEW_TOKENS,
+            # §7.8.9 决策（2026-08-18）：planning 的思考流式回传（stage=planning），
+            # 与每轮 turn 思考（stage=execute）分区展示。
+            on_thinking_delta=lambda delta: getattr(
+                agent.execution_hooks, "model_thinking_delta", lambda *_args: None
+            )(task_state, "planning", delta),
+        )
     except Exception:
         agent.emit_trace(
             task_state,
