@@ -17,13 +17,13 @@ interface ComposerProps {
 
 // 输入区：16px 圆角容器 + focus 时 accent ring；模型名显示在右下角
 const effortLabels: Record<ReasoningEffort, string> = {
-  none: '无',
-  minimal: '最小',
-  low: '低',
-  medium: '中',
-  high: '高',
-  xhigh: '极高',
-  max: '最高',
+  none: 'None',
+  minimal: 'Minimal',
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'Extra High',
+  max: 'Max',
 }
 
 const permissionModeLabels: Record<PermissionMode, string> = {
@@ -201,7 +201,7 @@ export default function Composer({ model, modelOptions, running, stopping = fals
                   }}
                   options={efforts.map((effort) => ({ value: effort, label: effortLabels[effort] }))}
                   className="w-20"
-                  aria-label="推理强度"
+                  aria-label="Reasoning effort"
                 />
                 <Select
                   size="small"

@@ -136,7 +136,7 @@ const errorText: Record<string, string> = {
   pairing_code_invalid: '配对码无效或已过期，请重新生成',
   worker_offline: '所选本地 Worker 已离线',
   worker_capability_unavailable: '本地 Worker 版本过旧，请更新后重试',
-  model_capability_unavailable: '本地 Worker 不支持当前选择的模型或推理强度，请在供应商设置中确认支持的档位',
+  model_capability_unavailable: 'The local Worker does not support the selected model or reasoning effort. Check the supported efforts in the provider settings.',
   worker_command_pending: '该设备已有目录选择请求等待处理',
   worker_command_failed: '本地 Worker 未能完成请求，请检查配置后重试',
   worker_concurrency_limit: '该 Worker 已达并发任务上限，请等待其他任务完成后再试',
