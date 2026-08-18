@@ -72,6 +72,9 @@ _REVIEW_USER_TEMPLATE = (
     "Evidence summary (per action):\n{evidence_summary}\n"
     "Prior review feedback: {prior_feedback}\n"
     "Obstacles that must be rebutted before finalize:\n{obstacles}\n"
+    "Semantic acceptance criteria to verify (free-text, cannot be auto-checked; "
+    "verify each with tools and include the goals you confirmed in "
+    "completed_steps):\n{semantic_criteria}\n"
 )
 
 REVIEW_VERDICTS = frozenset({"finalize", "continue", "redirect"})
@@ -117,7 +120,12 @@ def _evidence_summary(task_state, limit: int = 12) -> str:
 
 
 def _parse_review_output(raw: str) -> dict:
-    """解析 review 子 agent 输出为结构化判决；格式非法 → redirect + 修复反馈。"""
+    """解析 review 子 agent 输出为结构化判决；格式非法 → redirect + 修复反馈。
+
+    §7.8.9 决策（2026-08-18）：可选 `completed_steps: [goal]`——review 语义
+    打钩（自由文本验收标准经工具验证后确认的 step）。程序写入 completed_items
+    并记 review_audit（谁打的钩、凭据在 feedback）。
+    """
     text = str(raw or "").strip()
     if text.startswith("```"):
         lines = text.splitlines()
@@ -144,10 +152,16 @@ def _parse_review_output(raw: str) -> dict:
             "feedback": "review verdict must be finalize/continue/redirect",
             "reason": "malformed_review_verdict",
         }
+    completed_steps = value.get("completed_steps", [])
     return {
         "verdict": verdict,
         "feedback": str(value.get("feedback", "") or "").strip(),
         "reason": str(value.get("reason", "") or "").strip(),
+        "completed_steps": (
+            [str(goal).strip() for goal in completed_steps if str(goal).strip()]
+            if isinstance(completed_steps, list)
+            else []
+        ),
     }
 
 
@@ -254,6 +268,15 @@ def run_review(
     # run_trail 复用 agent.history_text()（已压缩 + 截断 + 有界），
     # 成本可控，不违背上下文隔离原则。
     done_when = list(getattr(task_state, "done_when", []) or [])
+    # §7.8.9 决策（2026-08-18）：checklist 语义打钩——提取未完成的自由文本
+    # 验收标准（无 file:/grep:/cmd: 前缀,程序无法自动验证）,注入 review 语义验证。
+    semantic_criteria = []
+    for goal, criteria in dict(getattr(task_state, "step_done_when", {}) or {}).items():
+        if goal in set(getattr(task_state, "completed_items", []) or []):
+            continue
+        for criterion in criteria or []:
+            if not str(criterion).startswith(("file:", "grep:", "cmd:")):
+                semantic_criteria.append(f"- {goal}: {criterion}")
     try:
         run_trail = agent.history_text()
     except Exception:
@@ -269,6 +292,7 @@ def run_review(
             evidence_summary=_evidence_summary(task_state),
             prior_feedback=str(prior_feedback or "")[:500],
             obstacles="; ".join(obstacles) if obstacles else "(none)",
+            semantic_criteria="\n".join(semantic_criteria) if semantic_criteria else "(none)",
         )
     )
     started_at = time.monotonic()
@@ -277,7 +301,16 @@ def run_review(
     tool_rounds = 0
     for step in range(REVIEW_MAX_STEPS):
         try:
-            raw = agent.model_client.complete(context, REVIEW_MAX_NEW_TOKENS)
+            raw = agent.model_client.complete(
+                context,
+                REVIEW_MAX_NEW_TOKENS,
+                # §7.8.9 决策（2026-08-18）：review 的思考流式回传（stage=review）——
+                # 审查对抗块里可展开 review 的推理过程（为什么这么判）,与
+                # planning/execute 思考分区。结果只回 feed 前端,不进 session history。
+                on_thinking_delta=lambda delta: getattr(
+                    agent.execution_hooks, "model_thinking_delta", lambda *_args: None
+                )(task_state, "review", delta),
+            )
         except Exception as exc:
             decision = {
                 "verdict": "continue",

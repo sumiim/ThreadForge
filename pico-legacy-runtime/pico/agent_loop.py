@@ -344,6 +344,46 @@ def _extract_tool_path(name, args):
     return None
 
 
+def _verify_done_when(agent, done_when, cmd_cache):
+    """§7.8.9 决策（2026-08-18）：checklist 打钩——程序化验收标准验证。
+
+    支持三种前缀（planning schema 引导模型产出）：
+    - ``file:<path>``：workspace 文件存在
+    - ``grep:<path>:<pattern>``：文件内容包含 pattern（子串匹配）
+    - ``cmd:<command>``：受管 shell 执行 exit 0（结果缓存,同一命令本 run 只跑一次）
+    自由文本（无前缀）→ 返回 None（无法程序判定,交给 review 语义打钩）。
+    """
+    text = str(done_when or "").strip()
+    try:
+        if text.startswith("file:"):
+            path = text[5:].strip()
+            if not path:
+                return False
+            return (agent.root / path).is_file()
+        if text.startswith("grep:"):
+            path, _, pattern = text[5:].partition(":")
+            if not path or not pattern:
+                return False
+            content = (agent.root / path).read_text(
+                encoding="utf-8", errors="ignore"
+            )
+            return pattern in content
+        if text.startswith("cmd:"):
+            command = text[4:].strip()
+            if not command:
+                return False
+            if command in cmd_cache:
+                return cmd_cache[command]
+            tool = agent.tools.get("run_shell")
+            content = str(tool["run"]({"command": command, "timeout": 30})) if tool else ""
+            ok = "exit_code: 0" in content
+            cmd_cache[command] = ok
+            return ok
+    except Exception:
+        return False
+    return None  # 自由文本 → review 语义打钩
+
+
 def _partition_batch_tools(tools):
     """§7.8.9 P5 批内分区：并发组（无数据依赖） vs 串行组。
 
@@ -478,13 +518,21 @@ class AgentLoop:
         )
         if not steps:
             return False
-        task_state.checklist = list(steps)
-        task_state.done_when = [str(step) for step in steps]
+        task_state.checklist = [str(step["goal"]) for step in steps]
+        task_state.done_when = [
+            str(dw) for step in steps for dw in step.get("done_when", [])
+        ]
+        # §7.8.9 决策（2026-08-18）：checklist 打钩——每步验收标准映射,
+        # 程序化（file:/grep:/cmd:）由打钩引擎验证、自由文本由 review 语义打钩。
+        task_state.step_done_when = {
+            str(step["goal"]): [str(dw) for dw in step.get("done_when", [])]
+            for step in steps
+        }
         self.agent.run_store.write_task_state(task_state)
         self.agent.emit_trace(
             task_state,
             "plan_checklist_created",
-            {"step_count": len(steps), "steps": steps},
+            {"step_count": len(steps), "steps": task_state.checklist},
         )
         return True
 
@@ -510,8 +558,14 @@ class AgentLoop:
         )
         if not steps:
             return False
-        task_state.checklist = list(steps)
-        task_state.done_when = [str(step) for step in steps]
+        task_state.checklist = [str(step["goal"]) for step in steps]
+        task_state.done_when = [
+            str(dw) for step in steps for dw in step.get("done_when", [])
+        ]
+        task_state.step_done_when = {
+            str(step["goal"]): [str(dw) for dw in step.get("done_when", [])]
+            for step in steps
+        }
         task_state.replan_reasons.append(str(feedback or "")[:200])
         self.agent.run_store.write_task_state(task_state)
         self.agent.emit_trace(
@@ -723,6 +777,69 @@ class AgentLoop:
         agent.emit_agent_state(task_state, "post_tool_reasoning")
         return tool_result, repeated
 
+    def _check_checklist_progress(self, task_state, cmd_cache):
+        """§7.8.9 决策（2026-08-18）：checklist 打钩——程序化 done_when 验证。
+
+        每轮工具提交后运行：对未完成 checklist 项的 step_done_when 做
+        file:/grep:/cmd: 验证；通过 → complete_item + trace（证据可审计,
+        非 LLM 自报）。自由文本 done_when 返回 None → 跳过,由 review 语义打钩。
+        """
+        agent = self.agent
+        completed = set(task_state.completed_items)
+        checked = False
+        for goal in list(task_state.checklist):
+            if goal in completed:
+                continue
+            for dw in task_state.step_done_when.get(goal, []) or []:
+                result = _verify_done_when(agent, dw, cmd_cache)
+                if result is True:
+                    task_state.complete_item(goal)
+                    agent.emit_trace(
+                        task_state,
+                        "checklist_item_checked",
+                        {
+                            "goal": str(goal)[:300],
+                            "done_when": str(dw)[:300],
+                            "method": "programmatic",
+                        },
+                    )
+                    checked = True
+                    break
+                if result is None:
+                    break  # 自由文本 → review 语义打钩,程序不再试
+        if checked:
+            agent.run_store.write_task_state(task_state)
+            agent.emit_agent_state(task_state, "checklist_progress")
+
+    def _apply_review_completed_steps(self, task_state, review_decision):
+        """§7.8.9 决策（2026-08-18）：review 语义打钩。
+
+        自由文本验收标准经 review 工具验证后,确认的 step（completed_steps）
+        写入 completed_items——review_audit 里带 feedback（凭据）,trace 记
+        checklist_item_checked(method=review_semantic)。
+        """
+        steps = review_decision.get("completed_steps") or []
+        if not steps:
+            return
+        checked = False
+        for goal in steps:
+            goal = str(goal).strip()
+            if goal in task_state.checklist and goal not in task_state.completed_items:
+                task_state.complete_item(goal)
+                checked = True
+                self.agent.emit_trace(
+                    task_state,
+                    "checklist_item_checked",
+                    {
+                        "goal": goal[:300],
+                        "method": "review_semantic",
+                        "review_feedback": str(review_decision.get("feedback", ""))[:300],
+                    },
+                )
+        if checked:
+            self.agent.run_store.write_task_state(task_state)
+            self.agent.emit_agent_state(task_state, "checklist_progress")
+
     def run(self, user_message, *, task_id=None, run_id=None):
         agent = self.agent
         token = agent.cancellation_token
@@ -865,6 +982,9 @@ class AgentLoop:
         # 双向对抗：review 的同意决策暂存（awaiting 期间），主循环反驳时
         # 用于 main_loop_rebuttal 事件的「against_verdict/feedback」。
         pending_review_decision = None
+        # §7.8.9 决策（2026-08-18）：checklist 打钩——cmd: 验收标准的结果缓存
+        #（同一命令本 run 只跑一次,防每轮重跑测试烧时间）。
+        cmd_cache = {}
 
         # 边界 1：进入控制循环前。
         token.raise_if_cancelled()
@@ -921,6 +1041,10 @@ class AgentLoop:
             # 语义重叠（冗余）。工具级停滞判定只保留工具信号（层1）；任务级推进
             # 由 checklist 增量（层2）另行判定。
             current = (len(task_state.evidence), len(task_state.completed_items))
+            # §7.8.9 决策（2026-08-18）：checklist 打钩——每轮工具提交后跑程序化
+            # 验收标准验证（file:/grep:/cmd:）,通过的 step 进 completed_items。
+            # 放在坏轮判定前,让本轮打钩反映到 completed_items（停滞审计/进度展示）。
+            self._check_checklist_progress(task_state, cmd_cache)
             if prev_end is not None:
                 reasons = []
                 # §7.8.9 修正（2026-08-18）：final 被 review 拒的轮次不算 silent——
@@ -1279,6 +1403,7 @@ class AgentLoop:
                     )
                     actions_since_review = 0
                     review_triggered = True
+                    self._apply_review_completed_steps(task_state, review_decision)
                     if review_decision.get("verdict") == "redirect":
                         prior_review_feedback = str(review_decision.get("feedback", "") or "")
                         protocol_feedback = str(review_decision.get("feedback", "") or "")
@@ -1496,6 +1621,7 @@ class AgentLoop:
                     )
                     actions_since_review = 0
                     review_triggered = True
+                    self._apply_review_completed_steps(task_state, review_decision)
                     if review_decision.get("verdict") == "redirect":
                         prior_review_feedback = str(review_decision.get("feedback", "") or "")
                         protocol_feedback = str(review_decision.get("feedback", "") or "")
@@ -1562,6 +1688,7 @@ class AgentLoop:
                 verification_passed=verification_passed,
                 prior_feedback=prior_review_feedback,
             )
+            self._apply_review_completed_steps(task_state, review_decision)
             if review_decision.get("verdict") == "redirect":
                 # §7.8.9 修正（2026-08-18）：final 被 review 拒 → 内容不作为最终
                 # 输出，存入 rejected_finals（独立于 evidence，供收敛拼 best-effort），
