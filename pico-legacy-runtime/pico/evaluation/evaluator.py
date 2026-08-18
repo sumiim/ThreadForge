@@ -219,22 +219,6 @@ def _paired_native_outputs(case, *, complete):
     return outputs
 
 
-def _paired_langgraph_outputs(case, *, complete):
-    path, _, _, second_old, second_new = case
-    outputs = _paired_native_outputs(case, complete=complete)
-    outputs.append(_paired_read_output(path))
-    if not complete:
-        outputs.extend(
-            [
-                f"<final>status: needs_fix\nissue: {second_old} was not updated\nverify_targets: {path}</final>",
-                _paired_patch_output(path, second_old, second_new),
-                "<final>Completed the missing update.</final>",
-                _paired_read_output(path),
-            ]
-        )
-    outputs.append(f"<final>status: pass\nissues: none\nverify_targets: {path}</final>")
-    return outputs
-
 NATIVE_SCRIPTED_MODEL_OUTPUTS = {
     "readme_intro_locked": [
         '<tool name="patch_file" path="README.md"><old_text>This is a placeholder benchmark fixture.</old_text><new_text>This fixture is a locked benchmark workspace.</new_text></tool>',
@@ -332,15 +316,12 @@ LANGGRAPH_SCRIPTED_MODEL_OUTPUTS = {
 
 for task_id, case in PAIRED_REVIEW_DEFECT_CASES.items():
     NATIVE_SCRIPTED_MODEL_OUTPUTS[task_id] = _paired_native_outputs(case, complete=False)
-    LANGGRAPH_SCRIPTED_MODEL_OUTPUTS[task_id] = _paired_langgraph_outputs(case, complete=False)
 
 for task_id, case in PAIRED_CONTROL_CASES.items():
     NATIVE_SCRIPTED_MODEL_OUTPUTS[task_id] = _paired_native_outputs(case, complete=True)
-    LANGGRAPH_SCRIPTED_MODEL_OUTPUTS[task_id] = _paired_langgraph_outputs(case, complete=True)
 
 SCRIPTED_MODEL_OUTPUTS = {
     "native": NATIVE_SCRIPTED_MODEL_OUTPUTS,
-    "langgraph": LANGGRAPH_SCRIPTED_MODEL_OUTPUTS,
 }
 
 
@@ -602,7 +583,8 @@ def validate_benchmark(data, repo_root=None):
         normalized_backends = []
         for backend in backends:
             backend_name = str(backend).strip()
-            if backend_name not in {"native", "langgraph"}:
+            # §7.8.9 阶段 4 收尾：LangGraph 兼容层已删除，评测只走 native。
+            if backend_name != "native":
                 raise ValueError(f"benchmark task {task_id} has an unknown backend: {backend_name}")
             if backend_name not in normalized_backends:
                 normalized_backends.append(backend_name)
@@ -921,7 +903,8 @@ class BenchmarkEvaluator:
         self.timezone_name = timezone_name
         self.model_client_factory = model_client_factory
         self.backend = str(backend)
-        if self.backend not in {"native", "langgraph"}:
+        # §7.8.9 阶段 4 收尾：LangGraph 兼容层已删除，评测只走 native。
+        if self.backend != "native":
             raise ValueError(f"unknown backend: {self.backend}")
         self.event_sink_factory = event_sink_factory
         self.backend_runner = backend_runner

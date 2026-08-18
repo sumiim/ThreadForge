@@ -196,12 +196,6 @@ class NativeBackendRunner:
 def build_backend_runner(name, **kwargs):
     if name == "native":
         return NativeBackendRunner(**kwargs)
-    if name == "langgraph":
-        try:
-            from langgraph_pico.backend import LangGraphBackendRunner
-        except ModuleNotFoundError as exc:
-            raise RuntimeError(
-                "langgraph backend is optional; install examples/langgraph-pico first"
-            ) from exc
-        return LangGraphBackendRunner(**kwargs)
+    # §7.8.9 阶段 4 收尾：LangGraph 兼容层已彻底删除（大取消最后一块），
+    # 生产只走 run_native（AgentLoop 单循环）。
     raise ValueError(f"unknown backend: {name}")

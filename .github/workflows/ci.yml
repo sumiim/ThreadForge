@@ -55,9 +55,11 @@ jobs:
           python -m pip install -e ./agent-orchestrator
           python -m pip install pytest
 
-      - name: Run LangGraph orchestration suite
+      - name: Run orchestration suite
         working-directory: pico-legacy-runtime
-        run: python -m pytest -q tests/test_langgraph_backend.py tests/test_langgraph_intent.py tests/test_langgraph_planning_v11.py
+        # LangGraph 兼容层已删除（§7.8.9 阶段 4 收尾）：test_langgraph_backend.py 随
+        # backend.py/graph.py 一并移除，保留 intent/planning 纯函数测试。
+        run: python -m pytest -q tests/test_langgraph_intent.py tests/test_langgraph_planning_v11.py
 
   security:
     name: Security gate

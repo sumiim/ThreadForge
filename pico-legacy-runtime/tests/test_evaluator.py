@@ -69,16 +69,6 @@ def test_load_benchmark_rejects_missing_required_task_fields(tmp_path):
         load_benchmark(benchmark_path)
 
 
-def test_load_delegate_benchmark_normalizes_extension_fields():
-    benchmark = load_benchmark(Path("benchmarks/delegate_tasks.json"))
-
-    assert len(benchmark["tasks"]) == 4
-    assert benchmark["tasks"][0]["backends"] == ["langgraph"]
-    assert benchmark["tasks"][0]["requires_research"] is True
-    assert benchmark["tasks"][0]["artifact_path"] == "README.md"
-    assert "verifier_argv" in benchmark["tasks"][0]
-
-
 def test_load_paired_benchmark_has_identical_backend_contract():
     benchmark = load_benchmark(Path("benchmarks/paired_tasks.json"))
 
@@ -87,12 +77,12 @@ def test_load_paired_benchmark_has_identical_backend_contract():
         "needs_fix": 10,
         "pass": 10,
     }
-    assert all(task["backends"] == ["native", "langgraph"] for task in benchmark["tasks"])
+    assert all(task["backends"] == ["native"] for task in benchmark["tasks"])
     assert all(task["requires_research"] is False for task in benchmark["tasks"])
     for task in benchmark["tasks"]:
-        native_outputs = _scripted_outputs_for_task(task, "native")
-        langgraph_outputs = _scripted_outputs_for_task(task, "langgraph")
-        assert langgraph_outputs[: len(native_outputs)] == native_outputs
+        assert _scripted_outputs_for_task(task, "native"), (
+            f"task {task['id']} must have native scripted outputs"
+        )
 
     task = benchmark["tasks"][0]
     assert task["id"] == "paired_review_recovery"
@@ -365,23 +355,7 @@ def test_paired_review_benchmark_isolates_review_recovery(tmp_path):
     native_evaluator.load = lambda: native_benchmark
     native = native_evaluator.run()
 
-    langgraph_evaluator = BenchmarkEvaluator(
-        benchmark_path=benchmark_path,
-        artifact_path=tmp_path / "langgraph-paired.json",
-        workspace_root=tmp_path / "langgraph-workspaces",
-        backend="langgraph",
-    )
-    langgraph_benchmark = langgraph_evaluator.load()
-    langgraph_benchmark["tasks"] = [
-        task for task in langgraph_benchmark["tasks"] if task["id"] in selected_ids
-    ]
-    langgraph_evaluator.load = lambda: langgraph_benchmark
-    langgraph = langgraph_evaluator.run()
-
     native_row = next(row for row in native["rows"] if row["review_expectation"] == "needs_fix")
-    langgraph_row = next(
-        row for row in langgraph["rows"] if row["review_expectation"] == "needs_fix"
-    )
 
     assert native["summary"]["eligible_tasks"] == 2
     assert native["summary"]["passed"] == 1
@@ -395,29 +369,6 @@ def test_paired_review_benchmark_isolates_review_recovery(tmp_path):
     assert native["review_summary"]["average_tool_steps"] == 1.5
     assert native["review_summary"]["review_precision"] is None
     assert native["review_summary"]["review_recall"] == 0.0
-
-    assert langgraph["summary"]["eligible_tasks"] == 2
-    assert langgraph["summary"]["passed"] == 2
-    assert langgraph_row["status"] == "pass"
-    assert langgraph_row["within_budget"] is True
-    assert langgraph_row["verifier_passed"] is True
-    assert langgraph_row["review_calls"] == 2
-    assert langgraph_row["review_retries"] == 1
-    assert langgraph["review_summary"]["defect_detection_rate"] == 1.0
-    assert langgraph["review_summary"]["defect_recovery_rate"] == 1.0
-    assert langgraph["review_summary"]["control_retention_rate"] == 1.0
-    assert langgraph["review_summary"]["false_rejection_rate"] == 0.0
-    assert langgraph["review_summary"]["average_tool_steps"] == 5.0
-    assert langgraph["review_summary"]["review_confusion_matrix"] == {
-        "true_positives": 1,
-        "false_positives": 0,
-        "true_negatives": 1,
-        "false_negatives": 0,
-    }
-    assert langgraph["review_summary"]["review_precision"] == 1.0
-    assert langgraph["review_summary"]["review_recall"] == 1.0
-    assert langgraph["review_summary"]["review_f1"] == 1.0
-    assert langgraph["review_summary"]["review_specificity"] == 1.0
 
 
 def test_summarize_review_rows_returns_none_without_review_contract():
@@ -586,22 +537,16 @@ def test_normal_skipped_and_harness_rows_share_route_metadata_fields(tmp_path):
 
 
 def test_backend_not_applicable_returns_uniform_skipped_row(tmp_path):
-    evaluator = BenchmarkEvaluator(
-        benchmark_path=Path("benchmarks/coding_tasks.json"),
-        artifact_path=tmp_path / "artifact.json",
-        workspace_root=tmp_path / "workspaces",
-        backend="langgraph",
-    )
+    # §7.8.9 阶段 4 收尾：LangGraph 兼容层已删除，非 native backend 在构造时抛错。
+    import pytest
 
-    row = evaluator.run_task(evaluator.load()["tasks"][0])
-
-    assert row["status"] == "skipped"
-    assert row["failure_category"] == "backend_not_applicable"
-    assert row["within_budget"] is None
-    assert row["verifier_passed"] is None
-    assert row["execution_started"] is False
-    assert row["task_state"] == {}
-    assert row["events"] == []
+    with pytest.raises(ValueError, match="unknown backend"):
+        BenchmarkEvaluator(
+            benchmark_path=Path("benchmarks/coding_tasks.json"),
+            artifact_path=tmp_path / "artifact.json",
+            workspace_root=tmp_path / "workspaces",
+            backend="langgraph",
+        )
 
 
 def test_task_setup_failure_does_not_abort_artifact(tmp_path):
