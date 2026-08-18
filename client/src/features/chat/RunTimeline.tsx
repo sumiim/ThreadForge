@@ -1,17 +1,14 @@
-import { useMemo, useState, type MouseEvent, type PointerEvent } from 'react'
+import { useMemo, useState } from 'react'
 import { DownOutlined, RightOutlined } from '@ant-design/icons'
 import type { SessionRun } from '../../api/types'
 import {
+  barClass,
   eventTimeOf,
   groupTimelineItems,
   inputTimelineEvent,
   isMainTimelineEvent,
-  LANE_ORDER,
-  laneOf,
   runStatusLabel,
   sortTimelineItems,
-  timelineBounds,
-  type TimelineBounds,
   type TimelineEvent,
   type TimelineGroup,
   type TimelineInput,
@@ -26,23 +23,6 @@ interface RunTimelineProps {
 
 interface TimelineEntry extends TimelineEvent {
   run: SessionRun
-}
-
-function laneOffset(type: string, expanded: boolean): number {
-  const index = Math.max(0, LANE_ORDER.indexOf(laneOf(type)))
-  return (expanded ? 12 : 3) * index + (expanded ? 10 : 5)
-}
-
-function groupRange(group: TimelineGroup, bounds: TimelineBounds): { top: number; height: number; point: boolean } {
-  const start = Number.isFinite(group.start) ? group.start : bounds.start
-  const end = Number.isFinite(group.end) && group.end > start ? group.end : start
-  const safeStart = Math.min(bounds.end, Math.max(bounds.start, start))
-  const safeEnd = Math.max(safeStart, Math.min(bounds.end, end))
-  return {
-    top: ((safeStart - bounds.start) / bounds.span) * 100,
-    height: ((safeEnd - safeStart) / bounds.span) * 100,
-    point: safeEnd <= safeStart,
-  }
 }
 
 function groupTitle(group: TimelineGroup): string {
@@ -64,7 +44,6 @@ function eventLabelOf(group: TimelineGroup): string {
 export default function RunTimeline({ runs, activeRunId, onSelectRun, inputs = [] }: RunTimelineProps) {
   const [expanded, setExpanded] = useState(false)
   const [activeKey, setActiveKey] = useState('')
-  const [scrubbing, setScrubbing] = useState(false)
   const activeRun = useMemo(
     () => runs.find((run) => run.runId === activeRunId) ?? runs[runs.length - 1],
     [activeRunId, runs],
@@ -86,7 +65,6 @@ export default function RunTimeline({ runs, activeRunId, onSelectRun, inputs = [
     return sortTimelineItems([...runItems, ...inputItems])
   }, [activeRun, inputs])
 
-  const bounds = useMemo(() => timelineBounds(entries), [entries])
   const groups = useMemo(() => groupTimelineItems(entries), [entries])
 
   const jump = (entry: TimelineEvent) => {
@@ -120,40 +98,13 @@ export default function RunTimeline({ runs, activeRunId, onSelectRun, inputs = [
     nearest.message.scrollIntoView({ behavior: 'smooth', block: 'center' })
   }
 
-  const scrubTo = (clientY: number, rect: DOMRect) => {
-    if (entries.length === 0) return
-    const time = bounds.start + Math.min(1, Math.max(0, (clientY - rect.top) / rect.height)) * bounds.span
-    const nearest = entries.reduce((best, entry) => {
-      const distance = Math.abs(eventTimeOf(entry) - time)
-      return distance < best.distance ? { entry, distance } : best
-    }, { entry: entries[0]!, distance: Number.POSITIVE_INFINITY })
-    jump(nearest.entry)
-  }
-
-  const jumpNearest = (event: MouseEvent<HTMLDivElement>) => {
-    if ((event.target as HTMLElement).closest('button') || entries.length === 0) return
-    scrubTo(event.clientY, event.currentTarget.getBoundingClientRect())
-  }
-
-  const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
-    if ((event.target as HTMLElement).closest('button') || entries.length === 0) return
-    event.currentTarget.setPointerCapture(event.pointerId)
-    setScrubbing(true)
-    scrubTo(event.clientY, event.currentTarget.getBoundingClientRect())
-  }
-  const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
-    if (!scrubbing) return
-    scrubTo(event.clientY, event.currentTarget.getBoundingClientRect())
-  }
-  const onPointerUp = () => setScrubbing(false)
-
   if (!activeRun || entries.length === 0) return null
 
   const runIndex = runs.findIndex((run) => run.runId === activeRun.runId)
   return (
     <aside
       aria-label="运行轨迹导航"
-      className={`flex min-h-0 shrink-0 flex-col border-r border-stone-200 bg-white/90 transition-[width] ${expanded ? 'w-32' : 'w-9'}`}
+      className={`flex min-h-0 shrink-0 flex-col border-r border-stone-200 bg-white/90 transition-[width] ${expanded ? 'w-64' : 'w-9'}`}
     >
       <div className={`flex h-8 shrink-0 items-center border-b border-stone-100 ${expanded ? 'gap-1 px-2' : 'justify-center'}`}>
         <button
@@ -174,45 +125,39 @@ export default function RunTimeline({ runs, activeRunId, onSelectRun, inputs = [
           </span>
         ) : null}
       </div>
-      <div
-        className="relative min-h-0 flex-1 select-none overflow-hidden"
-        onClick={jumpNearest}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        title="点击或拖动轨迹跳转到对话"
-      >
-        <div className="absolute inset-x-2 bottom-2 top-2">
-          <div className="absolute bottom-0 left-1/2 top-0 w-px -translate-x-1/2 bg-stone-100" aria-hidden />
-          {groups.map((group) => {
-            const range = groupRange(group, bounds)
-            const point = range.point
-            const active = activeKey === group.sample.event_id
-            const barClass = group.failed
-              ? (group.sample.status === 'needs_fix' ? 'bg-amber-400' : 'bg-red-400 ring-1 ring-red-500')
-              : group.running
-                ? 'animate-pulse bg-blue-400'
-                : active
-                  ? 'bg-blue-600'
-                  : 'bg-stone-400'
-            return (
-              <button
-                key={group.key}
-                type="button"
-                aria-label={groupTitle(group)}
-                title={groupTitle(group)}
-                onClick={() => jump(group.sample)}
-                className={`absolute z-10 -translate-y-0.5 transition-opacity hover:opacity-100 ${point ? 'h-2 w-2 -translate-x-1/2 rounded-full' : 'w-1 rounded-full'} ${barClass} ${active ? 'opacity-100' : 'opacity-65'}`}
-                style={{
-                  top: `${range.top}%`,
-                  height: point ? undefined : `${range.height}%`,
-                  left: `${laneOffset(group.type, expanded)}px`,
-                }}
-              />
-            )
-          })}
-        </div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {expanded ? (
+          // 对话索引：文字条目列表（时间 + 标签 + 状态色点），点击跳转对话。
+          // 替代原泳道图（§8 前端改造，参考 DSH EAC 右侧对话索引；位置仍在左）。
+          <div className="flex flex-col gap-0.5 p-2">
+            {groups.map((group) => {
+              const active = activeKey === group.sample.event_id
+              const time = eventTimeOf(group.sample)
+              const timeLabel = Number.isNaN(time)
+                ? ''
+                : new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              return (
+                <button
+                  key={group.key}
+                  type="button"
+                  aria-label={groupTitle(group)}
+                  title={groupTitle(group)}
+                  onClick={() => jump(group.sample)}
+                  className={`flex items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[11px] transition-colors ${
+                    active ? 'bg-blue-50 text-blue-700' : 'text-stone-600 hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-stone-700/40'
+                  }`}
+                >
+                  <span
+                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${barClass(group.sample, active)}`}
+                    aria-hidden
+                  />
+                  <span className="min-w-0 flex-1 truncate">{groupTitle(group)}</span>
+                  <span className="shrink-0 font-mono text-stone-400 dark:text-stone-500">{timeLabel}</span>
+                </button>
+              )
+            })}
+          </div>
+        ) : null}
       </div>
     </aside>
   )

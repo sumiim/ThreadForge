@@ -26,6 +26,7 @@ from pico.security import (
 from ..domain.entities import Approval, canonical_json, utc_now
 from ..domain.enums import ApprovalStatus, TaskStatus
 from ..domain.errors import (
+    AppError,
     ApprovalAlreadyResolvedError,
     ApprovalExpiredError,
     ApprovalStaleError,
@@ -33,6 +34,10 @@ from ..domain.errors import (
     NotFoundError,
     PersistenceUnavailableError,
     RenameConflictError,
+    UninstallUnavailableError,
+    UpdateBackoffError,
+    UpdateUnavailableError,
+    WorkerBusyError,
     WorkerCapabilityUnavailableError,
     WorkerCommandFailedError,
     WorkerConcurrencyLimitError,
@@ -74,6 +79,28 @@ _WORKSPACE_SELECTION_TTL_SECONDS = 120
 _EPHEMERAL_ANSWER_TTL_SECONDS = 600
 _EPHEMERAL_PROGRESS_TTL_SECONDS = 600
 LOGGER = logging.getLogger(__name__)
+
+
+def _worker_command_error(reason: str, *, command: str) -> AppError:
+    """把 Worker 回传的稳定原因映射成明确错误码（不再一律 worker_command_failed）。
+
+    Worker 在 update/uninstall 被拒时回 `error=worker_busy / update_unavailable /
+    update_backoff / uninstall_unavailable` 等稳定原因；前端据此显示可执行文案
+    （如「Worker 正在运行任务,请先停止再更新」）。
+    """
+    mapping = {
+        "worker_busy": WorkerBusyError(f"Worker is busy; cannot {command} now"),
+        "update_unavailable": UpdateUnavailableError("Worker update is unavailable"),
+        "update_backoff": UpdateBackoffError("Worker update is in backoff cooldown"),
+        "uninstall_unavailable": UninstallUnavailableError("Worker uninstall is unavailable"),
+    }
+    error = mapping.get(str(reason or ""))
+    if error is not None:
+        return error
+    return WorkerCommandFailedError(
+        f"Worker {command} was rejected",
+        {"reason": reason or f"{command}_failed"},
+    )
 
 
 @dataclass
@@ -644,10 +671,9 @@ class WorkerHub:
             with self._lock:
                 self._uninstall_requests.pop(request_id, None)
         if result.get("status") != "completed":
-            raise WorkerCommandFailedError(
-                "Worker uninstall was rejected",
-                {"reason": result.get("error", "uninstall_failed")},
-            )
+            # Worker 回传的稳定原因（worker_busy/uninstall_unavailable）映射成
+            # 明确错误码，前端据此显示可执行文案，不再笼统归为 worker_command_failed。
+            raise _worker_command_error(result.get("error", "uninstall_failed"), command="uninstall")
         return {"status": "uninstalling", "device_id": device_id}
 
     async def update_worker(self, *, device_id: str, owner_id: str) -> dict:
@@ -670,10 +696,7 @@ class WorkerHub:
             with self._lock:
                 self._update_requests.pop(request_id, None)
         if result.get("status") not in {"started", "current"}:
-            raise WorkerCommandFailedError(
-                "Worker update was rejected",
-                {"reason": result.get("error", "update_failed")},
-            )
+            raise _worker_command_error(result.get("error", "update_failed"), command="update")
         return {"status": result.get("status"), "device_id": device_id}
 
     def _register_pending_request(

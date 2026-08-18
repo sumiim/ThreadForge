@@ -1,7 +1,9 @@
 """Agent control loop extracted from the runtime facade."""
 
+import concurrent.futures
 import hashlib
 import json
+import threading
 import time
 import uuid
 from collections import deque
@@ -65,6 +67,10 @@ def _best_effort_step_limit(task_state, reason):
 
 MAX_CONSECUTIVE_TALKS = 2
 MAX_PROTOCOL_REPAIRS = 1
+# §7.8.9 决策（2026-08-18）：无 turn 硬顶——max_attempts 仅作「模型反复
+# 无效输出」的最后保险丝（防完全失控），正常停止全由证据截停/rejected_finals
+# 收敛/墙钟/token 硬顶接管。500 轮 × 每轮数秒 ≫ 墙钟 3600s，实际先撞墙钟。
+MAX_ATTEMPTS_SAFETY = 500
 
 # §7.8.7-③ / §7.8.9 停滞检测（滑动窗口）：
 # - 一个 turn = 一次模型决策 + 其后的工具执行（或无工具）。
@@ -179,18 +185,54 @@ def _tool_fingerprints_match(fp_a, fp_b):
     return fp_a == fp_b
 
 
-def _tool_call_repeats(name, args, recent_tool_fps, recent_tool_names):
+def _result_fingerprint(name, args, tool_result):
+    """观察结果指纹：只读工具的成功内容摘要（同动作同结果才算空转）。
+
+    §7.8.9 修正（2026-08-18）：read_file(a) 两次、中间文件被改 → 内容变了，
+    重读是合理的（确认写结果），不应判重复。指纹加结果后：参数相同且结果
+    相同才算重复；结果变了 → 不算重复。
+
+    只对只读工具（read_file/search/list_files）且**成功结果**做比较——
+    shell 输出多变（时间戳/路径/环境）不参与；失败/被拦结果（如 runtime
+    重复拦截的 error）不参与，返回 None（否则 error 会让「原本重复的调用」
+    看起来像结果变化，污染判定）。
+    """
+    if name not in {"read_file", "search", "list_files"}:
+        return None
+    if not hasattr(tool_result, "content"):
+        return None
+    status = str((getattr(tool_result, "metadata", {}) or {}).get("tool_status", ""))
+    if status not in {"ok", "partial_success"}:
+        return None
+    content = str(tool_result.content or "")
+    if not content.strip():
+        return None
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+
+
+def _tool_call_repeats(name, args, result_fp, recent_entries):
     """当前工具调用是否与滑动窗口内的历史调用重复。
 
-    - 窗口内匹配到同指纹 → 重复；
+    - 窗口内匹配到同动作指纹 → 看结果：只读工具要求结果相同（结果变了 =
+      文件被改，重读合理 → 不算重复）；result_fp 为 None（shell/写/未执行）
+      只看动作。
     - 但若「匹配之后有写工具介入」，工作区已变，重读/重列是合理的 → 不重复
       （对齐 runtime.repeated_tool_call 的语义）。
+
+    ``recent_entries``：deque of (action_fp, result_fp)。
     """
-    fp = _tool_fingerprint(name, args)
-    for index, prev_fp in enumerate(recent_tool_fps):
-        if not _tool_fingerprints_match(fp, prev_fp):
+    action_fp = _tool_fingerprint(name, args)
+    for index, (action_prev, result_prev) in enumerate(recent_entries):
+        if not _tool_fingerprints_match(action_fp, action_prev):
             continue
-        tail = recent_tool_names[index + 1:]
+        # 结果参与：只读工具要求结果相同；任何一方无结果（None）→ 只看动作。
+        if (
+            result_fp is not None
+            and result_prev is not None
+            and result_fp != result_prev
+        ):
+            continue  # 结果变了（文件被改）→ 不算重复，重读合理
+        tail = [entry[0][0] for entry in list(recent_entries)[index + 1:]]
         if any(tool not in _READ_ONLY_TOOL_NAMES for tool in tail):
             continue
         return True
@@ -290,6 +332,91 @@ def _normalize_batch_reads(tools):
                     }
                 )
     return normalized, merged_count
+
+
+def _extract_tool_path(name, args):
+    """从工具参数里取规范化路径（写工具 / read_file 有 path 参数）。"""
+    if not isinstance(args, dict):
+        return None
+    path = args.get("path")
+    if isinstance(path, str) and path.strip():
+        return path.strip().replace("\\", "/")
+    return None
+
+
+def _partition_batch_tools(tools):
+    """§7.8.9 P5 批内分区：并发组（无数据依赖） vs 串行组。
+
+    判定规则（按工具单位截断/拦阻，与 P1/P2/P4 一致）：
+    - 只读工具（list_files / read_file / search）：
+      - 批内早于它没有写工具 → 并发组（可并行执行；提交仍按声明顺序，
+        重复判定窗口与 evidence 有序）。
+      - 批内已有写工具：
+        - list_files / search 枚举全工作区，无法预知写的影响面 → 保守串行；
+        - read_file 只读指定路径，仅当该路径已被批内更早的写改过才串行
+          （否则并发读到旧状态无妨，写不影响它）。
+    - 写工具（write_file / patch_file）：
+      - **不同文件的写可以并行**（2026-08-18 用户指出，原实现过度保守）：
+        有 path、批内早于它没人读过/写过该 path、且批内没有 run_shell
+        → 并发组。路径级 snapshot diff（`capture_path_snapshot`）保证
+        affected_paths 不被并行兄弟污染。
+      - 同路径已被触碰（读过或写过）、或批内已有 run_shell → 串行组。
+    - run_shell → 永远串行组，影响面未知，污染所有路径（其后只读只能串行）。
+    - P5 写切片（plan B）：patch_file 单条 old_text→new_text 语义不变，
+      同文件多条 patch_file 天然构成写切片，串行组按声明顺序执行即可。
+
+    返回 (concurrent_items, serial_items)，每项为 (index_in_tools, item)，
+    index 用于按声明顺序合并执行结果与提交。
+    """
+    dirty_paths = set()   # 批内已被写过的具体路径
+    touched = set()       # 批内已被触碰（读过/写过）的路径 —— 写工具进并发组的判定
+    saw_write = False     # 批内是否已出现写/shell
+    saw_shell = False     # 批内是否已出现 run_shell（影响面未知）
+    concurrent = []
+    serial = []
+    for index, item in enumerate(tools):
+        name = str(item.get("name", ""))
+        args = item.get("args", {}) if isinstance(item.get("args"), dict) else {}
+        if name in _READ_ONLY_TOOL_NAMES:
+            if name in {"list_files", "search"}:
+                # 枚举全工作区：批内已有写 → 保守串行；进入并发组则记录
+                # "*"（其后任何写只能串行，保证 list 看到写前状态）。
+                if not saw_write and not saw_shell:
+                    concurrent.append((index, item))
+                    touched.add("*")
+                else:
+                    serial.append((index, item))
+                continue
+            # read_file
+            path = _extract_tool_path(name, args)
+            if not saw_shell and path not in dirty_paths:
+                concurrent.append((index, item))
+                touched.add(path)
+            else:
+                serial.append((index, item))
+        elif name == "run_shell":
+            saw_write = True
+            saw_shell = True
+            dirty_paths.add("*")
+            touched.add("*")
+            serial.append((index, item))
+        else:
+            # write_file / patch_file
+            path = _extract_tool_path(name, args)
+            if not saw_shell and path and path not in touched and "*" not in touched:
+                # 不同文件的写可并行：该路径批内未被触碰（没人读过/写过它）、
+                # 前面无 shell → 并发组。
+                concurrent.append((index, item))
+            else:
+                serial.append((index, item))
+            saw_write = True
+            if path:
+                dirty_paths.add(path)
+                touched.add(path)
+            else:
+                dirty_paths.add("*")
+                touched.add("*")
+    return concurrent, serial
 
 
 class AgentLoop:
@@ -409,20 +536,31 @@ class AgentLoop:
         recent_tool_fps,
         recent_tool_names,
         started_at,
+        *,
+        defer_commit=False,
     ):
         """执行单个工具动作（§7.8.9 阶段 2：串行队列的最小单元）。
 
         批内每个动作独立走完整链路：P4 重复拦截 → 预算拒绝 → 执行 →
         工具信号（窗口）→ evidence 记录。返回 ToolExecutionResult。
+
+        ``defer_commit=True``（并发批）：只执行，跳过窗口/evidence 提交——
+        由调用方按声明顺序统一提交（保持重复判定窗口有序）。
         """
         agent = self.agent
         agent.emit_progress(f"step {attempts}: running tool {name}")
-        # P4 重复动作执行前拦截。
-        pre_repeat = _tool_call_repeats(
-            name,
-            args,
-            tuple(recent_tool_fps),
-            tuple(recent_tool_names),
+        # P4 重复动作执行前拦截：只对非只读工具（shell/写）生效——只读工具
+        # 的结果可能已变（文件被改，重读合理），执行前无法预知，放行后由
+        # 执行后判定（结果参与）决定是否算重复/坏轮。
+        pre_repeat = (
+            _tool_call_repeats(
+                name,
+                args,
+                None,
+                tuple(recent_tool_fps),
+            )
+            if name not in _READ_ONLY_TOOL_NAMES
+            else False
         )
         if pre_repeat:
             tool_result = ToolExecutionResult(
@@ -461,24 +599,58 @@ class AgentLoop:
                 },
             )
         else:
-            if name == "read_file":
-                task_state.record_read_file()
             tool_result = agent.execute_tool(name, args, tool_call_id=tool_call_id)
+        if defer_commit:
+            # 并发批：执行完成，提交由调用方按声明顺序统一做（保持窗口有序）。
+            return tool_result
+        return self._commit_tool_action(
+            task_state, attempts, name, args, tool_call_id,
+            recent_tool_fps, recent_tool_names, started_at, tool_result,
+        )
+
+    def _commit_tool_action(
+        self,
+        task_state,
+        attempts,
+        name,
+        args,
+        tool_call_id,
+        recent_tool_fps,
+        recent_tool_names,
+        started_at,
+        tool_result,
+    ):
+        """工具执行的「提交」阶段：重复判定 + 窗口 + read_files + evidence。
+
+        与执行分离：并发批先并发执行（defer_commit），再按声明顺序逐个提交，
+        保证重复判定窗口有序、共享状态无竞争。
+        """
+        agent = self.agent
         task_state.record_affected_paths(tool_result.metadata.get("affected_paths", []))
         tool_status = str(tool_result.metadata.get("tool_status", "unknown"))
         # 工具信号：本轮是否调了工具、是否与窗口内重复（写工具介入豁免）。
+        # §7.8.9 修正（2026-08-18）：执行后判定带结果指纹——只读工具
+        # 同动作同结果才算重复；内容变了（文件被改）→ 不算。
+        result_fp = _result_fingerprint(name, args, tool_result)
         repeated = _tool_call_repeats(
             name,
             args,
+            result_fp,
             tuple(recent_tool_fps),
-            tuple(recent_tool_names),
         )
+        # §7.8.9 修正（2026-08-18）：read_file 计数移到重复判定后——
+        # 内容没变的重复读不计 read_files（不消耗预算）；内容变了的重读
+        # 是新读，计入。
+        if name == "read_file" and not repeated:
+            task_state.record_read_file()
         # §7.8.9 边界：重复动作（P4 拦截）不入重复窗口——入队会污染「有效历史」，
         # 未来相同调用仍应基于最早的原始动作判定重复；窗口只存真实执行过的动作。
         if not repeated:
-            recent_tool_fps.append(_tool_fingerprint(name, args))
+            recent_tool_fps.append((_tool_fingerprint(name, args), result_fp))
             recent_tool_names.append(name)
-        if tool_status in {"ok", "partial_success"}:
+        # §7.8.9 修正（2026-08-18）：evidence 只在非重复时记录——重复读（同动作
+        # 同结果）不产生新事实，不重复记 evidence（与 read_files 计数一致）。
+        if tool_status in {"ok", "partial_success"} and not repeated:
             affected_paths = list(tool_result.metadata.get("affected_paths", []))
             relative_paths = list(affected_paths)
             requested_path = args.get("path") if isinstance(args, dict) else None
@@ -649,10 +821,11 @@ class AgentLoop:
         protocol_failed = False
         finalization_attempted = False
         tool_definitions = provider_tool_definitions(agent.tools)
-        max_attempts = min(
-            max(agent.max_steps * 3, agent.max_steps + 4),
-            task_state.max_total_steps,
-        )
+        # §7.8.9 决策（2026-08-18）：去掉 max_steps turn 硬顶——停止由
+        # 证据截停（坏轮窗口）/ rejected_finals 收敛 / 墙钟/token 硬顶接管。
+        # max_attempts 仅作「模型反复无效输出」的最后保险丝（远大于任务正常
+        # 轮数；墙钟 3600s / token 500k 通常更早兜底）。
+        max_attempts = MAX_ATTEMPTS_SAFETY
         # §7.8.7-③ 停滞检测（滑动窗口）：每 turn 结束记录三信号
         # （checklist 无新增 / evidence 无新增 / 工具重复或零工具），
         # 窗口内最近 n 个 turn 全坏（n 随剩余预算自适应）→ 强制收敛。
@@ -685,9 +858,7 @@ class AgentLoop:
         # 边界 1：进入控制循环前。
         token.raise_if_cancelled()
 
-        while attempts < max_attempts and (
-            tool_steps < agent.max_steps or not finalization_attempted
-        ):
+        while attempts < max_attempts and not finalization_attempted:
             # 边界 2：每轮开始、构建 prompt 前。
             token.raise_if_cancelled()
             # §7.8.9 阶段 4：墙钟/token 硬顶（唯一保留的外部尺子，防烧钱）。
@@ -741,7 +912,10 @@ class AgentLoop:
             current = (len(task_state.evidence), len(task_state.completed_items))
             if prev_end is not None:
                 reasons = []
-                if not turn_tool_called and not turn_talked:
+                # §7.8.9 修正（2026-08-18）：final 被 review 拒的轮次不算 silent——
+                # 模型有产出（final 内容），只是方向/验证没过，走 review 反馈循环
+                # 而非坏轮窗口（否则有工具被拒不进快速收敛，却会被通用坏轮误杀）。
+                if not turn_final_rejected and not turn_tool_called and not turn_talked:
                     reasons.append("silent_turn_no_output")
                 elif turn_tool_called and turn_tool_repeated:
                     reasons.append("tool_repeated_or_failed")
@@ -796,20 +970,19 @@ class AgentLoop:
                     finalization_only = True
                     finalization_attempted = True
                 else:
-                    finalization_only = tool_steps >= agent.max_steps
-                    if finalization_only:
-                        finalization_attempted = True
+                    # §7.8.9 决策（2026-08-18）：无 max_steps 硬顶——正常路径
+                    # 不再因步数进入 finalization；只有证据截停触发它。
+                    finalization_only = False
             else:
                 # 第一轮：只记录起点，不判定（给模型开局机会）。
-                finalization_only = tool_steps >= agent.max_steps
-                if finalization_only:
-                    finalization_attempted = True
+                finalization_only = False
             # 本轮结束时的状态 = 下轮顶部的 prev_end 基准。
             prev_end = current
             # §7.8.9 修正（2026-08-18）：「重复无工具 final 被 review 拒」独立计数，
             # 连续 2 轮即触发收敛（比通用坏轮阈值 3 更激进——纯语言空转最严重）。
-            # final 被拒本身算坏轮信号；连续 2 次直接强制收敛，不等通用窗口。
-            if turn_final_rejected:
+            # 只对「无工具 final 被拒」计数：有工具被拒 ≠ 空转（可能差最后一步验证，
+            # 有产出不该急停），走通用坏轮窗口（阶段 1）+ review 继续给反馈。
+            if turn_final_rejected and not turn_tool_called:
                 consecutive_final_rejected += 1
             else:
                 consecutive_final_rejected = 0
@@ -873,8 +1046,9 @@ class AgentLoop:
             if finalization_only:
                 prompt += (
                     "\n\nRuntime control feedback:\n"
-                    "The tool-call budget is exhausted. Do not call another tool. "
-                    "Use the evidence already collected and return a grounded final answer now."
+                    "Evidence stagnation detected: recent rounds produced no new "
+                    "progress. Do not call another tool. Use the evidence already "
+                    "collected and return a grounded final answer now."
                 )
                 prompt_metadata["runtime_finalization_only"] = True
                 prompt_metadata["prompt_chars"] = len(prompt)
@@ -1006,9 +1180,8 @@ class AgentLoop:
                     "finalization_protocol_rejected",
                     {
                         "kind": kind,
-                        "error_code": "tool_budget_exhausted",
+                        "error_code": "stagnation_finalization",
                         "tool_steps": tool_steps,
-                        "max_tool_steps": agent.max_steps,
                     },
                 )
                 break
@@ -1128,6 +1301,9 @@ class AgentLoop:
                     tools = deduped
                 # §7.8.9 P3 读归并 + P4 读切片（同文件重叠合并、超长切片）。
                 tools, merged_reads = _normalize_batch_reads(tools)
+                # §7.8.9 P5 分区：并发组（只读、无同路径写冲突）并行执行，
+                # 提交按声明顺序统一做；串行组保持原有链路。
+                concurrent_items, serial_items = _partition_batch_tools(tools)
                 batch_started_at = time.monotonic()
                 agent.emit_trace(
                     task_state,
@@ -1139,19 +1315,72 @@ class AgentLoop:
                         "limit": MAX_PARALLEL_TOOLS,
                         "deduped": deduped_count,
                         "merged_reads": merged_reads,
+                        "concurrent": len(concurrent_items),
+                        "serial": len(serial_items),
                     },
                 )
                 batch_results = []
                 batch_all_bad = True  # 批内所有动作都重复/失败才计本轮坏
-                for item in tools:
+                batch_acc = {"all_bad": batch_all_bad, "results": batch_results}
+
+                def _collect_batch_result(acc, name, args, tool_result, repeated):
+                    status = str(tool_result.metadata.get("tool_status", "unknown"))
+                    if status in {"ok", "partial_success"} and not repeated:
+                        acc["all_bad"] = False
+                    acc["results"].append(
+                        {
+                            "name": name,
+                            "args": args,
+                            "status": status,
+                            "summary": agent.summarize_tool_result(name, args, tool_result),
+                        }
+                    )
+
+                # §7.8.9 P5 执行：并发组 + 串行组都「只执行不提交」（defer_commit），
+                # 最后统一按全局声明顺序提交——R7：窗口顺序 = 声明顺序，不能按
+                # 组顺序（并发组先行 + 串行组尾巴会让交错的读挤到窗口末尾，
+                # 破坏「匹配后有无写工具」豁免判定）。
+                executed = {}
+                if concurrent_items:
+                    def _run_concurrent(index_item):
+                        index, item = index_item
+                        name = str(item.get("name", ""))
+                        args = item.get("args", {})
+                        tool_call_id = _new_tool_call_id()
+                        tool_started_at = time.monotonic()
+                        tool_result = self._execute_tool_action(
+                            task_state,
+                            attempts,
+                            name,
+                            args,
+                            tool_call_id,
+                            recent_tool_fps,
+                            recent_tool_names,
+                            tool_started_at,
+                            defer_commit=True,
+                        )
+                        return index, name, args, tool_call_id, tool_started_at, tool_result
+
+                    with concurrent.futures.ThreadPoolExecutor(
+                        max_workers=min(MAX_PARALLEL_TOOLS, len(concurrent_items))
+                    ) as pool:
+                        futures = [
+                            pool.submit(_run_concurrent, item) for item in concurrent_items
+                        ]
+                        for future in futures:
+                            # 任一并发工具抛异常（RunCancelled/清理失败）→ 上抛，
+                            # with 退出时等待其余 future 收尾；整批提交跳过（运行中止）。
+                            index, name, args, tool_call_id, tool_started_at, tool_result = future.result()
+                            executed[index] = (name, args, tool_call_id, tool_started_at, tool_result)
+
+                # 串行组：按声明顺序逐个执行（同路径依赖保持），但 defer_commit——
+                # 提交仍留给下面的统一循环（保证窗口 = 全局声明顺序）。
+                for index, item in serial_items:
                     name = str(item.get("name", ""))
                     args = item.get("args", {})
-                    tool_steps += 1
-                    turn_actions += 1
-                    task_state.record_tool(name)
-                    tool_started_at = time.monotonic()
                     tool_call_id = _new_tool_call_id()
-                    tool_result, repeated = self._execute_tool_action(
+                    tool_started_at = time.monotonic()
+                    tool_result = self._execute_tool_action(
                         task_state,
                         attempts,
                         name,
@@ -1160,18 +1389,30 @@ class AgentLoop:
                         recent_tool_fps,
                         recent_tool_names,
                         tool_started_at,
+                        defer_commit=True,
                     )
-                    status = str(tool_result.metadata.get("tool_status", "unknown"))
-                    if status in {"ok", "partial_success"} and not repeated:
-                        batch_all_bad = False
-                    batch_results.append(
-                        {
-                            "name": name,
-                            "args": args,
-                            "status": status,
-                            "summary": agent.summarize_tool_result(name, args, tool_result),
-                        }
+                    executed[index] = (name, args, tool_call_id, tool_started_at, tool_result)
+
+                # 统一提交：按全局声明顺序（index 升序），窗口/read_files/evidence
+                # 与声明顺序严格一致。
+                for index in sorted(executed):
+                    name, args, tool_call_id, tool_started_at, tool_result = executed[index]
+                    tool_steps += 1
+                    turn_actions += 1
+                    task_state.record_tool(name)
+                    tool_result, repeated = self._commit_tool_action(
+                        task_state,
+                        attempts,
+                        name,
+                        args,
+                        tool_call_id,
+                        recent_tool_fps,
+                        recent_tool_names,
+                        tool_started_at,
+                        tool_result,
                     )
+                    _collect_batch_result(batch_acc, name, args, tool_result, repeated)
+                batch_all_bad = batch_acc["all_bad"]
                 agent.emit_trace(
                     task_state,
                     "tool_batch_completed",
@@ -1332,11 +1573,12 @@ class AgentLoop:
             agent.emit_progress(f"run {task_state.run_id} finished")
             return final
 
-        if protocol_failed or (attempts >= max_attempts and tool_steps < agent.max_steps):
-            final = _best_effort_step_limit(task_state, "模型反复返回无效输出（retry_limit_reached）")
+        if protocol_failed or attempts >= max_attempts:
+            final = _best_effort_step_limit(task_state, "模型反复返回无效输出或达到尝试保险丝（retry_limit_reached）")
             task_state.stop_retry_limit(final)
         else:
-            final = _best_effort_step_limit(task_state, "步数预算已用尽（budget_exhausted）")
+            # finalization 轮（证据截停触发）模型未给出有效 final → best-effort。
+            final = _best_effort_step_limit(task_state, "停滞收敛：连续坏轮后未能产出最终结论")
             task_state.stop_step_limit(final)
         task_state.set_phase(PHASE_FINAL, next_step="Explain the budget or execution blocker")
         agent.run_store.write_task_state(task_state)

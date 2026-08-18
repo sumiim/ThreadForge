@@ -494,6 +494,26 @@ class Pico:
                 continue
         return snapshot
 
+    def capture_path_snapshot(self, relative_path):
+        """单路径内容快照（§7.8.9 P5 写并行：有 path 的写工具只 diff 自己）。
+
+        写工具并行时全量 snapshot 会互相污染 affected_paths（A 的 after 拍到的
+        是 B 也写过的 workspace）——有 path 的 write/patch 只对比目标文件,
+        run_shell 影响面未知仍用全量 snapshot。
+        """
+        key = str(relative_path or "").strip().replace("\\", "/")
+        if not key:
+            return {}
+        try:
+            root_resolved = self.root.resolve()
+            target = (self.root / key).resolve()
+            target.relative_to(root_resolved)  # 路径逃逸防御（validate 已拦，双保险）
+            if not target.is_file():
+                return {}
+            return {key: hashlib.sha256(target.read_bytes()).hexdigest()}
+        except Exception:
+            return {}
+
     @staticmethod
     def diff_workspace_snapshots(before, after):
         changed_paths = []
@@ -673,6 +693,11 @@ class Pico:
         # agent 很常见的一种坏循环，是在没有新信息的情况下反复发起同一调用。
         # 只读工具在「最近 6 条、且该重复之后没有写工具」的窗口内同名同参才算坏循环；
         # 写工具会改变工作区，之后重新 list/read 是合理的。
+        # §7.8.9 修正（2026-08-18）：只读工具不做执行前拦截——结果可能已变
+        # （文件被改，重读合理），执行前无法预知；放行后由 AgentLoop 的执行后
+        # 判定（结果指纹参与）决定是否算重复/坏轮。此函数只拦 shell/写工具。
+        if name in _READ_ONLY_TOOL_NAMES:
+            return False
         tool_events = [item for item in self.session["history"] if item["role"] == "tool"]
         if len(tool_events) < 2:
             return False

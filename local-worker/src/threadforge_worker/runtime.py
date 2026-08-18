@@ -185,19 +185,16 @@ class RemoteExecutionHooks:
         self._send = send_event
         self._token = token
         self._allow_plain_text_final = bool(allow_plain_text_final)
-        self._active_tool_call_id = ""
-        self._active_tool_name = ""
         self._run_started_at = time.monotonic()
         self._model_round = 0
         self._model_round_id = ""
         self._model_started_at = 0.0
         self._model_started_wall = ""
-        self._tool_started_wall = ""
-        self._tool_started_mono = 0.0
         self._last_heartbeat_at = 0.0
-        # 工具执行期间的心跳线程（shell 等待时前端计时不冻结）。
-        self._tool_heartbeat_stop = threading.Event()
-        self._tool_heartbeat_thread: threading.Thread | None = None
+        # §7.8.9 并发批：并发只读工具可能同时 before/after_tool，单槽属性
+        # 无法把结果归属到正确工具 → 改为按 tool_call_id 分槽；每个工具
+        # 独立心跳线程，互不干扰（不再共享一个 stop 事件）。
+        self._active_tools: dict[str, dict] = {}
         self._stream_buffer = ""
         self._stream_mode = "pending"
         self._redaction_buffer = ""
@@ -268,31 +265,42 @@ class RemoteExecutionHooks:
 
     def before_tool(self, task_state, tool_call: dict) -> None:
         self._check()
-        self._active_tool_call_id = str(tool_call.get("id", ""))
-        self._active_tool_name = str(tool_call.get("name", ""))
-        self._tool_started_wall = _utc_now()
-        self._tool_started_mono = time.monotonic()
-        self._start_tool_heartbeat()
+        tool_call_id = str(tool_call.get("id", ""))
+        started_wall = _utc_now()
+        started_mono = time.monotonic()
+        # 按 tool_call_id 分槽：并发批里多个工具同时执行时，after_tool 靠
+        # metadata.tool_call_id 取回自己的槽，归属不串位。
+        self._active_tools[tool_call_id] = {
+            "tool_call_id": tool_call_id,
+            "tool_name": str(tool_call.get("name", "")),
+            "started_wall": started_wall,
+            "started_mono": started_mono,
+            "heartbeat_stop": threading.Event(),
+            "heartbeat_thread": None,
+        }
+        self._start_tool_heartbeat(tool_call_id)
         self._send(
             "tool.started",
             {
-                "tool_call_id": self._active_tool_call_id,
-                "tool_name": self._active_tool_name,
+                "tool_call_id": tool_call_id,
+                "tool_name": str(tool_call.get("name", "")),
                 "parent_event_id": self._model_round_id,
-                "started_at": self._tool_started_wall,
+                "started_at": started_wall,
             },
         )
 
-    def _start_tool_heartbeat(self) -> None:
+    def _start_tool_heartbeat(self, tool_call_id: str) -> None:
         """工具执行期间周期发 model.heartbeat（stage=tool）。
 
         run_shell 等长任务在 before_tool → after_tool 之间同步阻塞，期间没有
         model_text_delta，前端计时会冻结。用 daemon 心跳线程保证计时连续。
+        并发批里每个工具一个独立心跳线程（自己的 stop 事件），互不干扰。
         """
-        self._tool_heartbeat_stop.set()
-        self._tool_heartbeat_stop = threading.Event()
-        stop = self._tool_heartbeat_stop
-        started_mono = self._tool_started_mono
+        slot = self._active_tools.get(tool_call_id)
+        if slot is None:
+            return
+        stop = slot["heartbeat_stop"]
+        started_mono = slot["started_mono"]
         round_id = self._model_round_id
 
         def beat() -> None:
@@ -311,30 +319,37 @@ class RemoteExecutionHooks:
                     },
                 )
 
-        self._tool_heartbeat_thread = threading.Thread(
+        slot["heartbeat_thread"] = threading.Thread(
             target=beat,
-            name="worker-tool-heartbeat",
+            name=f"worker-tool-heartbeat-{tool_call_id}",
             daemon=True,
         )
-        self._tool_heartbeat_thread.start()
+        slot["heartbeat_thread"].start()
 
     def after_tool(self, task_state, result) -> None:
         self._check()
-        self._tool_heartbeat_stop.set()
         metadata = dict(getattr(result, "metadata", {}) or {})
+        tool_call_id = str(metadata.get("tool_call_id", ""))
+        if not tool_call_id and self._active_tools:
+            # 兼容旧路径：metadata 未带 tool_call_id 时取最近活跃槽。
+            tool_call_id = next(iter(self._active_tools))
+        slot = self._active_tools.pop(tool_call_id, None) or {}
+        stop = slot.get("heartbeat_stop")
+        if stop is not None:
+            stop.set()
         status = metadata.get("tool_status", "ok")
         event_type = "tool.completed" if status in {"ok", "partial_success"} else "tool.failed"
         result_preview, result_truncated = public_tool_result_preview(
-            self._active_tool_name, getattr(result, "content", "")
+            slot.get("tool_name", ""), getattr(result, "content", "")
         )
         payload = {
-            "tool_call_id": self._active_tool_call_id,
-            "tool_name": self._active_tool_name,
+            "tool_call_id": tool_call_id,
+            "tool_name": slot.get("tool_name", ""),
             "tool_status": status,
             "tool_error_code": metadata.get("tool_error_code", ""),
             "affected_paths": metadata.get("affected_paths", []),
             "parent_event_id": self._model_round_id,
-            "started_at": self._tool_started_wall,
+            "started_at": slot.get("started_wall", ""),
             "ended_at": _utc_now(),
         }
         if result_preview:
@@ -344,8 +359,6 @@ class RemoteExecutionHooks:
             event_type,
             payload,
         )
-        self._active_tool_call_id = ""
-        self._active_tool_name = ""
 
     def commentary(self, task_state, text: str) -> None:
         self._check()

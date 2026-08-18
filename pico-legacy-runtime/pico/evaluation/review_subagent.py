@@ -13,8 +13,16 @@ from __future__ import annotations
 import json
 import time
 
+from ..workspace import clip
+
 REVIEW_POLL_ACTIONS = 6          # 每 N 个工具动作触发一次 review
 REVIEW_MAX_NEW_TOKENS = 512
+# §7.8.9 决策（2026-08-18）：review 工具化——review 内部可调 read/search/bash
+# 跑验证（如测试/编译），否则 finalize 前无法自证。review 的工具执行走轻量
+# 路径（不 hooks/record/commit/审批），结果只回 feed review 上下文，不污染
+# 主循环 history/evidence。REVIEW_MAX_STEPS = 内部工具轮 + 判决轮上限。
+REVIEW_MAX_STEPS = 5
+REVIEW_ALLOWED_TOOLS = frozenset({"read_file", "search", "run_shell"})
 
 # finalize 判决需要反驳的「不能结束理由」清单（程序从客观状态生成）。
 OBSTACLE_VERIFICATION = "verification"      # R1：有写/shell 且验证未过
@@ -24,10 +32,16 @@ OBSTACLE_PRIOR_FEEDBACK = "prior_feedback"  # 上轮 review 意见未响应
 
 _REVIEW_SYSTEM_TEMPLATE = (
     "You are a review subagent inside ThreadForge, called by the runtime. "
-    "Do not modify files. Decide whether the agent's work is complete.\n"
-    "This is a control call: emit exactly one JSON object and nothing else.\n"
-    'The JSON must be: {{"verdict": "finalize" | "continue" | "redirect", '
-    '"feedback": "...", "reason": "..."}}\n'
+    "You may run read-only tools (read_file / search) and run_shell to verify "
+    "the agent's work (e.g. run tests, compile, or inspect files). "
+    "Do not modify files other than what verification commands produce.\n"
+    "Decide whether the agent's work is complete.\n"
+    "This is a control call: emit exactly one JSON object per turn and nothing else.\n"
+    '- To run a tool first: {"name": "<tool>", "args": {...}} where <tool> is '
+    "read_file, search, or run_shell. The tool result will be appended, then you "
+    "can run another tool or emit the verdict.\n"
+    '- Final verdict: {"verdict": "finalize" | "continue" | "redirect", '
+    '"feedback": "...", "reason": "..."}\n'
     "- finalize: the task is complete; if obstacles are listed, you MUST rebut "
     "each one with concrete evidence from the execution context (e.g. a passed test).\n"
     "- continue: work in progress and on track; no direction change needed.\n"
@@ -127,6 +141,69 @@ def _parse_review_output(raw: str) -> dict:
     }
 
 
+def _parse_review_action(raw: str):
+    """§7.8.9 决策（2026-08-18）：review 输出可以是判决 JSON 或工具调用。
+
+    返回 ("verdict", decision) | ("tool", name, args) | ("invalid", message)。
+    支持 <tool>…</tool> 文本协议与纯 JSON（{name, args} / {verdict, ...}）。
+    """
+    text = str(raw or "").strip()
+    # <tool> 文本协议
+    if "<tool" in text:
+        import re as _re
+
+        match = _re.search(r"<tool[^>]*>(.*?)</tool>", text, _re.S)
+        if match:
+            inner = match.group(1).strip()
+            try:
+                value = json.loads(inner)
+                if isinstance(value, dict) and "name" in value:
+                    return ("tool", str(value["name"]), value.get("args", {}))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 3:
+            text = "\n".join(lines[1:-1]).strip()
+    try:
+        value = json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return ("invalid", "review output was not valid JSON; emit a tool call or a verdict JSON")
+    if not isinstance(value, dict):
+        return ("invalid", "review output must be a JSON object")
+    if "verdict" in value:
+        decision = _parse_review_output(text)
+        if decision["verdict"] in REVIEW_VERDICTS:
+            return ("verdict", decision)
+        return ("invalid", decision.get("feedback", "review verdict must be finalize/continue/redirect"))
+    if "name" in value:
+        return ("tool", str(value["name"]), value.get("args", {}))
+    return ("invalid", "review output must contain a verdict or a tool name")
+
+
+def _execute_review_tool(agent, name: str, args) -> str:
+    """§7.8.9 决策（2026-08-18）：review 内部工具执行（轻量路径）。
+
+    只走校验 + tool run——不触发主循环 hooks / record / commit / 审批，
+    结果只回 feed review 上下文（不污染主循环 history/evidence）。review
+    是验证者，它的调查不应影响主循环判定。
+    """
+    if name not in REVIEW_ALLOWED_TOOLS:
+        return (
+            "error: tool not allowed in review; allowed: "
+            + ", ".join(sorted(REVIEW_ALLOWED_TOOLS))
+        )
+    tool = agent.tools.get(name)
+    if tool is None:
+        return f"error: unknown tool '{name}'"
+    try:
+        agent.validate_tool(name, args)
+        content = tool["run"](args)
+        return clip(str(content), 4000)
+    except Exception as exc:
+        return f"error: {type(exc).__name__}: {exc}"
+
+
 def run_review(
     agent,
     task_state,
@@ -137,7 +214,12 @@ def run_review(
     verification_passed: bool,
     prior_feedback: str = "",
 ) -> dict:
-    """程序强制调用 review 子 agent（复用主 model_client 做一次独立上下文的调用）。
+    """程序强制调用 review 子 agent（复用主 model_client 做独立上下文的调用）。
+
+    §7.8.9 决策（2026-08-18）：review 工具化——review 内部循环可调
+    read/search/run_shell（跑验证：测试/编译/检查），再给 verdict。
+    review 的工具结果只回 feed 自身上下文，不污染主循环 history/evidence；
+    工具执行走轻量路径（不 hooks/record/commit/审批）。
 
     返回结构化判决 + 审计记录（写入 task_state.review_audit）。
     """
@@ -160,7 +242,7 @@ def run_review(
         run_trail = agent.history_text()
     except Exception:
         run_trail = ""
-    prompt = (
+    context = (
         _REVIEW_SYSTEM_TEMPLATE
         + "\n"
         + _REVIEW_USER_TEMPLATE.format(
@@ -174,48 +256,80 @@ def run_review(
         )
     )
     started_at = time.monotonic()
-    try:
-        raw = agent.model_client.complete(prompt, REVIEW_MAX_NEW_TOKENS)
-    except Exception as exc:
-        decision = {
-            "verdict": "continue",
-            "feedback": "",
-            "reason": f"review model call failed: {type(exc).__name__}",
-        }
-        duration_ms = int((time.monotonic() - started_at) * 1000)
-        agent.emit_trace(
-            task_state,
-            "review_failed",
-            {
+    decision = None
+    review_shell_ok = False
+    tool_rounds = 0
+    for step in range(REVIEW_MAX_STEPS):
+        try:
+            raw = agent.model_client.complete(context, REVIEW_MAX_NEW_TOKENS)
+        except Exception as exc:
+            decision = {
+                "verdict": "continue",
+                "feedback": "",
+                "reason": f"review model call failed: {type(exc).__name__}",
+            }
+            duration_ms = int((time.monotonic() - started_at) * 1000)
+            agent.emit_trace(
+                task_state,
+                "review_failed",
+                {
+                    "trigger": trigger,
+                    "error_type": type(exc).__name__,
+                    "duration_ms": duration_ms,
+                },
+            )
+            record = {
+                "seq": len(task_state.review_audit) + 1,
                 "trigger": trigger,
-                "error_type": type(exc).__name__,
+                "verdict": decision["verdict"],
+                "feedback": decision["feedback"],
+                "reason": decision["reason"],
+                "obstacles": obstacles,
                 "duration_ms": duration_ms,
-            },
-        )
-        record = {
-            "seq": len(task_state.review_audit) + 1,
-            "trigger": trigger,
-            "verdict": decision["verdict"],
-            "feedback": decision["feedback"],
-            "reason": decision["reason"],
-            "obstacles": obstacles,
-            "duration_ms": duration_ms,
-            "failed": True,
-        }
-        task_state.review_audit.append(record)
-        agent.run_store.write_task_state(task_state)
-        return decision
+                "failed": True,
+            }
+            task_state.review_audit.append(record)
+            agent.run_store.write_task_state(task_state)
+            return decision
 
-    decision = _parse_review_output(raw)
+        action = _parse_review_action(raw)
+        if action[0] == "verdict":
+            decision = action[1]
+            break
+        if action[0] == "tool":
+            name, args = action[1], action[2]
+            result = _execute_review_tool(agent, name, args)
+            tool_rounds += 1
+            # review 内部 shell 成功（exit 0）→ 视为验证通过（review 用 bash
+            # 就是为了跑验证；finalize 时程序 gate 认可它）。
+            if name == "run_shell" and "exit_code: 0" in result:
+                review_shell_ok = True
+            context += (
+                f"\n\n[review tool round {tool_rounds}] {name}("
+                + json.dumps(args, ensure_ascii=False)[:300]
+                + ")\nResult:\n"
+                + result
+            )
+            continue
+        # invalid：提示格式，继续给 review 一次机会。
+        context += "\n\n" + str(action[1])
+    else:
+        # 超步未给 verdict → redirect（review 无法收敛成判决）。
+        decision = {
+            "verdict": "redirect",
+            "feedback": "review did not produce a verdict within its step limit",
+            "reason": "review_step_limit",
+        }
     duration_ms = int((time.monotonic() - started_at) * 1000)
 
     # 方向 B：程序侧 R1 验证门槛（不依赖模型，纯客观判定）。
     # review 判 finalize 时，若有写/shell 且验证未过 → 程序直接拒绝，
-    # 不管 review 说了什么——「做完了」必须由验证动作证明，不是 review 口头确认。
+    # 除非 review 内部自己跑过成功的 shell（review 工具化的验证证据）。
     if (
         decision["verdict"] == "finalize"
         and has_write_or_shell
         and not verification_passed
+        and not review_shell_ok
     ):
         decision = {
             "verdict": "redirect",
@@ -251,6 +365,8 @@ def run_review(
             "reason": str(decision.get("reason", ""))[:200],
             "obstacles": obstacles,
             "duration_ms": duration_ms,
+            "tool_rounds": tool_rounds,
+            "review_shell_ok": review_shell_ok,
         },
     )
     record = {
@@ -261,6 +377,8 @@ def run_review(
         "reason": str(decision.get("reason", ""))[:500],
         "obstacles": obstacles,
         "duration_ms": duration_ms,
+        "tool_rounds": tool_rounds,
+        "review_shell_ok": review_shell_ok,
         "failed": False,
     }
     task_state.review_audit.append(record)
