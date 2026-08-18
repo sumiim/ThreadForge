@@ -784,6 +784,17 @@ export function useSessions(): UseSessions {
             ))
             return
           }
+          case 'assistant.thinking': {
+            // DeepSeek 思考过程：独立于 content 累积，UI 折叠展示（不进正文）。
+            const text = String(data.text ?? '')
+            if (!text) return
+            updateSessionMessages(sessionId, (messages) => messages.map((message) =>
+              message.id === assistantId
+                ? { ...message, thinking: `${message.thinking ?? ''}${text}` }
+                : message,
+            ))
+            return
+          }
           case 'review.started': {
             updateProgress(sessionId, (progress) => progress ? { ...progress, phase: 'REVIEW', nextStep: '正在审查结果' } : progress)
             appendActivity(envelope, '开始审查')
@@ -936,6 +947,7 @@ export function useSessions(): UseSessions {
         'assistant.delta',
         'plan.created',
         'assistant.commentary',
+        'assistant.thinking',
         'review.started',
         'review.completed',
         'tool.requested',

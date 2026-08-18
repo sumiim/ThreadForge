@@ -450,6 +450,8 @@ export interface Message {
   content: string
   createdAt: string // ISO 时间
   commentary?: string // 模型过程中间话（流式回传，区别于 final content）
+  /** DeepSeek 思考过程（assistant.thinking 流式累积；独立于 content，UI 折叠展示） */
+  thinking?: string
   toolCalls?: ToolCall[]
   activity?: AgentActivity[]
   runId?: string

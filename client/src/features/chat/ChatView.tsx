@@ -39,18 +39,11 @@ const phaseLabels: Record<string, string> = {
 export default function ChatView({ session, historyStatus, running, isMobile = false, stopping, agentProgress, onSend, onRetryHistory, onStop, onSelectRun, onApprove, onReject }: ChatViewProps) {
   const empty = session.messages.length === 0
 
-  // 待审批的工具调用（per_call_only，逐次审批）
+  // 待审批的工具调用（per_call_only，逐次审批）——面板展示在输入框上方
   const pendingApprovals = session.messages.flatMap((m) =>
     (m.toolCalls ?? [])
-      .filter((t) => t.requiresApproval && t.status === 'pending')
-      .map((t) => t.id),
+      .filter((t) => t.requiresApproval && t.status === 'pending'),
   )
-
-  const locatePending = () => {
-    const first = pendingApprovals[0]
-    if (!first) return
-    document.getElementById(`tool-call-${first}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-  }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -137,7 +130,22 @@ export default function ChatView({ session, historyStatus, running, isMobile = f
         </div>
       </div>
 
-      <ApprovalNotice count={pendingApprovals.length} onLocate={locatePending} />
+      <ApprovalNotice
+        pending={pendingApprovals}
+        onApprove={(toolCallId) => {
+          // 审批决策需要 toolCall 携带 approvalId/taskId；按 toolCallId 回查。
+          const owner = session.messages.find((m) =>
+            (m.toolCalls ?? []).some((t) => t.id === toolCallId),
+          )
+          if (owner) onApprove(owner.id, toolCallId)
+        }}
+        onReject={(toolCallId) => {
+          const owner = session.messages.find((m) =>
+            (m.toolCalls ?? []).some((t) => t.id === toolCallId),
+          )
+          if (owner) onReject(owner.id, toolCallId)
+        }}
+      />
 
       <Composer
         key={session.id}
