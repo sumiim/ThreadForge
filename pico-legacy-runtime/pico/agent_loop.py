@@ -1335,9 +1335,10 @@ class AgentLoop:
                         }
                     )
 
-                # 并发组：ThreadPoolExecutor 并行执行（defer_commit=True，
-                # 只执行不提交），主线程按声明顺序逐个 _commit_tool_action——
-                # 重复判定窗口、read_files、evidence 保持有序、无竞争。
+                # §7.8.9 P5 执行：并发组 + 串行组都「只执行不提交」（defer_commit），
+                # 最后统一按全局声明顺序提交——R7：窗口顺序 = 声明顺序，不能按
+                # 组顺序（并发组先行 + 串行组尾巴会让交错的读挤到窗口末尾，
+                # 破坏「匹配后有无写工具」豁免判定）。
                 executed = {}
                 if concurrent_items:
                     def _run_concurrent(index_item):
@@ -1370,35 +1371,15 @@ class AgentLoop:
                             # with 退出时等待其余 future 收尾；整批提交跳过（运行中止）。
                             index, name, args, tool_call_id, tool_started_at, tool_result = future.result()
                             executed[index] = (name, args, tool_call_id, tool_started_at, tool_result)
-                    for index in sorted(executed):
-                        name, args, tool_call_id, tool_started_at, tool_result = executed[index]
-                        tool_steps += 1
-                        turn_actions += 1
-                        task_state.record_tool(name)
-                        tool_result, repeated = self._commit_tool_action(
-                            task_state,
-                            attempts,
-                            name,
-                            args,
-                            tool_call_id,
-                            recent_tool_fps,
-                            recent_tool_names,
-                            tool_started_at,
-                            tool_result,
-                        )
-                        _collect_batch_result(batch_acc, name, args, tool_result, repeated)
 
-                # 串行组：保持声明顺序（写工具互相串行；读到批内已写路径的
-                # 只读工具也串行，保证读到写后状态）。
+                # 串行组：按声明顺序逐个执行（同路径依赖保持），但 defer_commit——
+                # 提交仍留给下面的统一循环（保证窗口 = 全局声明顺序）。
                 for index, item in serial_items:
                     name = str(item.get("name", ""))
                     args = item.get("args", {})
-                    tool_steps += 1
-                    turn_actions += 1
-                    task_state.record_tool(name)
-                    tool_started_at = time.monotonic()
                     tool_call_id = _new_tool_call_id()
-                    tool_result, repeated = self._execute_tool_action(
+                    tool_started_at = time.monotonic()
+                    tool_result = self._execute_tool_action(
                         task_state,
                         attempts,
                         name,
@@ -1407,6 +1388,27 @@ class AgentLoop:
                         recent_tool_fps,
                         recent_tool_names,
                         tool_started_at,
+                        defer_commit=True,
+                    )
+                    executed[index] = (name, args, tool_call_id, tool_started_at, tool_result)
+
+                # 统一提交：按全局声明顺序（index 升序），窗口/read_files/evidence
+                # 与声明顺序严格一致。
+                for index in sorted(executed):
+                    name, args, tool_call_id, tool_started_at, tool_result = executed[index]
+                    tool_steps += 1
+                    turn_actions += 1
+                    task_state.record_tool(name)
+                    tool_result, repeated = self._commit_tool_action(
+                        task_state,
+                        attempts,
+                        name,
+                        args,
+                        tool_call_id,
+                        recent_tool_fps,
+                        recent_tool_names,
+                        tool_started_at,
+                        tool_result,
                     )
                     _collect_batch_result(batch_acc, name, args, tool_result, repeated)
                 batch_all_bad = batch_acc["all_bad"]

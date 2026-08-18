@@ -734,6 +734,41 @@ def test_agent_loop_batch_patch_then_write_same_path_serial(tmp_path):
     assert '"serial": 1' in trace
 
 
+def test_agent_loop_batch_commits_window_in_declaration_order(tmp_path):
+    """§7.8.9 R7：并发组 + 串行组交错时,提交(窗口)顺序 = 声明顺序。
+
+    batch [write A, list_files, write B]:write A/write B 进并发组、
+    list_files 落串行组（批内已有写,保守串行）——提交必须按声明序
+    （write A, list_files, write B）,不能按组顺序（write A, write B,
+    list_files）,否则 list_files 挤到窗口末尾,「匹配后有无写工具」的
+    重复豁免判定与声明语义不一致。
+    """
+    (tmp_path / "a.txt").write_text("va\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [
+            {
+                "tools": [
+                    {"name": "write_file", "args": {"path": "a.txt", "content": "va2\n"}},
+                    {"name": "list_files", "args": {"path": "."}},
+                    {"name": "write_file", "args": {"path": "b.txt", "content": "vb2\n"}},
+                ]
+            },
+            "<final>Done.</final>",
+        ],
+    )
+
+    answer = AgentLoop(agent).run("Rewrite a.txt, list, then write b.txt")
+
+    assert answer == "Done."
+    state = agent.current_task_state
+    assert state.status == "completed"
+    assert state.tool_steps == 3
+    # 提交（窗口）顺序 = 声明顺序：write A → list_files → write B
+    tool_names = [r.get("name") for r in agent.session["history"] if r.get("role") == "tool"]
+    assert tool_names == ["write_file", "list_files", "write_file"]
+
+
 def test_agent_loop_batch_parallel_writes_different_files(tmp_path):
     """§7.8.9 P5：不同文件的写可并行——互不依赖，affected_paths 不被污染。
 
