@@ -85,6 +85,11 @@ def _invalid_response_metadata(body_text, attempt):
 
 
 class FakeModelClient:
+    # Offline/scripted clients do not have a separate review response stream.
+    # The web runtime uses this marker to avoid consuming the scripted main-loop
+    # outputs as review-subagent JSON.
+    supports_review_subagent = False
+
     def __init__(self, outputs):
         self.outputs = list(outputs)
         self.prompts = []
