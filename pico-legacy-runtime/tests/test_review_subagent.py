@@ -1,5 +1,6 @@
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
 from pico.evaluation.review_subagent import (
+    _parse_review_action,
     _parse_review_output,
     build_review_obstacles,
     run_review,
@@ -189,3 +190,115 @@ def test_review_prompt_includes_acceptance_and_run_trail(tmp_path):
     assert "[tool:read_file]" in review_prompt  # run trail 动作印记
     assert "Acceptance criteria" in review_prompt
     assert "Run trail" in review_prompt
+
+
+def test_review_parse_action_tool_vs_verdict():
+    """§7.8.9 决策（2026-08-18）：review 输出解析——工具调用 or 判决 JSON。"""
+    kind, name, args = _parse_review_action(
+        '{"name": "run_shell", "args": {"command": "echo ok"}}'
+    )
+    assert kind == "tool"
+    assert name == "run_shell"
+    kind, decision = _parse_review_action(
+        '{"verdict": "redirect", "feedback": "path wrong", "reason": "bad"}'
+    )
+    assert kind == "verdict"
+    assert decision["verdict"] == "redirect"
+    kind, _ = _parse_review_action("not json")
+    assert kind == "invalid"
+    kind, name, _args = _parse_review_action(
+        '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>'
+    )
+    assert kind == "tool"
+    assert name == "read_file"
+
+
+def test_review_restricts_tools_to_read_and_shell(tmp_path):
+    """§7.8.9 决策（2026-08-18）：review 工具面受限——写工具被拒。
+
+    review 是验证者,不能改代码;结果回 feed review 上下文,不进主循环 evidence。
+    """
+    agent = build_agent(
+        tmp_path,
+        [
+            "<final>Done.</final>",
+            '{"name": "write_file", "args": {"path": "x.txt", "content": "nope"}}',
+            '{"verdict": "continue", "feedback": "write not allowed in review", "reason": "tool_restricted"}',
+        ],
+    )
+    agent.ask("anything")
+    state = agent.current_task_state
+    decision = run_review(
+        agent,
+        state,
+        request="anything",
+        trigger="final_before",
+        has_write_or_shell=False,
+        verification_passed=True,
+    )
+    # review 内部调写工具 → 被拒（error 文案喂回 review）→ review 给 continue
+    assert decision["verdict"] == "continue"
+    assert state.review_audit and state.review_audit[-1].get("tool_rounds", 0) == 1
+    # 主循环 evidence 未被 review 的调查污染
+    assert all(e.get("tool_name") != "write_file" for e in state.evidence)
+
+
+def test_review_shell_verification_passes_r1_gate(tmp_path):
+    """§7.8.9 决策（2026-08-18）：review 内部跑 shell 验证 → R1 gate 认可 finalize。
+
+    主循环有写/shell 但无验证动作时,review 判 finalize 会被程序 gate 拒
+    （verification_gate_unpassed）;review 先内部跑 run_shell(exit 0)再
+    finalize → gate 认可(review_shell_ok=True)。
+    """
+    agent = build_agent(
+        tmp_path,
+        [
+            "<final>ok</final>",
+            '<tool>{"name":"run_shell","args":{"command":"echo ok"}}</tool>',
+            '{"verdict": "finalize", "feedback": "file verified by shell exit 0", "reason": "done"}',
+        ],
+    )
+    agent.ask("hello")
+    state = agent.current_task_state
+    decision = run_review(
+        agent,
+        state,
+        request="change code",
+        trigger="final_before",
+        has_write_or_shell=True,
+        verification_passed=False,
+    )
+    assert decision["verdict"] == "finalize"
+    audit = state.review_audit[-1]
+    assert audit.get("review_shell_ok") is True
+    assert audit.get("tool_rounds", 0) == 1
+
+
+def test_agent_loop_review_internal_shell_verifies_write(tmp_path):
+    """集成：主循环 write_file → final 前 review 内部跑 shell → finalize → completed。
+
+    §7.8.9 决策（2026-08-18）的端到端验证——「进入 final 怎么跑验证」：
+    review 用 bash 自证写的结果,不用主循环再跑一轮验证。
+    """
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"write_file","args":{"path":"a.txt","content":"hi\\n"}}</tool>',
+            "<final>Done writing.</final>",
+            '<tool>{"name":"run_shell","args":{"command":"echo ok"}}</tool>',
+            '{"verdict": "finalize", "feedback": "write verified by shell exit 0", "reason": "done"}',
+        ],
+        feature_flags={"review_subagent": True},
+    )
+
+    answer = agent.ask("Create a.txt")
+
+    assert answer == "Done writing."
+    state = agent.current_task_state
+    assert state.status == "completed"
+    audit = state.review_audit
+    assert audit, "review must have run before final"
+    assert audit[-1]["verdict"] == "finalize"
+    assert audit[-1].get("review_shell_ok") is True
+    # review 的内部调查不污染主循环 evidence（主循环只有 write_file）
+    assert {e.get("tool_name") for e in state.evidence} == {"write_file"}
