@@ -179,6 +179,27 @@ def run_review_gate(
         decision.text = "conversation has no workspace completion gate"
         return decision
 
+    if intent == "auto":
+        # §7.8.9 阶段 4：intent 分类已取消（worker 一律 task_mode=auto），
+        # 门禁不能再按意图要求写证据——纯对话/只读任务会被误拦为 blocked。
+        # 无写/shell 动作：给出最终答案即收敛；
+        # 尝试过写/shell 但无成功写证据（如审批被拒）→ 仍按 code_change 拦下
+        # （任务的关键动作没做成，不能算完成）。
+        # 有写/shell 证据：继续走下方 code_change 的写证据 + checklist 校验。
+        if not _has_write_evidence(task_state):
+            last_tool = str(getattr(task_state, "last_tool", "") or "")
+            if last_tool in {"write_file", "patch_file", "run_shell"}:
+                decision.status = "needs_fix"
+                decision.text = "write/shell attempted but no successful write evidence"
+                return decision
+            if str(getattr(task_state, "final_answer", "") or "").strip():
+                decision.status = "pass"
+                decision.text = "auto task answered without workspace changes"
+            else:
+                decision.status = "needs_fix"
+                decision.text = "auto task lacks a final answer"
+            return decision
+
     # code_change：需写证据；checklist 为显式目标时还需全部完成。
     checklist_ok = (not _checklist_is_explicit(task_state)) or _checklist_remaining(task_state) == 0
     if _has_write_evidence(task_state) and checklist_ok:
