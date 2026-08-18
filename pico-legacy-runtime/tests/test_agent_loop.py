@@ -548,6 +548,36 @@ def test_partition_batch_tools(tmp_path):
     assert [i for i, _ in concurrent] == [0]
     assert [i for i, _ in serial] == [1]
 
+    # write A + write A（同文件不同内容）：覆盖写并行会竞态（非原子），
+    # 最终内容取决于调度 → 第二个必须串行
+    concurrent, serial = _partition_batch_tools(
+        [
+            {"name": "write_file", "args": {"path": "a.txt", "content": "v1"}},
+            {"name": "write_file", "args": {"path": "a.txt", "content": "v2"}},
+        ]
+    )
+    assert [i for i, _ in concurrent] == [0]
+    assert [i for i, _ in serial] == [1]
+
+    # patch A + write A（同路径混合）：局部替换 + 全量覆盖顺序敏感 →
+    # 第二个必须串行（两个方向都验证）
+    concurrent, serial = _partition_batch_tools(
+        [
+            {"name": "patch_file", "args": {"path": "a.txt", "old_text": "x", "new_text": "y"}},
+            {"name": "write_file", "args": {"path": "a.txt", "content": "z"}},
+        ]
+    )
+    assert [i for i, _ in concurrent] == [0]
+    assert [i for i, _ in serial] == [1]
+    concurrent, serial = _partition_batch_tools(
+        [
+            {"name": "write_file", "args": {"path": "a.txt", "content": "z"}},
+            {"name": "patch_file", "args": {"path": "a.txt", "old_text": "x", "new_text": "y"}},
+        ]
+    )
+    assert [i for i, _ in concurrent] == [0]
+    assert [i for i, _ in serial] == [1]
+
     # write(A) → read(B)：B 未被批内写污染 → read(B) 仍并发（读 A 前状态无妨）
     concurrent, serial = _partition_batch_tools(
         [
@@ -661,6 +691,44 @@ def test_agent_loop_batch_same_path_write_then_read_serial(tmp_path):
     ]
     assert tool_records, "read_file must execute after the write"
     assert "v2" in tool_records[-1]["content"]
+    trace = agent.run_store.trace_path(state).read_text(encoding="utf-8")
+    assert '"concurrent": 1' in trace
+    assert '"serial": 1' in trace
+
+
+def test_agent_loop_batch_patch_then_write_same_path_serial(tmp_path):
+    """§7.8.9 P5：patch + write 同文件强制串行——按声明顺序执行。
+
+    若并行，write 全量覆盖会让 patch 的 old_text 匹配失败（或 patch 结果
+    被覆盖）——串行保证 patch 先替换、write 再覆盖，最终为 write 内容。
+    """
+    (tmp_path / "a.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [
+            {
+                "tools": [
+                    {"name": "patch_file", "args": {"path": "a.txt", "old_text": "alpha", "new_text": "ALPHA"}},
+                    {"name": "write_file", "args": {"path": "a.txt", "content": "omega\n"}},
+                ]
+            },
+            "<final>Patched then rewrote.</final>",
+        ],
+    )
+
+    answer = AgentLoop(agent).run("Patch then rewrite a.txt")
+
+    assert answer == "Patched then rewrote."
+    state = agent.current_task_state
+    assert state.status == "completed"
+    assert state.tool_steps == 2
+    # 串行：patch 先成功（old_text 匹配），write 再覆盖 → 最终 omega
+    assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "omega\n"
+    patch_records = [
+        r for r in agent.session["history"]
+        if r.get("role") == "tool" and r.get("name") == "patch_file"
+    ]
+    assert patch_records and "patched" in patch_records[0]["content"]
     trace = agent.run_store.trace_path(state).read_text(encoding="utf-8")
     assert '"concurrent": 1' in trace
     assert '"serial": 1' in trace
