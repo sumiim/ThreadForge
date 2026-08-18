@@ -1078,12 +1078,14 @@ def _extract_anthropic_response(data):
     return "".join(text_parts), tool, data.get("usage")
 
 
-def _consume_completions_stream(lines, *, on_text_delta=None, should_cancel=None, attempts_used=1):
+def _consume_completions_stream(lines, *, on_text_delta=None, on_thinking_delta=None, should_cancel=None, attempts_used=1):
     """消费 chat/completions SSE 流，产出运行时形状 {"text", "tool", "usage"}。
 
     对齐网关 translate_stream 的翻译点：delta.content 增量、delta.tool_calls
     按 index 累积 arguments 分片；兼容最终 chunk 把完整 tool_calls 放在
     choice.message 的情况；usage 取流中最后一个非空 chunk。
+    §7.8.9 阶段 4（2026-08-18）：DeepSeek 思考在 delta.reasoning_content，
+    经 on_thinking_delta 回传（前端 thinking 折叠区），不进正文 content。
     """
     text_parts = []
     tool_slots = {}  # index -> {"name": str, "arguments": str}
@@ -1114,6 +1116,10 @@ def _consume_completions_stream(lines, *, on_text_delta=None, should_cancel=None
             continue
         choice = choices[0]
         delta = choice.get("delta") or {}
+        # DeepSeek 思考：reasoning_content 独立于 content，回传 thinking 回调。
+        thinking = delta.get("reasoning_content")
+        if thinking and on_thinking_delta is not None:
+            on_thinking_delta(thinking)
         content = delta.get("content")
         if content:
             text_parts.append(content)
@@ -1377,6 +1383,7 @@ class OpenAICompletionsModelClient:
         deadline_monotonic=None,
         on_retry=None,
         on_text_delta=None,
+        on_thinking_delta=None,
         should_cancel=None,
         tool_definitions=None,
     ):
@@ -1442,6 +1449,7 @@ class OpenAICompletionsModelClient:
                 result = _consume_completions_stream(
                     response,
                     on_text_delta=on_text_delta,
+                    on_thinking_delta=on_thinking_delta,
                     should_cancel=should_cancel,
                     attempts_used=attempt,
                 )
@@ -1451,6 +1459,7 @@ class OpenAICompletionsModelClient:
                     result = _consume_completions_stream(
                         body_text.splitlines(),
                         on_text_delta=on_text_delta,
+                        on_thinking_delta=on_thinking_delta,
                         should_cancel=should_cancel,
                         attempts_used=attempt,
                     )

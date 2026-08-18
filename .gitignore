@@ -73,3 +73,9 @@ release/
 # Parallel-workflow scratch
 /.ptmp/
 
+# Agent scratch/debug artifacts (never commit)
+/.gh_token.tmp
+/.repro*/
+/.wt-fix*/
+/.poll*.py
+

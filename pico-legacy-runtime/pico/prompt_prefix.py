@@ -34,6 +34,32 @@ def tool_signature(tools):
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _shell_environment_hint() -> str:
+    """按宿主机平台生成 run_shell 执行环境提示。
+
+    §7.8.9 阶段 4 收尾（2026-08-18）：模型常假设 Unix（wc/sed/git -C /abs 路径），
+    而 Worker 实际在 Windows cmd.exe——导致 run_shell 失败且输出为空。前缀注入
+    平台提示，让模型按真实 shell 写命令。平台在单个 run 内不变，prefix cache key
+    仍稳定（不同平台分别缓存）。
+    """
+    import sys
+
+    if sys.platform == "win32":
+        return (
+            "Shell environment: Windows cmd.exe (NOT Unix). "
+            "run_shell runs via cmd.exe /c. "
+            "Use Windows commands and paths: `dir` (not ls), `type` (not cat), "
+            "`findstr` (not grep), `where` (not which). "
+            "wc/sed/awk are NOT available. Use forward-slash paths (C:/repo/...) "
+            "or backslashes inside quotes. git.exe exists (D:\\Git). "
+            "Do not use `cd /workspace` or other Unix absolute paths."
+        )
+    return (
+        "Shell environment: Unix sh. run_shell runs via /bin/sh -c. "
+        "Use Unix commands and paths."
+    )
+
+
 def build_prompt_prefix(workspace, tools, built_at=None):
     tool_lines = []
     for name, tool in tools.items():
@@ -81,6 +107,8 @@ def build_prompt_prefix(workspace, tools, built_at=None):
         - Do not repeat the same tool call with the same arguments if it did not help. Choose a different tool or return a final answer.
         - Before acting, briefly review what you have already explored this session (Memory listed_dirs / recent_files) and continue from where you left off; do not repeat completed exploration. Do not run environment checks (echo, whoami, uname, node --version, date) or exhaustive grep/glob scans unless the request specifically needs them.
         - Required tool arguments must not be empty. Do not call read_file, write_file, patch_file, run_shell, or delegate with args={{}}.
+
+        {_shell_environment_hint()}
 
         Tools:
         {tool_text}

@@ -899,6 +899,9 @@ class AgentLoop:
                 on_text_delta=lambda delta: getattr(
                     hooks, "model_text_delta", lambda *_args: None
                 )(task_state, "execute", delta),
+                on_thinking_delta=lambda delta: getattr(
+                    hooks, "model_thinking_delta", lambda *_args: None
+                )(task_state, "execute", delta),
                 tool_definitions=() if finalization_only else tool_definitions,
             )
             completion_metadata = dict(getattr(agent.model_client, "last_completion_metadata", {}) or {})

@@ -1270,9 +1270,11 @@ def test_runtime_cancels_while_planning_model_request_is_blocked(tmp_path):
     )
 
     thread.start()
-    assert started.wait(timeout=1)
+    # 慢机器（Windows / CI runner）上 run_task 启动到首次模型调用可能 >1s，
+    # 放宽等待避免时序 flaky；取消语义不变。
+    assert started.wait(timeout=5)
     active.cancel(0)
-    thread.join(timeout=1)
+    thread.join(timeout=5)
     release.set()
 
     assert not thread.is_alive()

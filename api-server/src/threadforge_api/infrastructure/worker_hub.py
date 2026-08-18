@@ -49,6 +49,7 @@ _PUBLIC_WORKER_EVENTS = {
     "model.protocol_retrying",
     "model.heartbeat",
     "assistant.delta",
+    "assistant.thinking",
     "tool.requested",
     "tool.started",
     "tool.completed",
@@ -2378,6 +2379,8 @@ def _sanitize_event_data(event_type: str, data: dict) -> dict:
             "round": max(1, _nonnegative_int(data.get("round", 1))),
         }
     if event_type == "assistant.delta":
+        return {"text": redact_artifact(str(data.get("text", ""))[:4000])}
+    if event_type == "assistant.thinking":
         return {"text": redact_artifact(str(data.get("text", ""))[:4000])}
     if event_type == "assistant.commentary":
         return {"text": redact_artifact(str(data.get("text", ""))[:1000])}
