@@ -67,6 +67,11 @@ MODEL_ERROR_MESSAGES = {
 # §7.8.9 阶段 4：intent 硬顶预算已移除——步数预算由墙钟/token 硬顶接管，
 # intent 分类（conversation/read_only/code_change）已取消（大取消最后一块）。
 
+# §7.8.9 决策（2026-08-18）：无 max_steps turn 硬顶——收尾确定性 gate 的
+# 预算传大值（保证 remaining_budget > 0，走停滞检测 + evidence/checklist
+# 正常判定，而非「预算耗尽直接 pass」）。墙钟/token 硬顶才是真上限。
+GATE_STEP_BUDGET_UNLIMITED = 100000
+
 RUN_METADATA_KEYS = (
     "requested_task_mode",
     "resolved_intent",
@@ -246,13 +251,15 @@ def run_native(
             task_state.intent = intent
 
         # 收尾 review gate（写触发，确定性兜底）。
-        # §7.8.9 修正：不再有外部 step_budget——gate 用 AgentLoop 步数护栏
-        # （agent.max_steps）作为预算上限，墙钟/token 硬顶已在循环内兜底。
+        # §7.8.9 决策（2026-08-18）：无 max_steps turn 硬顶——gate 不再用
+        # max_steps 当预算（否则 remaining_budget 恒 0 直接 pass，门禁失效），
+        # 改传大值让 gate 走正常判定（停滞检测 + evidence/checklist 检查）。
+        # 墙钟/token 硬顶已在循环内兜底。
         if task_state is not None and task_state.status == "completed" and task_state.final_answer:
             decision = run_review_gate(
                 task_state,
                 intent=intent,
-                step_budget=int(agent.max_steps),
+                step_budget=GATE_STEP_BUDGET_UNLIMITED,
                 coordinator_steps_used=int(getattr(task_state, "tool_steps", 0) or 0),
                 step_budget_explicit=False,
                 hard_cap=0,

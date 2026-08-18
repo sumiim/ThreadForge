@@ -32,44 +32,56 @@ def test_agent_loop_runs_same_control_flow_as_pico_ask(tmp_path):
     assert agent.run_store.report_path(agent.current_task_state.run_id).exists()
 
 
-def test_agent_loop_allows_final_only_round_after_tool_budget(tmp_path):
+def test_agent_loop_allows_final_after_tool(tmp_path):
+    """§7.8.9 决策（2026-08-18）：无 max_steps 硬顶——工具后正常 final 直接完成。
+
+    原 test_agent_loop_allows_final_only_round_after_tool_budget 验证「步数尽 →
+    finalization 轮强制 final」；去硬顶后不再有步数截断，工具成功 → final 即完成，
+    prompt 里不再出现预算耗尽提示。
+    """
     agent = build_agent(
         tmp_path,
         [
             '<tool>{"name":"list_files","args":{"path":"."}}</tool>',
             "<final>The workspace contains README.md.</final>",
         ],
-        max_steps=1,
     )
 
     answer = agent.ask("Inspect the workspace")
 
     assert answer == "The workspace contains README.md."
+    assert agent.current_task_state.status == "completed"
     assert agent.current_task_state.tool_steps == 1
-    assert agent.current_task_state.attempts == 2
-    assert "The tool-call budget is exhausted" in agent.model_client.prompts[-1]
+    assert "tool-call budget is exhausted" not in agent.model_client.prompts[-1]
 
 
-def test_agent_loop_rejects_tool_during_final_only_round(tmp_path):
+def test_agent_loop_rejects_tool_during_stagnation_finalization(tmp_path):
+    """§7.8.9 决策（2026-08-18）：无 max_steps 硬顶——finalization 只由证据截停触发。
+
+    连续坏轮（重复读被结果指纹判重）→ 证据截停 → finalization_only（工具被禁），
+    模型仍调工具 → finalization_protocol_rejected → best-effort 收敛。
+    """
+    (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     agent = build_agent(
         tmp_path,
         [
-            '<tool>{"name":"list_files","args":{"path":"."}}</tool>',
-            '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
-            "<final>must not be consumed</final>",
+            '<tool>{"name":"read_file","args":{"path":"a.txt","start":1,"end":1}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"a.txt","start":1,"end":1}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"a.txt","start":1,"end":1}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"a.txt","start":1,"end":1}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"a.txt","start":1,"end":1}}</tool>',
         ],
-        max_steps=1,
     )
 
-    answer = agent.ask("Inspect the workspace")
+    answer = agent.ask("Inspect a.txt")
 
-    assert "步数预算已用尽" in answer
-    assert "list_files" in answer
-    assert agent.current_task_state.tool_steps == 1
-    assert agent.current_task_state.read_files == 0
-    assert len(agent.model_client.outputs) == 1
-    trace = agent.run_store.trace_path(agent.current_task_state).read_text(encoding="utf-8")
+    state = agent.current_task_state
+    assert state.status in {"stopped", "blocked"}
+    trace = agent.run_store.trace_path(state).read_text(encoding="utf-8")
+    assert '"event": "stagnation_detected"' in trace
     assert '"event": "finalization_protocol_rejected"' in trace
+    assert state.read_files == 1  # 只有第 1 次读成功计数；后续重复不计、finalization 轮被拒
+    assert "运行中断" in answer or "停滞收敛" in answer
 
 
 def test_pico_ask_delegates_to_agent_loop(tmp_path):

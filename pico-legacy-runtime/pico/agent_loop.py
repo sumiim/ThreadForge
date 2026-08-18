@@ -67,6 +67,10 @@ def _best_effort_step_limit(task_state, reason):
 
 MAX_CONSECUTIVE_TALKS = 2
 MAX_PROTOCOL_REPAIRS = 1
+# §7.8.9 决策（2026-08-18）：无 turn 硬顶——max_attempts 仅作「模型反复
+# 无效输出」的最后保险丝（防完全失控），正常停止全由证据截停/rejected_finals
+# 收敛/墙钟/token 硬顶接管。500 轮 × 每轮数秒 ≫ 墙钟 3600s，实际先撞墙钟。
+MAX_ATTEMPTS_SAFETY = 500
 
 # §7.8.7-③ / §7.8.9 停滞检测（滑动窗口）：
 # - 一个 turn = 一次模型决策 + 其后的工具执行（或无工具）。
@@ -817,10 +821,11 @@ class AgentLoop:
         protocol_failed = False
         finalization_attempted = False
         tool_definitions = provider_tool_definitions(agent.tools)
-        max_attempts = min(
-            max(agent.max_steps * 3, agent.max_steps + 4),
-            task_state.max_total_steps,
-        )
+        # §7.8.9 决策（2026-08-18）：去掉 max_steps turn 硬顶——停止由
+        # 证据截停（坏轮窗口）/ rejected_finals 收敛 / 墙钟/token 硬顶接管。
+        # max_attempts 仅作「模型反复无效输出」的最后保险丝（远大于任务正常
+        # 轮数；墙钟 3600s / token 500k 通常更早兜底）。
+        max_attempts = MAX_ATTEMPTS_SAFETY
         # §7.8.7-③ 停滞检测（滑动窗口）：每 turn 结束记录三信号
         # （checklist 无新增 / evidence 无新增 / 工具重复或零工具），
         # 窗口内最近 n 个 turn 全坏（n 随剩余预算自适应）→ 强制收敛。
@@ -853,9 +858,7 @@ class AgentLoop:
         # 边界 1：进入控制循环前。
         token.raise_if_cancelled()
 
-        while attempts < max_attempts and (
-            tool_steps < agent.max_steps or not finalization_attempted
-        ):
+        while attempts < max_attempts and not finalization_attempted:
             # 边界 2：每轮开始、构建 prompt 前。
             token.raise_if_cancelled()
             # §7.8.9 阶段 4：墙钟/token 硬顶（唯一保留的外部尺子，防烧钱）。
@@ -967,14 +970,12 @@ class AgentLoop:
                     finalization_only = True
                     finalization_attempted = True
                 else:
-                    finalization_only = tool_steps >= agent.max_steps
-                    if finalization_only:
-                        finalization_attempted = True
+                    # §7.8.9 决策（2026-08-18）：无 max_steps 硬顶——正常路径
+                    # 不再因步数进入 finalization；只有证据截停触发它。
+                    finalization_only = False
             else:
                 # 第一轮：只记录起点，不判定（给模型开局机会）。
-                finalization_only = tool_steps >= agent.max_steps
-                if finalization_only:
-                    finalization_attempted = True
+                finalization_only = False
             # 本轮结束时的状态 = 下轮顶部的 prev_end 基准。
             prev_end = current
             # §7.8.9 修正（2026-08-18）：「重复无工具 final 被 review 拒」独立计数，
@@ -1045,8 +1046,9 @@ class AgentLoop:
             if finalization_only:
                 prompt += (
                     "\n\nRuntime control feedback:\n"
-                    "The tool-call budget is exhausted. Do not call another tool. "
-                    "Use the evidence already collected and return a grounded final answer now."
+                    "Evidence stagnation detected: recent rounds produced no new "
+                    "progress. Do not call another tool. Use the evidence already "
+                    "collected and return a grounded final answer now."
                 )
                 prompt_metadata["runtime_finalization_only"] = True
                 prompt_metadata["prompt_chars"] = len(prompt)
@@ -1178,9 +1180,8 @@ class AgentLoop:
                     "finalization_protocol_rejected",
                     {
                         "kind": kind,
-                        "error_code": "tool_budget_exhausted",
+                        "error_code": "stagnation_finalization",
                         "tool_steps": tool_steps,
-                        "max_tool_steps": agent.max_steps,
                     },
                 )
                 break
@@ -1572,11 +1573,12 @@ class AgentLoop:
             agent.emit_progress(f"run {task_state.run_id} finished")
             return final
 
-        if protocol_failed or (attempts >= max_attempts and tool_steps < agent.max_steps):
-            final = _best_effort_step_limit(task_state, "模型反复返回无效输出（retry_limit_reached）")
+        if protocol_failed or attempts >= max_attempts:
+            final = _best_effort_step_limit(task_state, "模型反复返回无效输出或达到尝试保险丝（retry_limit_reached）")
             task_state.stop_retry_limit(final)
         else:
-            final = _best_effort_step_limit(task_state, "步数预算已用尽（budget_exhausted）")
+            # finalization 轮（证据截停触发）模型未给出有效 final → best-effort。
+            final = _best_effort_step_limit(task_state, "停滞收敛：连续坏轮后未能产出最终结论")
             task_state.stop_step_limit(final)
         task_state.set_phase(PHASE_FINAL, next_step="Explain the budget or execution blocker")
         agent.run_store.write_task_state(task_state)
