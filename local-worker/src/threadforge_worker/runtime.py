@@ -788,6 +788,11 @@ def run_task(
         max_total_steps=int(settings.get("max_total_steps", max(int(task.get("max_steps", 6)) * 3, int(task.get("max_steps", 6)) + 4))),
         allow_durable_memory_write=False,
         shell_factory=shell_factory,
+        # §7.8.9 阶段 3：生产开启 review subagent（程序强制，每 6 动作 / final 前），
+        # 配合 run_trail + done_when 判据修复「瞎验收」（零工具凭记忆回答也放行）。
+        # planning 暂不开：LLM 生成的 checklist 尚无程序打钩机制，开了会让
+        # review 的 checklist 障碍恒真（误杀），等打钩机制落地后再开。
+        feature_flags={"review_subagent": True},
     )
     active.pico = pico
     active.inbox = InboxSource()

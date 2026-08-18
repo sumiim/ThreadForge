@@ -149,3 +149,75 @@ def test_review_verification_gate_requires_passed_verification(tmp_path):
     )
     assert decision["verdict"] == "redirect"
     assert decision["reason"] == "verification_gate_unpassed"
+
+
+def test_review_prompt_includes_acceptance_and_run_trail(tmp_path):
+    """review prompt 现在包含验收标准（done_when）与 run trail（动作印记）。
+
+    修复「瞎验收」的信息缺口：review 之前只看到 evidence 摘要 + 障碍，
+    看不到任务验收标准和主循环到底干了什么。
+    """
+    agent = build_agent(
+        tmp_path,
+        [
+            "<final>ok</final>",
+            # checklist 默认模板未完成会生成障碍，feedback 需带证据关键词反驳
+            '{"verdict": "finalize", "feedback": "verified by test, done", "reason": "done"}',
+        ],
+    )
+    agent.ask("hello")
+    state = agent.current_task_state
+    state.done_when = ["README updated", "tests pass"]
+    state.user_request = "change code"
+    # 模拟 run trail：主循环真的读过文件。
+    agent.record({"role": "tool", "name": "read_file", "args": {"path": "README.md"}, "content": "demo\n"})
+
+    decision = run_review(
+        agent,
+        state,
+        request="change code",
+        trigger="final_before",
+        has_write_or_shell=False,
+        verification_passed=True,
+    )
+    # FakeModelClient 输出 finalize 且带证据关键词反驳 checklist → 通过。
+    assert decision["verdict"] == "finalize"
+    # prompt 捕获检查：两块新信息都在。
+    prompts = agent.model_client.prompts
+    review_prompt = prompts[-1]
+    assert "README updated; tests pass" in review_prompt  # done_when
+    assert "[tool:read_file]" in review_prompt  # run trail 动作印记
+    assert "Acceptance criteria" in review_prompt
+    assert "Run trail" in review_prompt
+
+
+def test_review_system_guides_ungrounded_zero_tool_finalize(tmp_path):
+    """系统提示对「零工具凭记忆回答」的引导：请求暗示检查工作区但无工具调用。
+
+    这是「瞎验收」的目标场景：模型回答代码问题却全程没碰工作区，
+    review 系统提示现在明确要求 redirect 并要求先读相关文件。
+    """
+    agent = build_agent(
+        tmp_path,
+        [
+            "<final>预算由墙钟硬顶兜底</final>",  # 零工具直接 final
+            '{"verdict": "finalize", "feedback": "answered from memory", "reason": "done"}',
+        ],
+    )
+    agent.ask("为什么预算会耗尽")
+    state = agent.current_task_state
+    decision = run_review(
+        agent,
+        state,
+        request="为什么预算会耗尽，读代码确认",
+        trigger="final_before",
+        has_write_or_shell=False,
+        verification_passed=True,
+    )
+    prompts = agent.model_client.prompts
+    review_prompt = prompts[-1]
+    # 系统提示包含 grounded 引导
+    assert "not grounded" in review_prompt
+    assert "inspect the relevant files" in review_prompt
+    # run trail 明确显示零工具（只有 user/assistant 消息）
+    assert "[tool:" not in review_prompt

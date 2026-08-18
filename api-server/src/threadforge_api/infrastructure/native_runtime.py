@@ -151,6 +151,10 @@ class NativeRuntimeAdapter:
             shell_cleanup_grace_seconds=self._settings.shell_cleanup_grace_seconds,
             allow_durable_memory_write=False,  # Web path must not write Workspace .pico/memory/
             shell_factory=self._shell_factory,
+            # §7.8.9 阶段 3：生产开启 review subagent（程序强制），
+            # 配合 run_trail + done_when 判据修复「瞎验收」。planning 暂不开
+            # （LLM checklist 尚无打钩机制，开了会让 review checklist 障碍恒真）。
+            feature_flags={"review_subagent": True},
         )
         started = time.monotonic()
         try:

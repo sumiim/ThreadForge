@@ -33,11 +33,17 @@ _REVIEW_SYSTEM_TEMPLATE = (
     "- continue: work is in progress and on track; no direction change needed.\n"
     "- redirect: the direction/plan is wrong; give actionable feedback the agent "
     "can apply next turn.\n"
+    "Base your verdict on the acceptance criteria and the run trail below. "
+    "If the request implies inspecting the workspace (e.g. asks about code, files, "
+    "or a bug) but the run trail shows no tool calls at all, the answer is not "
+    "grounded: redirect with feedback asking to inspect the relevant files first.\n"
     "Never emit prose outside the JSON object.\n"
 )
 
 _REVIEW_USER_TEMPLATE = (
     "Request: {request}\n"
+    "Acceptance criteria (done_when): {done_when}\n"
+    "Run trail (what the agent did this run):\n{run_trail}\n"
     "Checklist remaining: {checklist_remaining}\n"
     "Evidence summary (per action):\n{evidence_summary}\n"
     "Prior review feedback: {prior_feedback}\n"
@@ -143,11 +149,24 @@ def run_review(
     checklist = list(getattr(task_state, "checklist", []) or [])
     completed = set(getattr(task_state, "completed_items", []) or [])
     remaining_count = max(0, len([item for item in checklist if item not in completed]))
+    # §7.8.9 review 判据补全（2026-08-18）：除 evidence 摘要外，注入
+    # ① 验收标准（done_when）——review 才知道「做到什么算完成」；
+    # ② run trail（session history 的动作印记）——review 才能看到
+    # 「这 run 到底干了什么」（含零工具的瞎验收场景）。
+    # run_trail 复用 agent.history_text()（已压缩 + 截断 + 有界），
+    # 成本可控，不违背上下文隔离原则。
+    done_when = list(getattr(task_state, "done_when", []) or [])
+    try:
+        run_trail = agent.history_text()
+    except Exception:
+        run_trail = ""
     prompt = (
         _REVIEW_SYSTEM_TEMPLATE
         + "\n"
         + _REVIEW_USER_TEMPLATE.format(
             request=str(request)[:2000],
+            done_when="; ".join(done_when) if done_when else "(none)",
+            run_trail=str(run_trail or "")[:4000],
             checklist_remaining=str(remaining_count),
             evidence_summary=_evidence_summary(task_state),
             prior_feedback=str(prior_feedback or "")[:500],
