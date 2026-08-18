@@ -20,13 +20,13 @@ const PROTOCOL_LABELS: Record<ProviderProtocol, string> = {
 }
 
 const REASONING_EFFORT_OPTIONS = [
-  { value: 'none', label: '无' },
-  { value: 'minimal', label: '最小' },
-  { value: 'low', label: '低' },
-  { value: 'medium', label: '中' },
-  { value: 'high', label: '高' },
-  { value: 'xhigh', label: '极高' },
-  { value: 'max', label: '最高' },
+  { value: 'none', label: 'None' },
+  { value: 'minimal', label: 'Minimal' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'Extra High' },
+  { value: 'max', label: 'Max' },
 ]
 
 interface FormValues {
@@ -226,7 +226,7 @@ export default function ProviderView({ deviceId }: { deviceId?: string }) {
                       {PROTOCOL_LABELS[p.protocol] ?? p.protocol} · 模型 {p.model || '—'}
                       {p.models.length ? `（+${p.models.length}）` : ''}
                     </div>
-                    <div>推理档 {(p.reasoning_efforts ?? []).join(' / ') || '—'}</div>
+                    <div>Reasoning efforts {(p.reasoning_efforts ?? []).join(' / ') || '—'}</div>
                     {p.last_error ? (
                       <div className="truncate text-red-500">{p.last_error}</div>
                     ) : p.last_test_at ? (
@@ -277,11 +277,11 @@ export default function ProviderView({ deviceId }: { deviceId?: string }) {
           <Form.Item name="model" label="默认模型">
             <Input placeholder="如 deepseek-chat" />
           </Form.Item>
-          <Form.Item name="reasoning_efforts" label="推理档位" initialValue={['none']}>
+          <Form.Item name="reasoning_efforts" label="Reasoning efforts" initialValue={['none']}>
             <Select
               mode="multiple"
               options={REASONING_EFFORT_OPTIONS}
-              placeholder="选择该供应商支持的推理档位"
+              placeholder="Select the reasoning efforts this provider supports"
             />
           </Form.Item>
           <div className="grid grid-cols-2 gap-3">

@@ -687,20 +687,24 @@ export function useSessions(): UseSessions {
             const callSeconds = Math.max(0, Math.floor(Number(data.elapsed_seconds ?? 0)))
             const runSeconds = Math.max(callSeconds, Math.floor(Number(data.run_elapsed_seconds ?? callSeconds)))
             const round = Math.max(1, Math.floor(Number(data.round ?? 1)))
+            const stage = String(data.stage ?? '')
+            const stageLabel = stage === 'planning' ? 'planning'
+              : stage === 'tool' ? 'running tool'
+                : 'reasoning'
             updateProgress(sessionId, (current) => current ? {
               ...current,
-              nextStep: `模型正在${String(data.stage ?? '') === 'planning' ? '规划' : '推理'}（总计 ${runSeconds} 秒 · 第 ${round} 轮，本轮 ${callSeconds} 秒）`,
-              reason: 'model_streaming',
+              nextStep: `Model ${stageLabel} (total ${runSeconds}s · round ${round}, this call ${callSeconds}s)`,
+              reason: stage === 'tool' ? 'tool_executing' : 'model_streaming',
             } : current)
             return
           }
           case 'model.retrying': {
             const attempt = Number(data.attempt ?? 1)
             const maxAttempts = Number(data.max_attempts ?? 1)
-            const stage = String(data.stage ?? '') === 'planning' ? '规划' : '执行'
+            const stage = String(data.stage ?? '') === 'planning' ? 'planning' : 'execute'
             updateProgress(sessionId, (current) => current ? {
               ...current,
-              nextStep: `模型${stage}请求暂时失败，正在重试（${attempt + 1}/${maxAttempts}）`,
+              nextStep: `Model ${stage} request failed; retrying (${attempt + 1}/${maxAttempts})`,
               reason: String(data.error_code ?? 'model_retrying'),
             } : current)
             if (data.reset_stream === true) {
@@ -708,16 +712,16 @@ export function useSessions(): UseSessions {
                 message.id === assistantId ? { ...message, content: '' } : message,
               ))
             }
-            appendActivity(envelope, '模型请求重试', `${stage}阶段 ${attempt + 1}/${maxAttempts}`)
+            appendActivity(envelope, 'Model request retry', `${stage} stage ${attempt + 1}/${maxAttempts}`)
             return
           }
           case 'model.protocol_retrying': {
             const attempt = Number(data.attempt ?? 1)
             const maxAttempts = Number(data.max_attempts ?? 1)
-            const stage = String(data.stage ?? '') === 'planning' ? '规划' : '执行'
+            const stage = String(data.stage ?? '') === 'planning' ? 'planning' : 'execute'
             updateProgress(sessionId, (current) => current ? {
               ...current,
-              nextStep: `模型${stage}输出格式不符合执行协议，正在重试（${attempt + 1}/${maxAttempts}）`,
+              nextStep: `Model ${stage} output failed protocol validation; retrying (${attempt + 1}/${maxAttempts})`,
               reason: 'model_protocol_invalid',
             } : current)
             if (data.reset_stream === true) {
@@ -725,7 +729,7 @@ export function useSessions(): UseSessions {
                 message.id === assistantId ? { ...message, content: '' } : message,
               ))
             }
-            appendActivity(envelope, '模型输出协议重试', `${stage}阶段 ${attempt + 1}/${maxAttempts}`)
+            appendActivity(envelope, 'Model protocol retry', `${stage} stage ${attempt + 1}/${maxAttempts}`)
             return
           }
           case 'assistant.delta': {
@@ -913,7 +917,7 @@ export function useSessions(): UseSessions {
             if (!run || run.taskId !== taskId) return
             updateProgress(sessionId, (current) => ({
               phase: current?.phase || 'ANALYZE_CONTEXT',
-              nextStep: '模型仍在结合工具结果推理，可以继续等待或停止任务',
+              nextStep: 'Model still reasoning over tool results; you can wait or stop the task',
               checklist: current?.checklist ?? [],
               doneWhen: current?.doneWhen ?? [],
               completedItems: current?.completedItems ?? [],

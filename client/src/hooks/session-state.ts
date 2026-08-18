@@ -42,7 +42,7 @@ const modelFailureMessages: Record<string, string> = {
   model_connection_error: '无法稳定连接模型服务，已自动重试，请检查网络后再试。',
   model_server_error: '模型服务暂时不可用，已自动重试，请稍后再试。',
   model_auth_error: '模型服务认证失败，请在 Worker 中重新配置 API 密钥。',
-  model_request_rejected: '模型服务拒绝了请求，请检查模型与推理强度配置。',
+  model_request_rejected: 'The model service rejected the request. Check the model and reasoning effort configuration.',
   model_response_invalid: '模型服务返回了无法解析的响应，请稍后再试。',
   model_provider_error: '模型服务返回错误，请检查供应商配置后再试。',
   model_call_failed: '模型调用失败，请稍后再试。',

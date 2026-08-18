@@ -26,7 +26,7 @@ interface ChatViewProps {
 const suggestions = ['分析当前项目结构', 'Review 最近一次提交', '实现一个 HTTP 服务示例']
 
 const phaseLabels: Record<string, string> = {
-  PLANNING: '规划任务',
+  PLANNING: 'Planning task',
   UNDERSTAND_REQUEST: '理解需求',
   GATHER_CONTEXT: '收集上下文',
   ANALYZE_CONTEXT: '分析证据',
@@ -62,7 +62,7 @@ export default function ChatView({ session, historyStatus, running, isMobile = f
           </div>
           {agentProgress.nextStep ? <div className="mt-1 truncate text-stone-500">下一步：{agentProgress.nextStep}</div> : null}
           {agentProgress.reason === 'post_tool_waiting' ? (
-            <div className="mt-1 text-amber-700">工具已返回，模型仍在继续推理；你可以等待或停止当前任务。</div>
+            <div className="mt-1 text-amber-700">Tool returned; the model is still reasoning. You can wait or stop the task.</div>
           ) : null}
           {agentProgress.checklist.length > 0 ? (
             <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-stone-400">

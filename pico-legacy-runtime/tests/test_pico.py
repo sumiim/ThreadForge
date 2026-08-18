@@ -2926,3 +2926,148 @@ def test_chat_completions_client_json_fallback_and_retry():
 
     assert exc_info.value.code == "model_response_invalid"
     assert client.last_completion_metadata["provider_error_code"] == "model_response_invalid"
+
+
+def test_chat_completions_finalization_only_downgrades_max_effort():
+    """收尾轮（finalization_only）把 DeepSeek 思考档位 max 压到 high，
+    防 reasoning 吃光输出预算导致正文空响应。"""
+    from pico.providers.clients import ModelProviderError
+
+    captured = {"payloads": []}
+
+    class FakeResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {"choices": [{"message": {"content": "done"}}], "usage": {}}
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["payloads"].append(json.loads(request.data.decode("utf-8")))
+        return FakeResponse()
+
+    client = OpenAICompletionsModelClient(
+        model="deepseek-ai/DeepSeek-V3.2",
+        base_url="https://api.siliconflow.cn/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+        reasoning_effort="max",
+        supported_reasoning_efforts=("none", "low", "high", "max"),
+    )
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        client.complete("hello", 2048)
+        client.complete("hello", 2048, finalization_only=True)
+
+    normal = captured["payloads"][0]
+    final = captured["payloads"][1]
+    assert normal["reasoning_effort"] == "max"
+    assert normal["thinking"] == {"type": "enabled"}
+    assert final["reasoning_effort"] == "high"
+    assert final["thinking"] == {"type": "enabled"}
+
+
+def test_chat_completions_thinking_budget_exhausted_retries_with_thinking_disabled():
+    """只有思考（reasoning_content）无正文且 finish_reason=length 时，
+    不判 model_response_invalid，而是关闭 thinking 重试一次。"""
+    from pico.providers.clients import ModelProviderError
+
+    captured = {"attempts": 0, "payloads": []}
+
+    class FakeResponse:
+        headers = {"Content-Type": "text/event-stream"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            captured["attempts"] += 1
+            if captured["attempts"] == 1:
+                # 思考吃光预算：只有 reasoning_content，无 content。
+                lines = [
+                    'data: {"choices": [{"delta": {"reasoning_content": "thinking..."}}]}',
+                    'data: {"choices": [{"delta": {"content": ""}, "finish_reason": "length"}]}',
+                    "data: [DONE]",
+                ]
+            else:
+                lines = [
+                    'data: {"choices": [{"delta": {"content": "<final>done</final>"}}]}',
+                    'data: {"choices": [{"delta": {"content": ""}, "finish_reason": "stop"}]}',
+                    "data: [DONE]",
+                ]
+            return iter(lines)
+
+    def fake_urlopen(request, timeout):
+        captured["payloads"].append(json.loads(request.data.decode("utf-8")))
+        return FakeResponse()
+
+    client = OpenAICompletionsModelClient(
+        model="deepseek-ai/DeepSeek-V3.2",
+        base_url="https://api.siliconflow.cn/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+        reasoning_effort="max",
+        supported_reasoning_efforts=("none", "low", "high", "max"),
+    )
+    client.max_attempts = 2
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        result = client.complete("hello", 128)
+
+    assert captured["attempts"] == 2
+    # 第一次请求带 thinking；重试关闭 thinking。
+    assert captured["payloads"][0]["thinking"] == {"type": "enabled"}
+    assert captured["payloads"][1]["thinking"] == {"type": "disabled"}
+    assert "reasoning_effort" not in captured["payloads"][1]
+    assert result == "<final>done</final>"
+    assert client.last_completion_metadata.get("thinking_budget_recovered") is True
+
+
+def test_chat_completions_plain_empty_response_still_invalid():
+    """无思考、无工具、无正文的空响应仍按 model_response_invalid 处理。"""
+    from pico.providers.clients import ModelProviderError
+
+    captured = {"attempts": 0}
+
+    class FakeResponse:
+        headers = {"Content-Type": "text/event-stream"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            captured["attempts"] += 1
+            return iter(['data: {"choices": [{"delta": {"content": ""}, "finish_reason": "stop"}]}', "data: [DONE]"])
+
+    def fake_urlopen(request, timeout):
+        return FakeResponse()
+
+    client = OpenAICompletionsModelClient(
+        model="deepseek-ai/DeepSeek-V3.2",
+        base_url="https://api.siliconflow.cn/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+    client.max_attempts = 1
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        with pytest.raises(ModelProviderError) as exc_info:
+            client.complete("hello", 128)
+
+    assert exc_info.value.code == "model_response_invalid"

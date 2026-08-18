@@ -1055,7 +1055,7 @@ def _model_capabilities(store: ConfigStore | None = None) -> dict:
     """Worker-level model capability report.
 
     ``max_output_tokens`` mirrors the runtime's default output budget
-    (``runtime.py`` ``max_new_tokens`` default 512) rather than a probed
+    (``runtime.py`` ``max_new_tokens`` default 4096) rather than a probed
     provider limit — provider-limit probing is a V1.2 (2.2) concern.
     ``usage_fields`` are the completion-metadata fields the client reports.
     """
@@ -1082,7 +1082,7 @@ def _model_capabilities(store: ConfigStore | None = None) -> dict:
                 "id": model,
                 "display_name": model,
                 "reasoning_efforts": efforts,
-                "max_output_tokens": 512,
+                "max_output_tokens": 4096,
                 "usage_fields": [
                     "input_tokens",
                     "output_tokens",

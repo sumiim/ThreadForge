@@ -193,7 +193,11 @@ class RemoteExecutionHooks:
         self._model_started_at = 0.0
         self._model_started_wall = ""
         self._tool_started_wall = ""
+        self._tool_started_mono = 0.0
         self._last_heartbeat_at = 0.0
+        # 工具执行期间的心跳线程（shell 等待时前端计时不冻结）。
+        self._tool_heartbeat_stop = threading.Event()
+        self._tool_heartbeat_thread: threading.Thread | None = None
         self._stream_buffer = ""
         self._stream_mode = "pending"
         self._redaction_buffer = ""
@@ -267,6 +271,8 @@ class RemoteExecutionHooks:
         self._active_tool_call_id = str(tool_call.get("id", ""))
         self._active_tool_name = str(tool_call.get("name", ""))
         self._tool_started_wall = _utc_now()
+        self._tool_started_mono = time.monotonic()
+        self._start_tool_heartbeat()
         self._send(
             "tool.started",
             {
@@ -277,8 +283,44 @@ class RemoteExecutionHooks:
             },
         )
 
+    def _start_tool_heartbeat(self) -> None:
+        """工具执行期间周期发 model.heartbeat（stage=tool）。
+
+        run_shell 等长任务在 before_tool → after_tool 之间同步阻塞，期间没有
+        model_text_delta，前端计时会冻结。用 daemon 心跳线程保证计时连续。
+        """
+        self._tool_heartbeat_stop.set()
+        self._tool_heartbeat_stop = threading.Event()
+        stop = self._tool_heartbeat_stop
+        started_mono = self._tool_started_mono
+        round_id = self._model_round_id
+
+        def beat() -> None:
+            while not stop.is_set() and not self._token.is_cancelled():
+                if stop.wait(timeout=1.0):
+                    return
+                now = time.monotonic()
+                self._send(
+                    "model.heartbeat",
+                    {
+                        "stage": "tool",
+                        "elapsed_seconds": max(0.0, now - started_mono),
+                        "run_elapsed_seconds": max(0.0, now - self._run_started_at),
+                        "round": self._model_round,
+                        "round_id": round_id,
+                    },
+                )
+
+        self._tool_heartbeat_thread = threading.Thread(
+            target=beat,
+            name="worker-tool-heartbeat",
+            daemon=True,
+        )
+        self._tool_heartbeat_thread.start()
+
     def after_tool(self, task_state, result) -> None:
         self._check()
+        self._tool_heartbeat_stop.set()
         metadata = dict(getattr(result, "metadata", {}) or {})
         status = metadata.get("tool_status", "ok")
         event_type = "tool.completed" if status in {"ok", "partial_success"} else "tool.failed"
@@ -737,7 +779,7 @@ def run_task(
         execution_hooks=hooks,
         allowed_tools=ALLOWED_TOOLS,
         max_steps=int(task.get("max_steps", 6)),
-        max_new_tokens=int(settings.get("max_new_tokens", 512)),
+        max_new_tokens=int(settings.get("max_new_tokens", 4096)),
         prompt_total_budget=int(settings.get("prompt_total_budget", 12000)),
         event_sink=CompositeSink(EventCollector(), JsonlSink(run_store), RemoteAgentStateSink(send_runtime_event)),
         shell_output_max_bytes=int(settings.get("shell_output_max_bytes", 1048576)),

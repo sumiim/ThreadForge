@@ -37,7 +37,11 @@ class Settings(BaseSettings):
     sse_heartbeat_seconds: int = 15
     sse_queue_size: int = 256
     max_steps: int = 6
-    max_new_tokens: int = 512
+    # §7.8.9 阶段 4 收尾（2026-08-18）：DeepSeek 思考模式下 reasoning + 正文
+    # 共用 max_tokens 预算。512 太少（effort=max 时思考吃光预算 → 收尾轮空
+    # 响应）；2048 在 max 档下仍可能偏紧，取 4096 留足正文余量。
+    # 合法范围 64-8192（field_validator 校验）。
+    max_new_tokens: int = 4096
     model_temperature: float = 0.2
     task_input_max_chars: int = 20000
     artifact_max_bytes: int = 10485760

@@ -849,6 +849,7 @@ def _run_provider_request(
     deadline_monotonic=None,
     should_cancel=None,
     on_retry=None,
+    no_retry_codes=(),
 ):
     """Anthropic / chat-completions 客户端共用的重试骨架。
 
@@ -856,6 +857,10 @@ def _run_provider_request(
     延迟、HTTP/网络错误映射与重试。`consume(response, attempt) -> dict` 由
     调用方传入，负责读 body / 解析 SSE；骨架不写任何 client 状态，错误
     metadata 由调用方在 except ModelProviderError 处统一写三键。
+
+    ``no_retry_codes``：命中这些错误码时立即上抛（不按 max_attempts 重试），
+    由调用方在更高层换策略重试（如 §7.8.9 阶段 4 收尾的 thinking 预算
+    耗尽 → 关闭 thinking 重试）。
     """
 
     def check_cancelled():
@@ -888,6 +893,8 @@ def _run_provider_request(
             with urllib.request.urlopen(request, timeout=remaining_timeout(attempt)) as response:
                 return consume(response, attempt)
         except ModelProviderError as exc:
+            if exc.code in no_retry_codes:
+                raise exc
             delay = _retry_delay(attempt)
             if exc.retryable and attempt < max_attempts:
                 if deadline_monotonic is not None and time.monotonic() + delay >= deadline_monotonic:
@@ -1086,10 +1093,14 @@ def _consume_completions_stream(lines, *, on_text_delta=None, on_thinking_delta=
     choice.message 的情况；usage 取流中最后一个非空 chunk。
     §7.8.9 阶段 4（2026-08-18）：DeepSeek 思考在 delta.reasoning_content，
     经 on_thinking_delta 回传（前端 thinking 折叠区），不进正文 content。
+    同时记录「只思考无正文」与 finish_reason，供调用方做空响应兜底
+    （effort=max + 小预算时 reasoning 吃光 max_tokens，content 为空）。
     """
     text_parts = []
     tool_slots = {}  # index -> {"name": str, "arguments": str}
     usage = None
+    saw_thinking = False
+    finish_reason = None
     for raw_line in lines:
         if should_cancel is not None:
             should_cancel()
@@ -1115,11 +1126,15 @@ def _consume_completions_stream(lines, *, on_text_delta=None, on_thinking_delta=
         if not choices:
             continue
         choice = choices[0]
+        if choice.get("finish_reason"):
+            finish_reason = choice.get("finish_reason")
         delta = choice.get("delta") or {}
         # DeepSeek 思考：reasoning_content 独立于 content，回传 thinking 回调。
         thinking = delta.get("reasoning_content")
-        if thinking and on_thinking_delta is not None:
-            on_thinking_delta(thinking)
+        if thinking:
+            saw_thinking = True
+            if on_thinking_delta is not None:
+                on_thinking_delta(thinking)
         content = delta.get("content")
         if content:
             text_parts.append(content)
@@ -1143,7 +1158,13 @@ def _consume_completions_stream(lines, *, on_text_delta=None, on_thinking_delta=
         slot = tool_slots[index]
         if slot["name"]:
             tool = {"name": slot["name"], "arguments": _parse_tool_arguments(slot["arguments"])}
-    return {"text": "".join(text_parts), "tool": tool, "usage": usage}
+    return {
+        "text": "".join(text_parts),
+        "tool": tool,
+        "usage": usage,
+        "saw_thinking": saw_thinking,
+        "finish_reason": finish_reason,
+    }
 
 
 class AnthropicCompatibleModelClient:
@@ -1386,45 +1407,61 @@ class OpenAICompletionsModelClient:
         on_thinking_delta=None,
         should_cancel=None,
         tool_definitions=None,
+        finalization_only=False,
     ):
         """向 chat/completions 接口发起一次流式模型调用。
 
-        流式事件在 _consume_completions_stream 里翻译回运行时协议；JSON
-        兜底复用 _extract_openai_text / _extract_openai_function_call。
+        §7.8.9 阶段 4 收尾（2026-08-18）：``finalization_only=True``（收尾轮，
+        只出最终答案、不调工具）时把 DeepSeek 思考档位压到 ``high``——最终
+        答案不需要最高强度思考，且能保证 reasoning 不吃光 max_tokens 预算
+        导致正文空响应（effort=max + 512 预算实测空响应）。
         """
         self.last_completion_metadata = {}
-        payload = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_new_tokens,
-            "stream": True,
-        }
-        # §2.1 兼容：DeepSeek 思考模式（thinking + reasoning_effort）。
-        # none/minimal → thinking disabled（不思考）；low/high/max → 映射后发送。
-        if self.reasoning_effort:
-            compat_effort = self._DEEPSEEK_EFFORT_COMPAT.get(self.reasoning_effort, "high")
-            if compat_effort is None:
+
+        def build_request(*, thinking_override=None):
+            """构造请求体。``thinking_override``：
+            - None → 按配置的 reasoning_effort 正常发
+            - "disabled" → 强制关闭思考（空响应兜底重试）
+            """
+            payload = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_new_tokens,
+                "stream": True,
+            }
+            # §2.1 兼容：DeepSeek 思考模式（thinking + reasoning_effort）。
+            # none/minimal → thinking disabled（不思考）；low/high/max → 映射后发送。
+            # 收尾轮（finalization_only）把最高档思考（max）压到 high，防 reasoning
+            # 吃光输出预算导致正文空响应（effort=max + 512 预算实测空响应）。
+            if thinking_override == "disabled":
                 payload["thinking"] = {"type": "disabled"}
-            else:
-                payload["reasoning_effort"] = compat_effort
-                payload["thinking"] = {"type": "enabled"}
-        native_tools_enabled = bool(tool_definitions) and self.supports_native_tools
-        if native_tools_enabled:
-            payload["tools"] = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": tool["name"],
-                        "description": tool.get("description"),
-                        "parameters": tool.get("parameters"),
-                    },
-                }
-                for tool in tool_definitions
-                if isinstance(tool, dict) and tool.get("type") == "function" and tool.get("name")
-            ]
-            payload["parallel_tool_calls"] = False
-        if self.temperature is not None:
-            payload["temperature"] = self.temperature
+            elif self.reasoning_effort:
+                compat_effort = self._DEEPSEEK_EFFORT_COMPAT.get(self.reasoning_effort, "high")
+                if compat_effort is None:
+                    payload["thinking"] = {"type": "disabled"}
+                else:
+                    if finalization_only and compat_effort == "max":
+                        compat_effort = "high"
+                    payload["reasoning_effort"] = compat_effort
+                    payload["thinking"] = {"type": "enabled"}
+            native_tools_enabled = bool(tool_definitions) and self.supports_native_tools
+            if native_tools_enabled:
+                payload["tools"] = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool["name"],
+                            "description": tool.get("description"),
+                            "parameters": tool.get("parameters"),
+                        },
+                    }
+                    for tool in tool_definitions
+                    if isinstance(tool, dict) and tool.get("type") == "function" and tool.get("name")
+                ]
+                payload["parallel_tool_calls"] = False
+            if self.temperature is not None:
+                payload["temperature"] = self.temperature
+            return payload
 
         headers = {
             "Content-Type": "application/json",
@@ -1434,13 +1471,14 @@ class OpenAICompletionsModelClient:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
-        request = urllib.request.Request(
-            # _normalize_completions_base_url 已保证 base_url 带 /chat/completions。
-            self.base_url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
+        def make_request(payload):
+            return urllib.request.Request(
+                # _normalize_completions_base_url 已保证 base_url 带 /chat/completions。
+                self.base_url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
 
         def consume(response, attempt):
             response_headers = getattr(response, "headers", {}) or {}
@@ -1479,37 +1517,72 @@ class OpenAICompletionsModelClient:
                         "tool": None,
                         "usage": data.get("usage"),
                         "native": native_action,
+                        "saw_thinking": bool(_extract_reasoning_summary(data)),
+                        "finish_reason": (data.get("choices") or [{}])[0].get("finish_reason"),
                     }
             if (
                 not result.get("native")
                 and not result.get("tool")
                 and not (result.get("text") or "").strip()
             ):
+                # §7.8.9 阶段 4 收尾：空响应兜底——只有思考（reasoning_content）
+                # 无正文且 finish_reason=length，说明思考吃光 max_tokens 预算。
+                # 这不是协议错误，交由外层关闭 thinking 重试一次。
+                if result.get("saw_thinking") and result.get("finish_reason") == "length":
+                    raise ModelProviderError(
+                        "model_thinking_budget_exhausted",
+                        retryable=True,
+                        attempts=attempt,
+                    )
                 raise ModelProviderError("model_response_invalid", retryable=True, attempts=attempt)
             return result
 
-        try:
-            result = _run_provider_request(
-                request,
+        def run(thinking_override=None):
+            return _run_provider_request(
+                make_request(build_request(thinking_override=thinking_override)),
                 consume=consume,
                 max_attempts=self.max_attempts,
                 timeout=self.timeout,
                 deadline_monotonic=deadline_monotonic,
                 should_cancel=should_cancel,
                 on_retry=on_retry,
+                # thinking 预算耗尽不该按原参数空转重试——交给外层关闭思考再试。
+                no_retry_codes=("model_thinking_budget_exhausted",),
             )
+
+        try:
+            result = run()
         except ModelProviderError as exc:
-            self.last_completion_metadata = {
-                "provider_error_code": exc.code,
-                "provider_error_retryable": exc.retryable,
-                "provider_request_attempts": exc.attempts,
-            }
-            raise
+            if (
+                exc.code == "model_thinking_budget_exhausted"
+                and self.reasoning_effort
+            ):
+                # 关闭思考重试一次：正文不再被 reasoning 挤占。
+                recovered = True
+                try:
+                    result = run(thinking_override="disabled")
+                except ModelProviderError as retry_exc:
+                    self.last_completion_metadata = {
+                        "provider_error_code": retry_exc.code,
+                        "provider_error_retryable": retry_exc.retryable,
+                        "provider_request_attempts": retry_exc.attempts,
+                    }
+                    raise
+            else:
+                self.last_completion_metadata = {
+                    "provider_error_code": exc.code,
+                    "provider_error_retryable": exc.retryable,
+                    "provider_request_attempts": exc.attempts,
+                }
+                raise
+        else:
+            recovered = False
 
         self.last_completion_metadata = {
             "prompt_cache_supported": self.supports_prompt_cache,
             "prompt_cache_key": prompt_cache_key,
             "prompt_cache_retention": prompt_cache_retention,
+            "thinking_budget_recovered": recovered,
             **_extract_usage_cache_details({"usage": result.get("usage") or {}}),
         }
         native_action = result.get("native")
@@ -1524,7 +1597,7 @@ class OpenAICompletionsModelClient:
         text = (result.get("text") or "").strip()
         normalized_text = _normalize_openai_native_text(
             text,
-            native_tools_enabled=native_tools_enabled,
+            native_tools_enabled=bool(tool_definitions) and self.supports_native_tools,
         )
         if normalized_text != text:
             self.last_completion_metadata["native_text_response"] = True

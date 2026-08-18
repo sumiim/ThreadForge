@@ -903,6 +903,9 @@ class AgentLoop:
                     hooks, "model_thinking_delta", lambda *_args: None
                 )(task_state, "execute", delta),
                 tool_definitions=() if finalization_only else tool_definitions,
+                # §7.8.9 阶段 4 收尾：收尾轮只出最终答案，把 DeepSeek 思考档位
+                # 压到 high，防 reasoning 吃光预算导致正文空响应。
+                finalization_only=finalization_only,
             )
             completion_metadata = dict(getattr(agent.model_client, "last_completion_metadata", {}) or {})
             task_state.record_model_usage(completion_metadata)
