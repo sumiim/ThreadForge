@@ -854,6 +854,17 @@ class AgentLoop:
         verification_passed = False
         prior_review_feedback = ""
         review_triggered = False
+        # §7.8.9 决策（2026-08-18）：双向对抗协议。
+        # ① awaiting_review_confirmation：review 同意（finalize/continue）不直接放行，
+        #    主循环需显式确认（重提 final）或反驳（继续调工具）——结束必须双方同意。
+        # ② review_interval：redirect 跟踪——review 判 redirect 后间隔 6→3 提前复查
+        #    （防「说了不听」），复查通过恢复 6；连续 2 次 redirect 未收敛 → 程序强制收敛。
+        awaiting_review_confirmation = False
+        review_interval = REVIEW_POLL_ACTIONS
+        tracking_rejects = 0
+        # 双向对抗：review 的同意决策暂存（awaiting 期间），主循环反驳时
+        # 用于 main_loop_rebuttal 事件的「against_verdict/feedback」。
+        pending_review_decision = None
 
         # 边界 1：进入控制循环前。
         token.raise_if_cancelled()
@@ -1219,6 +1230,20 @@ class AgentLoop:
                 continue
 
             if kind == "tool":
+                # §7.8.9 决策（2026-08-18）：双向对抗——主循环继续调工具 =
+                # 用行动反驳 review 的「可以结束」,结束确认流程（行动即理由）。
+                if awaiting_review_confirmation and pending_review_decision is not None:
+                    agent.emit_trace(
+                        task_state,
+                        "main_loop_rebuttal",
+                        {
+                            "against_verdict": str(pending_review_decision.get("verdict", "")),
+                            "action": "tool:" + str(payload.get("name", "")),
+                            "feedback": str(pending_review_decision.get("feedback", ""))[:500],
+                        },
+                    )
+                awaiting_review_confirmation = False
+                pending_review_decision = None
                 consecutive_talks = 0
                 tool_steps += 1
                 turn_actions += 1
@@ -1243,7 +1268,7 @@ class AgentLoop:
                 actions_since_review += 1
                 if name in {"write_file", "patch_file", "run_shell"}:
                     has_write_or_shell = True
-                if actions_since_review >= REVIEW_POLL_ACTIONS:
+                if actions_since_review >= review_interval:
                     review_decision = self._maybe_run_review(
                         task_state,
                         user_message,
@@ -1259,11 +1284,41 @@ class AgentLoop:
                         protocol_feedback = str(review_decision.get("feedback", "") or "")
                         # §7.8.9 阶段 3.5：review redirect → replan。
                         self._replan(task_state, user_message, str(review_decision.get("feedback", "") or ""))
+                        # §7.8.9 决策（2026-08-18）：redirect 跟踪——间隔减半提前复查
+                        # （防「说了不听」）；连续 2 次 redirect 未收敛 → 程序强制收敛。
+                        review_interval = max(2, review_interval // 2)
+                        tracking_rejects += 1
+                        if tracking_rejects >= 2:
+                            agent.emit_trace(
+                                task_state,
+                                "review_tracking_converged",
+                                {"tracking_rejects": tracking_rejects, "reason": "redirect_not_followed"},
+                            )
+                            finalization_attempted = True
+                            break
+                    else:
+                        # 方向纠正/有产出 → 恢复常规频率。
+                        review_interval = REVIEW_POLL_ACTIONS
+                        tracking_rejects = 0
                 continue
 
             if kind == "tool_batch":
                 # §7.8.9 阶段 2：声明并行 → 串行队列逐个执行。
                 # 批内每个动作独立走完整链路；批内动作按声明顺序入窗口。
+                # §7.8.9 决策（2026-08-18）：双向对抗——主循环继续调工具 = 反驳。
+                if awaiting_review_confirmation and pending_review_decision is not None:
+                    names = [str(item.get("name", "")) for item in (tools or [])]
+                    agent.emit_trace(
+                        task_state,
+                        "main_loop_rebuttal",
+                        {
+                            "against_verdict": str(pending_review_decision.get("verdict", "")),
+                            "action": "tool_batch:" + ",".join(names[:5]),
+                            "feedback": str(pending_review_decision.get("feedback", ""))[:500],
+                        },
+                    )
+                awaiting_review_confirmation = False
+                pending_review_decision = None
                 consecutive_talks = 0
                 tools = list(payload.get("tools", []))
                 if not tools:
@@ -1430,7 +1485,7 @@ class AgentLoop:
                     iname = str(item.get("name", ""))
                     if iname in {"write_file", "patch_file", "run_shell"}:
                         has_write_or_shell = True
-                if actions_since_review >= REVIEW_POLL_ACTIONS:
+                if actions_since_review >= review_interval:
                     review_decision = self._maybe_run_review(
                         task_state,
                         user_message,
@@ -1446,6 +1501,22 @@ class AgentLoop:
                         protocol_feedback = str(review_decision.get("feedback", "") or "")
                         # §7.8.9 阶段 3.5：review redirect → replan。
                         self._replan(task_state, user_message, str(review_decision.get("feedback", "") or ""))
+                        # §7.8.9 决策（2026-08-18）：redirect 跟踪——间隔减半提前复查
+                        # （防「说了不听」）；连续 2 次 redirect 未收敛 → 程序强制收敛。
+                        review_interval = max(2, review_interval // 2)
+                        tracking_rejects += 1
+                        if tracking_rejects >= 2:
+                            agent.emit_trace(
+                                task_state,
+                                "review_tracking_converged",
+                                {"tracking_rejects": tracking_rejects, "reason": "redirect_not_followed"},
+                            )
+                            finalization_attempted = True
+                            break
+                    else:
+                        # 方向纠正/有产出 → 恢复常规频率。
+                        review_interval = REVIEW_POLL_ACTIONS
+                        tracking_rejects = 0
                 continue
 
             if kind == "retry":
@@ -1507,6 +1578,10 @@ class AgentLoop:
                         }
                     )
                 turn_final_rejected = True
+                # §7.8.9 决策（2026-08-18）：双向对抗——主循环确认被 review #2 拒，
+                # 结束确认流程（本次 final 被拒,理由入 rejected_finals）。
+                awaiting_review_confirmation = False
+                pending_review_decision = None
                 # 方向/验证有问题：注入 feedback，继续循环（不 final）。
                 prior_review_feedback = str(review_decision.get("feedback", "") or "")
                 task_state.set_phase(
@@ -1525,7 +1600,43 @@ class AgentLoop:
                 # §7.8.9 阶段 3.5：review redirect → replan（保留已完成项）。
                 self._replan(task_state, user_message, str(review_decision.get("feedback", "") or ""))
                 continue
-            # final 通过 review：清零连续被拒计数。
+            # §7.8.9 决策（2026-08-18）：双向对抗协议——review 同意（finalize/continue）
+            # 不直接放行。主循环需显式确认（重提 final）或反驳（继续调工具,行动即理由）。
+            # review #2 就是下一次 final 前的 review（自然触发）。
+            if awaiting_review_confirmation:
+                # 主循环已确认（重提 final）→ review #2 判了。redirect 已在上面处理；
+                # finalize/continue → review 同意或无异议 → 双方同意,放行。
+                awaiting_review_confirmation = False
+                pending_review_decision = None
+            elif review_decision.get("reason") == "review_subagent_disabled" or review_decision.get("review_failed"):
+                # review 未启用（测试/降级）或模型调用失败——按原语义直接放行,
+                # 不强制双向确认（避免 review 故障把 run 卡死）。
+                awaiting_review_confirmation = False
+            else:
+                # 第一次 review 同意 → 不完成,等主循环确认。
+                awaiting_review_confirmation = True
+                pending_review_decision = dict(review_decision)
+                protocol_feedback = (
+                    "The review approves completion. Re-submit your final answer to "
+                    "confirm, or keep working if you still have work (your next action "
+                    "will be treated as a rebuttal and recorded)."
+                )
+                task_state.set_phase(
+                    PHASE_ACT_OR_ANSWER,
+                    next_step="Review approves completion; re-submit final to confirm or keep working",
+                )
+                agent.emit_trace(
+                    task_state,
+                    "review_awaiting_confirmation",
+                    {
+                        "verdict": str(review_decision.get("verdict", "")),
+                        "feedback": str(review_decision.get("feedback", ""))[:500],
+                        "reason": str(review_decision.get("reason", ""))[:200],
+                    },
+                )
+                agent.run_store.write_task_state(task_state)
+                continue
+            # final 通过双方确认：清零连续被拒计数。
             consecutive_final_rejected = 0
             turn_final_rejected = False
             final = (payload or raw).strip()

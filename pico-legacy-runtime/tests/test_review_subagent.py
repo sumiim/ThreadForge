@@ -287,6 +287,9 @@ def test_agent_loop_review_internal_shell_verifies_write(tmp_path):
             "<final>Done writing.</final>",
             '<tool>{"name":"run_shell","args":{"command":"echo ok"}}</tool>',
             '{"verdict": "finalize", "feedback": "write verified by shell exit 0", "reason": "done"}',
+            # 双向对抗：review 同意后主循环需确认（重提 final）→ review #2 finalize
+            "<final>Done writing.</final>",
+            '{"verdict": "finalize", "feedback": "confirmed; write verified by shell exit 0", "reason": "done"}',
         ],
         feature_flags={"review_subagent": True},
     )
@@ -299,6 +302,8 @@ def test_agent_loop_review_internal_shell_verifies_write(tmp_path):
     audit = state.review_audit
     assert audit, "review must have run before final"
     assert audit[-1]["verdict"] == "finalize"
-    assert audit[-1].get("review_shell_ok") is True
+    # 任一次 review 内部跑过成功 shell 即可（review#3 验证,review#4 确认轮复用）
+    assert any(entry.get("review_shell_ok") for entry in audit)
+    assert state.review_verified is True
     # review 的内部调查不污染主循环 evidence（主循环只有 write_file）
     assert {e.get("tool_name") for e in state.evidence} == {"write_file"}

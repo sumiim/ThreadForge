@@ -367,12 +367,14 @@ class RemoteExecutionHooks:
     def model_thinking_delta(self, task_state, stage: str, text: str) -> None:
         # §7.8.9 阶段 4：DeepSeek 思考（reasoning_content）回传前端 thinking 折叠区。
         # 独立事件（assistant.thinking），不进正文 content；脱敏后发送。
+        # §7.8.9 决策（2026-08-18）：放行 planning 阶段——planning 思考与每轮
+        # turn 思考分区展示（事件带 stage）。
         self._check()
-        if stage != "execute":
+        if stage not in {"execute", "planning"}:
             return
         cleaned = redact_text(str(text or ""))
         if cleaned:
-            self._send("assistant.thinking", {"text": cleaned})
+            self._send("assistant.thinking", {"text": cleaned, "stage": stage})
 
     def model_retrying(self, task_state, stage: str, details: dict) -> None:
         self._check()
