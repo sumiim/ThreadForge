@@ -309,6 +309,16 @@ class RemoteExecutionHooks:
         self._check()
         self._send("assistant.commentary", {"text": str(text)[:1000]})
 
+    def model_thinking_delta(self, task_state, stage: str, text: str) -> None:
+        # §7.8.9 阶段 4：DeepSeek 思考（reasoning_content）回传前端 thinking 折叠区。
+        # 独立事件（assistant.thinking），不进正文 content；脱敏后发送。
+        self._check()
+        if stage != "execute":
+            return
+        cleaned = redact_text(str(text or ""))
+        if cleaned:
+            self._send("assistant.thinking", {"text": cleaned})
+
     def model_retrying(self, task_state, stage: str, details: dict) -> None:
         self._check()
         self._stream_buffer = ""
