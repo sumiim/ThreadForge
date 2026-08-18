@@ -464,3 +464,23 @@ def test_tooled_final_rejected_does_not_trigger_quick_convergence(tmp_path):
     assert len(state.rejected_finals) == 2
     # 首次 read 记 evidence；后两次 read 是重复（被拦）不新增
     assert len(state.evidence) == 1
+
+
+def test_result_fingerprint_distinguishes_changed_file_reload(tmp_path):
+    """§7.8.9 修正（2026-08-18）：结果参与重复判定——同动作但结果变了不算重复。
+
+    直接测 _tool_call_repeats：read_file 同参数，结果指纹不同（文件被改）→
+    不算重复；结果指纹相同 → 算重复。
+    """
+    from pico.agent_loop import _tool_call_repeats
+
+    # 窗口：一次 read_file(a.txt) 动作 + 结果指纹 "hash_v1"
+    window = [(("read_file", "a.txt", (1, 1)), "hash_v1")]
+
+    # 同动作、结果相同 → 重复
+    assert _tool_call_repeats("read_file", {"path": "a.txt", "start": 1, "end": 1}, "hash_v1", window) is True
+    # 同动作、结果不同（文件被改）→ 不重复
+    assert _tool_call_repeats("read_file", {"path": "a.txt", "start": 1, "end": 1}, "hash_v2", window) is False
+    # 无结果指纹（shell/写）→ 只看动作
+    assert _tool_call_repeats("run_shell", {"command": "ls"}, None, window) is False  # 工具不同
+    assert _tool_call_repeats("read_file", {"path": "a.txt", "start": 1, "end": 1}, None, window) is True

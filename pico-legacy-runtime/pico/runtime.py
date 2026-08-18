@@ -673,6 +673,11 @@ class Pico:
         # agent 很常见的一种坏循环，是在没有新信息的情况下反复发起同一调用。
         # 只读工具在「最近 6 条、且该重复之后没有写工具」的窗口内同名同参才算坏循环；
         # 写工具会改变工作区，之后重新 list/read 是合理的。
+        # §7.8.9 修正（2026-08-18）：只读工具不做执行前拦截——结果可能已变
+        # （文件被改，重读合理），执行前无法预知；放行后由 AgentLoop 的执行后
+        # 判定（结果指纹参与）决定是否算重复/坏轮。此函数只拦 shell/写工具。
+        if name in _READ_ONLY_TOOL_NAMES:
+            return False
         tool_events = [item for item in self.session["history"] if item["role"] == "tool"]
         if len(tool_events) < 2:
             return False

@@ -179,18 +179,54 @@ def _tool_fingerprints_match(fp_a, fp_b):
     return fp_a == fp_b
 
 
-def _tool_call_repeats(name, args, recent_tool_fps, recent_tool_names):
+def _result_fingerprint(name, args, tool_result):
+    """观察结果指纹：只读工具的成功内容摘要（同动作同结果才算空转）。
+
+    §7.8.9 修正（2026-08-18）：read_file(a) 两次、中间文件被改 → 内容变了，
+    重读是合理的（确认写结果），不应判重复。指纹加结果后：参数相同且结果
+    相同才算重复；结果变了 → 不算重复。
+
+    只对只读工具（read_file/search/list_files）且**成功结果**做比较——
+    shell 输出多变（时间戳/路径/环境）不参与；失败/被拦结果（如 runtime
+    重复拦截的 error）不参与，返回 None（否则 error 会让「原本重复的调用」
+    看起来像结果变化，污染判定）。
+    """
+    if name not in {"read_file", "search", "list_files"}:
+        return None
+    if not hasattr(tool_result, "content"):
+        return None
+    status = str((getattr(tool_result, "metadata", {}) or {}).get("tool_status", ""))
+    if status not in {"ok", "partial_success"}:
+        return None
+    content = str(tool_result.content or "")
+    if not content.strip():
+        return None
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+
+
+def _tool_call_repeats(name, args, result_fp, recent_entries):
     """当前工具调用是否与滑动窗口内的历史调用重复。
 
-    - 窗口内匹配到同指纹 → 重复；
+    - 窗口内匹配到同动作指纹 → 看结果：只读工具要求结果相同（结果变了 =
+      文件被改，重读合理 → 不算重复）；result_fp 为 None（shell/写/未执行）
+      只看动作。
     - 但若「匹配之后有写工具介入」，工作区已变，重读/重列是合理的 → 不重复
       （对齐 runtime.repeated_tool_call 的语义）。
+
+    ``recent_entries``：deque of (action_fp, result_fp)。
     """
-    fp = _tool_fingerprint(name, args)
-    for index, prev_fp in enumerate(recent_tool_fps):
-        if not _tool_fingerprints_match(fp, prev_fp):
+    action_fp = _tool_fingerprint(name, args)
+    for index, (action_prev, result_prev) in enumerate(recent_entries):
+        if not _tool_fingerprints_match(action_fp, action_prev):
             continue
-        tail = recent_tool_names[index + 1:]
+        # 结果参与：只读工具要求结果相同；任何一方无结果（None）→ 只看动作。
+        if (
+            result_fp is not None
+            and result_prev is not None
+            and result_fp != result_prev
+        ):
+            continue  # 结果变了（文件被改）→ 不算重复，重读合理
+        tail = [entry[0][0] for entry in list(recent_entries)[index + 1:]]
         if any(tool not in _READ_ONLY_TOOL_NAMES for tool in tail):
             continue
         return True
@@ -417,12 +453,18 @@ class AgentLoop:
         """
         agent = self.agent
         agent.emit_progress(f"step {attempts}: running tool {name}")
-        # P4 重复动作执行前拦截。
-        pre_repeat = _tool_call_repeats(
-            name,
-            args,
-            tuple(recent_tool_fps),
-            tuple(recent_tool_names),
+        # P4 重复动作执行前拦截：只对非只读工具（shell/写）生效——只读工具
+        # 的结果可能已变（文件被改，重读合理），执行前无法预知，放行后由
+        # 执行后判定（结果参与）决定是否算重复/坏轮。
+        pre_repeat = (
+            _tool_call_repeats(
+                name,
+                args,
+                None,
+                tuple(recent_tool_fps),
+            )
+            if name not in _READ_ONLY_TOOL_NAMES
+            else False
         )
         if pre_repeat:
             tool_result = ToolExecutionResult(
@@ -461,24 +503,32 @@ class AgentLoop:
                 },
             )
         else:
-            if name == "read_file":
-                task_state.record_read_file()
             tool_result = agent.execute_tool(name, args, tool_call_id=tool_call_id)
         task_state.record_affected_paths(tool_result.metadata.get("affected_paths", []))
         tool_status = str(tool_result.metadata.get("tool_status", "unknown"))
         # 工具信号：本轮是否调了工具、是否与窗口内重复（写工具介入豁免）。
+        # §7.8.9 修正（2026-08-18）：执行后判定带结果指纹——只读工具
+        # 同动作同结果才算重复；内容变了（文件被改）→ 不算。
+        result_fp = _result_fingerprint(name, args, tool_result)
         repeated = _tool_call_repeats(
             name,
             args,
+            result_fp,
             tuple(recent_tool_fps),
-            tuple(recent_tool_names),
         )
+        # §7.8.9 修正（2026-08-18）：read_file 计数移到重复判定后——
+        # 内容没变的重复读不计 read_files（不消耗预算）；内容变了的重读
+        # 是新读，计入。
+        if name == "read_file" and not repeated:
+            task_state.record_read_file()
         # §7.8.9 边界：重复动作（P4 拦截）不入重复窗口——入队会污染「有效历史」，
         # 未来相同调用仍应基于最早的原始动作判定重复；窗口只存真实执行过的动作。
         if not repeated:
-            recent_tool_fps.append(_tool_fingerprint(name, args))
+            recent_tool_fps.append((_tool_fingerprint(name, args), result_fp))
             recent_tool_names.append(name)
-        if tool_status in {"ok", "partial_success"}:
+        # §7.8.9 修正（2026-08-18）：evidence 只在非重复时记录——重复读（同动作
+        # 同结果）不产生新事实，不重复记 evidence（与 read_files 计数一致）。
+        if tool_status in {"ok", "partial_success"} and not repeated:
             affected_paths = list(tool_result.metadata.get("affected_paths", []))
             relative_paths = list(affected_paths)
             requested_path = args.get("path") if isinstance(args, dict) else None
