@@ -1004,6 +1004,12 @@ class BenchmarkEvaluator:
             self.backend,
             max_new_tokens=self.max_new_tokens,
             event_sink_factory=self.event_sink_factory,
+            # 脚本化输出（FakeModelClient）评测：关 review，避免 review 消费
+            # 脚本输出的顺序导致断言错乱；真模型评测默认开（NativeBackendRunner
+            # 默认 review_subagent=True，验证「瞎验收」修复）。
+            feature_flags={"review_subagent": False}
+            if self.model_client_factory is None
+            else None,
         )
         backend_result = runner.run_task(
             task,
