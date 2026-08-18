@@ -452,6 +452,8 @@ export interface Message {
   commentary?: string // 模型过程中间话（流式回传，区别于 final content）
   /** DeepSeek 思考过程（assistant.thinking 流式累积；独立于 content，UI 折叠展示） */
   thinking?: string
+  /** §7.8.9 决策（2026-08-18）：planning 阶段的思考（stage=planning），与每轮 turn thinking 分区展示 */
+  planningThinking?: string
   toolCalls?: ToolCall[]
   /**
    * 按事件到达顺序的交替块（commentary 与行为交替，而非行为全堆顶部）。
@@ -463,10 +465,23 @@ export interface Message {
   status?: 'streaming' | 'done' // assistant 消息运行状态
 }
 
-/** 一条 assistant 消息内的交替内容块：中途说话 或 行为（思考 + 工具）。 */
+/** 一条 assistant 消息内的交替内容块：中途说话 / 行为（思考 + 工具）/ 审查对抗。 */
 export type MessageBlock =
   | { kind: 'commentary'; text: string }
   | { kind: 'behavior'; thinking?: string; toolCalls?: ToolCall[] }
+  | { kind: 'review'; entries: ReviewBattleEntry[] }
+
+/** §7.8.9 决策（2026-08-18）：双向对抗协议的审查回合——谁发的、各什么理由、结果。 */
+export interface ReviewBattleEntry {
+  side: 'review' | 'main_loop'
+  verdict?: 'finalize' | 'redirect' | 'continue'
+  feedback?: string
+  reason?: string
+  obstacles?: string[]
+  /** main_loop 反驳时用行动证明（如 tool:read_file） */
+  action?: string
+  result?: 'passed' | 'rejected' | 'continue'
+}
 
 export interface Session {
   id: string

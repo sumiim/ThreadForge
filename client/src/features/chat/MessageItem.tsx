@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { DownOutlined, RightOutlined, ToolOutlined } from '@ant-design/icons'
 import Markdown from '../../components/Markdown'
-import type { Message, ToolCall } from '../../api/types'
+import type { Message, ReviewBattleEntry, ToolCall } from '../../api/types'
 import ToolList from './ToolList'
 
 interface MessageItemProps {
@@ -57,7 +57,7 @@ function StreamingStatus() {
 }
 
 /** 思考折叠区：灰色 + 等宽滚动条。无 effect：open = 手动 ?? 流式中展开。 */
-function ThinkingFold({ text, streaming }: { text: string; streaming: boolean }) {
+function ThinkingFold({ text, streaming, label = 'Thinking' }: { text: string; streaming: boolean; label?: string }) {
   const [manualOpen, setManualOpen] = useState<boolean | null>(null)
   const open = manualOpen ?? (streaming && text.length > 0)
 
@@ -70,7 +70,7 @@ function ThinkingFold({ text, streaming }: { text: string; streaming: boolean })
         aria-expanded={open}
       >
         <span aria-hidden>🧠</span>
-        <span className="font-medium">Thinking</span>
+        <span className="font-medium">{label}</span>
         <span className="ml-auto font-mono text-stone-400">{text.length} chars</span>
         <span className="text-stone-400" aria-hidden>{open ? '▾' : '▸'}</span>
       </button>
@@ -122,6 +122,58 @@ function ToolFold({ toolCalls, streaming, onApprove, onReject }: {
             onApprove={onApprove}
             onReject={onReject}
           />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** §7.8.9 决策（2026-08-18）：审查对抗块——双向对抗协议的前端展示。
+ * 渲染在行为块下方（blocks 第三分支）：谁发的、各什么理由、最终结果。 */
+function ReviewBattle({ entries }: { entries: ReviewBattleEntry[] }) {
+  const [open, setOpen] = useState(false)
+  const latest = entries[entries.length - 1]
+  const resultLabel = latest?.result === 'passed' ? '通过' : latest?.result === 'rejected' ? '驳回' : latest?.result === 'continue' ? '继续' : ''
+  return (
+    <div className="mb-2 max-w-full overflow-hidden rounded-lg border border-orange-200/80 bg-orange-50/50 dark:border-orange-700/40 dark:bg-orange-900/20">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full cursor-pointer select-none items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-orange-700 transition-colors hover:bg-orange-100/60 dark:text-orange-300 dark:hover:bg-orange-800/30"
+        aria-expanded={open}
+      >
+        <span aria-hidden>{open ? '▾' : '▸'}</span>
+        <span className="font-medium">审查对抗</span>
+        <span className="ml-auto truncate font-mono text-orange-500 dark:text-orange-400">
+          {entries.length} 回合{resultLabel ? ` · ${resultLabel}` : ''}
+        </span>
+      </button>
+      {open && (
+        <div className="space-y-1.5 border-t border-orange-200/70 py-1.5 dark:border-orange-700/40">
+          {entries.map((entry, index) => (
+            <div key={index} className="px-2 text-[11px] leading-relaxed text-stone-600 dark:text-stone-300">
+              <div className="flex items-center gap-1.5">
+                <span className="font-medium">{entry.side === 'review' ? '🧐 Review' : '🤖 主循环'}</span>
+                {entry.verdict ? (
+                  <span className={
+                    entry.verdict === 'finalize'
+                      ? 'rounded bg-emerald-100 px-1 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+                      : entry.verdict === 'redirect'
+                        ? 'rounded bg-orange-100 px-1 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300'
+                        : 'rounded bg-stone-100 px-1 text-stone-600 dark:bg-stone-700 dark:text-stone-300'
+                  }>
+                    {entry.verdict}
+                  </span>
+                ) : null}
+                {entry.action ? <span className="font-mono text-stone-400">{entry.action}</span> : null}
+              </div>
+              {entry.obstacles && entry.obstacles.length > 0 ? (
+                <div className="mt-0.5 text-stone-500">障碍：{entry.obstacles.join('、')}</div>
+              ) : null}
+              {entry.feedback ? <div className="mt-0.5 whitespace-pre-wrap text-stone-500">{entry.feedback}</div> : null}
+              {entry.reason ? <div className="mt-0.5 font-mono text-[10px] text-stone-400">{entry.reason}</div> : null}
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -206,6 +258,11 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
       className="message-enter flex justify-start"
     >
       <div className="min-w-0 max-w-[90%]">
+        {message.planningThinking ? (
+          <div className="mb-2">
+            <ThinkingFold text={message.planningThinking} streaming={streaming} label="Planning thinking" />
+          </div>
+        ) : null}
         {blocks && blocks.length > 0 ? (
           // 交替块：commentary 与行为按事件到达顺序出现，而非行为全堆顶部。
           blocks.map((block, index) =>
@@ -216,6 +273,8 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
               >
                 {block.text}
               </div>
+            ) : block.kind === 'review' ? (
+              <ReviewBattle key={index} entries={block.entries} />
             ) : (
               <BehaviorFold
                 key={index}
