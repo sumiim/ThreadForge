@@ -15,7 +15,7 @@ export default function ToolList({ toolCalls, onApprove, onReject }: ToolListPro
   if (toolCalls.length === 0) return null
 
   return (
-    <div className="mt-2 space-y-1 overflow-hidden rounded-lg border border-stone-200/80 bg-stone-50/60 dark:border-stone-700/60 dark:bg-stone-800/40">
+    <div className="space-y-1 overflow-hidden rounded-md border border-stone-200/70 bg-white/70 dark:border-stone-700/60 dark:bg-stone-900/30">
       {toolCalls.map((toolCall, index) => (
         <ToolRow
           key={toolCall.id}

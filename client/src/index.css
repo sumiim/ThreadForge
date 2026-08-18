@@ -197,11 +197,11 @@ body {
 
   /* 代码围栏（仅当没有被 CodeBlock 组件接管时的 fallback） */
   .md-body pre:not([class]) {
-    @apply my-3 overflow-x-auto rounded-lg bg-stone-900 p-4 text-sm leading-relaxed;
+    @apply my-3 overflow-x-auto rounded-lg border border-stone-200 bg-white p-4 text-sm leading-relaxed text-stone-700;
   }
 
   .md-body pre code {
-    @apply bg-transparent p-0 text-stone-100;
+    @apply bg-transparent p-0 text-inherit;
   }
 
   .md-body a {
@@ -284,8 +284,9 @@ body {
     @apply border-stone-700;
   }
 
-  /* 已删除的代码围栏旧样式（CodeBlock 组件接管后不再需要） */
-  /* .dark .md-body pre 已被 CodeBlock 组件覆盖 */
+  .dark .md-body pre:not([class]) {
+    @apply border-stone-700 bg-stone-100 text-stone-700;
+  }
 }
 
 /* 细滚动条，贴合白色调 */

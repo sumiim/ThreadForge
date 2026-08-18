@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { DownOutlined, RightOutlined } from '@ant-design/icons'
+import { DownOutlined, RightOutlined, ToolOutlined } from '@ant-design/icons'
 import Markdown from '../../components/Markdown'
-import type { Message } from '../../api/types'
+import type { Message, ToolCall } from '../../api/types'
 import ToolList from './ToolList'
 
 interface MessageItemProps {
@@ -85,6 +85,49 @@ function ThinkingFold({ text, streaming }: { text: string; streaming: boolean })
   )
 }
 
+/** 工具二级目录：行为 → Tool → 具体工具调用。 */
+function ToolFold({ toolCalls, streaming, onApprove, onReject }: {
+  toolCalls: ToolCall[]
+  streaming: boolean
+  onApprove: (toolCallId: string) => void
+  onReject: (toolCallId: string) => void
+}) {
+  const [manualOpen, setManualOpen] = useState<boolean | null>(null)
+  const open = manualOpen ?? streaming
+  const runningCount = toolCalls.filter((toolCall) => toolCall.status === 'running').length
+  const pendingCount = toolCalls.filter((toolCall) => toolCall.status === 'pending').length
+  const statusSummary = runningCount > 0
+    ? `${runningCount} 运行中`
+    : pendingCount > 0
+      ? `${pendingCount} 待处理`
+      : `${toolCalls.length} tool${toolCalls.length > 1 ? 's' : ''}`
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setManualOpen((current) => !(current ?? streaming))}
+        className="flex w-full cursor-pointer select-none items-center gap-2 rounded-md px-2 py-1 text-left text-[11px] text-stone-500 transition-colors hover:bg-stone-100/80 dark:text-stone-400 dark:hover:bg-stone-700/40"
+        aria-expanded={open}
+      >
+        <ToolOutlined className="text-[12px]" aria-hidden />
+        <span className="font-medium">Tool</span>
+        <span className="ml-auto font-mono text-stone-400 dark:text-stone-500">{statusSummary}</span>
+        <span className="text-stone-400" aria-hidden>{open ? '▾' : '▸'}</span>
+      </button>
+      {open && (
+        <div className="ml-3 border-l border-stone-200/80 pb-1 pl-2 pr-2 pt-1 dark:border-stone-700/60">
+          <ToolList
+            toolCalls={toolCalls}
+            onApprove={onApprove}
+            onReject={onReject}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
 /**
  * 每轮行为折叠面板（仿左侧 RunTimeline：折叠窄条 ↔ 展开面板，默认折叠）。
  * 内容按三级组织：思考 → 工具（工具内并行最小行动）→ 中途对话。
@@ -123,13 +166,12 @@ function BehaviorFold({ message, onApprove, onReject }: {
         <div className="space-y-1 border-t border-stone-200/70 py-1.5 dark:border-stone-700/50">
           {hasThinking && <ThinkingFold text={message.thinking!} streaming={streaming} />}
           {hasTools && (
-            <div className="pt-0.5">
-              <ToolList
-                toolCalls={toolCalls}
-                onApprove={(toolCallId) => onApprove(message.id, toolCallId)}
-                onReject={(toolCallId) => onReject(message.id, toolCallId)}
-              />
-            </div>
+            <ToolFold
+              toolCalls={toolCalls}
+              streaming={streaming}
+              onApprove={(toolCallId) => onApprove(message.id, toolCallId)}
+              onReject={(toolCallId) => onReject(message.id, toolCallId)}
+            />
           )}
         </div>
       )}
@@ -161,21 +203,6 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
       className="message-enter flex justify-start"
     >
       <div className="min-w-0 max-w-[90%]">
-        {message.activity && message.activity.length > 0 ? (
-          <details className="mb-2 max-w-full rounded-lg border border-stone-100 bg-stone-50/70 px-3 py-2 text-xs text-stone-500 dark:border-stone-700/50 dark:bg-stone-800/50 dark:text-stone-400" open={message.status === 'streaming'}>
-            <summary className="cursor-pointer select-none text-[11px] text-stone-500 dark:text-stone-400">
-              已记录 {message.activity.length} 条运行事件
-            </summary>
-            <div className="mt-2 space-y-1.5 border-l border-stone-200 pl-2 dark:border-stone-600">
-              {message.activity.map((activity) => (
-                <div key={activity.id} id={`run-event-${activity.id}`} className="scroll-mt-4">
-                  <div className="font-medium text-stone-600 dark:text-stone-300">{activity.label}</div>
-                  {activity.detail ? <div className="mt-0.5 whitespace-pre-wrap text-stone-400 dark:text-stone-500">{activity.detail}</div> : null}
-                </div>
-              ))}
-            </div>
-          </details>
-        ) : null}
         <BehaviorFold
           message={message}
           onApprove={onApprove}

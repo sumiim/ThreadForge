@@ -8,6 +8,7 @@ REDACTED_VALUE = "<redacted>"
 # Read-only tool previews are useful in the Web/Desktop timeline, but the
 # Worker must never stream unrestricted command arguments or full file contents.
 PUBLIC_READ_ONLY_TOOLS = frozenset({"list_files", "read_file", "search", "delegate"})
+PUBLIC_TOOL_RESULT_TOOLS = PUBLIC_READ_ONLY_TOOLS | {"run_shell"}
 PUBLIC_TOOL_RESULT_MAX_CHARS = 8000
 PUBLIC_TOOL_ARG_MAX_CHARS = 1200
 
@@ -129,8 +130,8 @@ def public_tool_args_preview(tool_name, args):
 
 
 def public_tool_result_preview(tool_name, content):
-    """Return a bounded result preview only for read-only tools."""
-    if str(tool_name) not in PUBLIC_READ_ONLY_TOOLS or content is None:
+    """Return a bounded, redacted preview for explicitly allowed tool results."""
+    if str(tool_name) not in PUBLIC_TOOL_RESULT_TOOLS or content is None:
         return "", False
     return _clip_public_text(content, PUBLIC_TOOL_RESULT_MAX_CHARS)
 
