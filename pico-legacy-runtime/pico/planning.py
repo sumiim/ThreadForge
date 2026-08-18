@@ -20,11 +20,19 @@ MIN_PLAN_STEPS = 1
 _PLANNING_PROMPT = (
     "You are planning an execution for a local coding agent. "
     "Return exactly one JSON object and nothing else.\n"
-    'The JSON must be: {"steps": ["step 1 goal", "step 2 goal", ...]}\n'
+    'The JSON must be: {"steps": [{"goal": "step 1 goal", "done_when": ["acceptance"]}, ...]}\n'
     "Requirements:\n"
-    f"- steps: a list of {MIN_PLAN_STEPS}-{MAX_PLAN_STEPS} concise step goals "
-    "the agent should complete, in execution order. Each step is a short "
-    "imperative sentence.\n"
+    f"- steps: a list of {MIN_PLAN_STEPS}-{MAX_PLAN_STEPS} step objects, in execution order.\n"
+    "  - goal: a short imperative sentence describing what the step achieves.\n"
+    "  - done_when: 1-3 verifiable acceptance criteria for THIS step. Prefer "
+    "program-verifiable forms:\n"
+    '    - "file:<path>" — the file exists in the workspace (e.g. "file:src/foo.py")\n'
+    '    - "grep:<path>:<pattern>" — the file content contains the text/pattern '
+    '(e.g. "grep:README.md:installation")\n'
+    '    - "cmd:<shell command>" — the command exits 0 (e.g. "cmd:python -m pytest -q")\n'
+    "    - otherwise a plain sentence (review will verify it semantically).\n"
+    "  A step may have only plain-sentence criteria if its outcome cannot be "
+    "expressed programmatically.\n"
     "- Cover only the current request; do not plan duplicate exploration over "
     "already-explored areas.\n"
     "- No markdown, no prose outside the JSON object.\n"
@@ -61,9 +69,21 @@ def parse_plan_steps(raw):
         raise ValueError("plan output must contain a steps array")
     steps = []
     for item in value["steps"]:
-        goal = str(item or "").strip()
+        if isinstance(item, dict):
+            goal = str(item.get("goal", "") or "").strip()
+            raw_done = item.get("done_when", [])
+            done_when = (
+                [str(dw).strip() for dw in raw_done if str(dw).strip()]
+                if isinstance(raw_done, list)
+                else []
+            )
+            if not done_when:
+                done_when = [goal]
+        else:
+            goal = str(item or "").strip()
+            done_when = [goal] if goal else []
         if goal:
-            steps.append(goal)
+            steps.append({"goal": goal, "done_when": done_when})
     if not MIN_PLAN_STEPS <= len(steps) <= MAX_PLAN_STEPS:
         raise ValueError(f"plan steps must be {MIN_PLAN_STEPS}-{MAX_PLAN_STEPS}")
     return steps
@@ -77,8 +97,12 @@ def run_planning(
     context: str = "",
     explored_summary: str = "",
     replan: bool = False,
-) -> list[str]:
+) -> list[dict]:
     """调用一次模型生成步骤列表；失败时降级（返回空列表 → 无计划直接跑）。
+
+    §7.8.9 决策（2026-08-18）：返回 list[dict] `{"goal", "done_when"}`——
+    done_when 是每步的验收标准（程序化 file:/grep:/cmd: 前缀由打钩引擎验证,
+    自由文本由 review 语义打钩）。纯字符串 step 向后兼容 → done_when=[goal]。
 
     replan=True 时是 review redirect 触发的重新规划。
     """

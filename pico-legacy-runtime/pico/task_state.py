@@ -77,6 +77,10 @@ class TaskState:
     checklist: list[str] = field(default_factory=list)
     done_when: list[str] = field(default_factory=list)
     completed_items: list[str] = field(default_factory=list)
+    # §7.8.9 决策（2026-08-18）：checklist 打钩——每个 checklist 项（goal）的
+    # 验收标准（done_when）映射。程序化标准（file:/grep:/cmd: 前缀）由打钩引擎
+    # 确定性验证;自由文本由 review 语义打钩。goal → [验收标准]
+    step_done_when: dict = field(default_factory=dict)
     next_step: str = "Understand the request and acceptance criteria"
     requires_post_tool_reasoning: bool = False
     read_files: int = 0
@@ -161,6 +165,10 @@ class TaskState:
             checklist=[str(item) for item in data.get("checklist", DEFAULT_CHECKLIST)],
             done_when=[str(item) for item in data.get("done_when", [])],
             completed_items=[str(item) for item in data.get("completed_items", [])],
+            step_done_when={
+                str(goal): [str(item) for item in items]
+                for goal, items in dict(data.get("step_done_when", {})).items()
+            },
             next_step=str(data.get("next_step", "Understand the request and acceptance criteria")),
             requires_post_tool_reasoning=bool(data.get("requires_post_tool_reasoning", False)),
             read_files=int(data.get("read_files", 0)),
@@ -337,6 +345,10 @@ class TaskState:
             "checklist": list(self.checklist),
             "done_when": list(self.done_when),
             "completed_items": list(self.completed_items),
+            "step_done_when": {
+                str(goal): [str(item) for item in items]
+                for goal, items in dict(self.step_done_when or {}).items()
+            },
             "next_step": self.next_step,
             "requires_post_tool_reasoning": self.requires_post_tool_reasoning,
             "read_files": self.read_files,

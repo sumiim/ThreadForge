@@ -154,10 +154,14 @@ class NativeRuntimeAdapter:
             # §7.8.9 阶段 3：真实模型开启 review subagent（程序强制）。
             # 离线 FakeModelClient 没有独立 review 输出流，必须显式关闭，
             # 否则会消费脚本化主循环输出并把任务误判为 model_error。
+            # §7.8.9 决策（2026-08-18）：checklist 打钩落地 → 开启 planning。
             feature_flags={
                 "review_subagent": bool(
                     getattr(self._model_client, "supports_review_subagent", True)
-                )
+                ),
+                "planning": bool(
+                    getattr(self._model_client, "supports_planning", True)
+                ),
             },
         )
         started = time.monotonic()

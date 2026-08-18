@@ -367,10 +367,10 @@ class RemoteExecutionHooks:
     def model_thinking_delta(self, task_state, stage: str, text: str) -> None:
         # §7.8.9 阶段 4：DeepSeek 思考（reasoning_content）回传前端 thinking 折叠区。
         # 独立事件（assistant.thinking），不进正文 content；脱敏后发送。
-        # §7.8.9 决策（2026-08-18）：放行 planning 阶段——planning 思考与每轮
-        # turn 思考分区展示（事件带 stage）。
+        # §7.8.9 决策（2026-08-18）：放行 planning/review 阶段——planning 思考
+        # 独立面板、review 思考进审查对抗块,与每轮 turn 思考分区（事件带 stage）。
         self._check()
-        if stage not in {"execute", "planning"}:
+        if stage not in {"execute", "planning", "review"}:
             return
         cleaned = redact_text(str(text or ""))
         if cleaned:
@@ -803,11 +803,17 @@ def run_task(
         max_total_steps=int(settings.get("max_total_steps", max(int(task.get("max_steps", 6)) * 3, int(task.get("max_steps", 6)) + 4))),
         allow_durable_memory_write=False,
         shell_factory=shell_factory,
-        # §7.8.9 阶段 3：生产开启 review subagent（程序强制，每 6 动作 / final 前），
-        # 配合 run_trail + done_when 判据修复「瞎验收」（零工具凭记忆回答也放行）。
-        # planning 暂不开：LLM 生成的 checklist 尚无程序打钩机制，开了会让
-        # review 的 checklist 障碍恒真（误杀），等打钩机制落地后再开。
-        feature_flags={"review_subagent": True},
+        # §7.8.9 阶段 3：生产开启 review subagent（程序强制，每 6 动作 / final 前）。
+        # §7.8.9 决策（2026-08-18）：checklist 打钩机制落地（程序化 file:/grep:/cmd:
+        # 验证 + review 语义打钩）→ 开启 planning（初始 checklist 恢复真实计划,
+        # review 的 checklist 障碍不再恒真误杀）。FakeModelClient 无 supports_planning
+        # 标记 → 测试不开（避免消费顺序输出）。
+        feature_flags={
+            "review_subagent": True,
+            "planning": bool(
+                getattr(provider_model_client, "supports_planning", True)
+            ),
+        },
     )
     active.pico = pico
     active.inbox = InboxSource()

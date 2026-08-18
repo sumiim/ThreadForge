@@ -89,6 +89,9 @@ class FakeModelClient:
     # The web runtime uses this marker to avoid consuming the scripted main-loop
     # outputs as review-subagent JSON.
     supports_review_subagent = False
+    # §7.8.9 决策（2026-08-18）：scripted 测试不开 planning——避免 planning 消费
+    # 顺序输出（真实模型默认开,见 run_native 的 feature_flags）。
+    supports_planning = False
 
     def __init__(self, outputs):
         self.outputs = list(outputs)

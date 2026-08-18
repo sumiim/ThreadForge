@@ -115,6 +115,15 @@ function appendReviewEntry(blocks: MessageBlock[] | undefined, entry: ReviewBatt
   return [...list, { kind: 'review', entries: [entry] }]
 }
 
+function appendReviewThinking(blocks: MessageBlock[] | undefined, text: string): MessageBlock[] {
+  const list = blocks ?? []
+  const last = list[list.length - 1]
+  if (last && last.kind === 'review') {
+    return [...list.slice(0, -1), { ...last, thinking: `${last.thinking ?? ''}${text}` }]
+  }
+  return [...list, { kind: 'review', entries: [], thinking: text }]
+}
+
 let idCounter = 0
 const nextId = (prefix: string) => `${prefix}-${Date.now()}-${idCounter++}`
 
@@ -874,11 +883,13 @@ export function useSessions(): UseSessions {
               message.id === assistantId
                 ? stage === 'planning'
                   ? { ...message, planningThinking: `${message.planningThinking ?? ''}${text}` }
-                  : {
-                      ...message,
-                      thinking: `${message.thinking ?? ''}${text}`,
-                      blocks: appendThinkingBlock(message.blocks, text),
-                    }
+                  : stage === 'review'
+                    ? { ...message, blocks: appendReviewThinking(message.blocks, text) }
+                    : {
+                        ...message,
+                        thinking: `${message.thinking ?? ''}${text}`,
+                        blocks: appendThinkingBlock(message.blocks, text),
+                      }
                 : message,
             ))
             return

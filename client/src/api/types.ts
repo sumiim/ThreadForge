@@ -469,11 +469,13 @@ export interface Message {
 export type MessageBlock =
   | { kind: 'commentary'; text: string }
   | { kind: 'behavior'; thinking?: string; toolCalls?: ToolCall[] }
-  | { kind: 'review'; entries: ReviewBattleEntry[] }
+  | { kind: 'review'; entries: ReviewBattleEntry[]; thinking?: string }
 
 /** §7.8.9 决策（2026-08-18）：双向对抗协议的审查回合——谁发的、各什么理由、结果。 */
 export interface ReviewBattleEntry {
   side: 'review' | 'main_loop'
+  /** §7.8.9 决策：review 内部推理（assistant.thinking stage=review 累积）,审查块内展开 */
+  thinking?: string
   verdict?: 'finalize' | 'redirect' | 'continue'
   feedback?: string
   reason?: string
