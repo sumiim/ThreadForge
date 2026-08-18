@@ -130,8 +130,9 @@ function ToolFold({ toolCalls, streaming, onApprove, onReject }: {
 
 /** §7.8.9 决策（2026-08-18）：审查对抗块——双向对抗协议的前端展示。
  * 渲染在行为块下方（blocks 第三分支）：谁发的、各什么理由、最终结果。 */
-function ReviewBattle({ entries }: { entries: ReviewBattleEntry[] }) {
+function ReviewBattle({ entries, thinking }: { entries: ReviewBattleEntry[]; thinking?: string }) {
   const [open, setOpen] = useState(false)
+  const [thinkOpen, setThinkOpen] = useState(false)
   const latest = entries[entries.length - 1]
   const resultLabel = latest?.result === 'passed' ? '通过' : latest?.result === 'rejected' ? '驳回' : latest?.result === 'continue' ? '继续' : ''
   return (
@@ -150,6 +151,26 @@ function ReviewBattle({ entries }: { entries: ReviewBattleEntry[] }) {
       </button>
       {open && (
         <div className="space-y-1.5 border-t border-orange-200/70 py-1.5 dark:border-orange-700/40">
+          {thinking ? (
+            <div className="px-2">
+              <button
+                type="button"
+                onClick={() => setThinkOpen((value) => !value)}
+                className="flex w-full cursor-pointer select-none items-center gap-2 rounded px-1 py-0.5 text-left text-[10px] text-orange-600 transition-colors hover:bg-orange-100/60 dark:text-orange-400 dark:hover:bg-orange-800/30"
+                aria-expanded={thinkOpen}
+              >
+                <span aria-hidden>🧠</span>
+                <span className="font-medium">Review thinking</span>
+                <span className="ml-auto font-mono text-orange-400">{thinking.length} chars</span>
+                <span aria-hidden>{thinkOpen ? '▾' : '▸'}</span>
+              </button>
+              {thinkOpen && (
+                <div className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap rounded bg-orange-100/40 p-2 text-[10px] leading-relaxed text-stone-600 dark:bg-orange-900/20 dark:text-stone-300">
+                  {thinking}
+                </div>
+              )}
+            </div>
+          ) : null}
           {entries.map((entry, index) => (
             <div key={index} className="px-2 text-[11px] leading-relaxed text-stone-600 dark:text-stone-300">
               <div className="flex items-center gap-1.5">
@@ -274,7 +295,7 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
                 {block.text}
               </div>
             ) : block.kind === 'review' ? (
-              <ReviewBattle key={index} entries={block.entries} />
+              <ReviewBattle key={index} entries={block.entries} thinking={block.thinking} />
             ) : (
               <BehaviorFold
                 key={index}
