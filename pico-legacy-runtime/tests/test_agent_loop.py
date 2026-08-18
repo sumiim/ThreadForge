@@ -425,3 +425,42 @@ def test_repeated_final_rejected_converges_with_rejected_finals(tmp_path):
     assert all(item["status"] == "final_rejected" for item in state.rejected_finals)
     # evidence 未被污染（纯对话无工具）
     assert len(state.evidence) == 0
+
+
+def test_tooled_final_rejected_does_not_trigger_quick_convergence(tmp_path):
+    """有工具 final 被 review 拒 2 次 → 不进「纯空转」计数，走通用坏轮窗口继续。
+
+    §7.8.9 修正（2026-08-18）：有工具被拒 ≠ 空转（可能差最后一步验证，有产出
+    不该急停）——连续 2 次有工具被拒不触发 rejected_finals 收敛，模型继续按
+    review 反馈补，最终通过 review。
+    """
+    (tmp_path / "a.txt").write_text("v1\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [
+            # 第 1 轮：读文件（有工具）
+            '<tool>{"name":"read_file","args":{"path":"a.txt","start":1,"end":1}}</tool>',
+            "<final>回答一（有工具）</final>",
+            '{"verdict": "redirect", "feedback": "验证未过", "reason": "verification"}',  # review 1
+            # 第 2 轮：再读（有工具）
+            '<tool>{"name":"read_file","args":{"path":"a.txt","start":1,"end":1}}</tool>',
+            "<final>回答二（有工具）</final>",
+            '{"verdict": "redirect", "feedback": "仍需验证", "reason": "verification"}',   # review 2
+            # 第 3 轮：继续读 + 最终通过
+            '<tool>{"name":"read_file","args":{"path":"a.txt","start":1,"end":1}}</tool>',
+            "<final>最终通过</final>",
+            '{"verdict": "finalize", "feedback": "verified by test, done", "reason": "done"}',  # review 3
+        ],
+        feature_flags={"review_subagent": True},
+    )
+
+    answer = AgentLoop(agent).run("改 a.txt")
+
+    state = agent.current_task_state
+    # 有工具被拒 2 次不触发快速收敛 → 正常继续到第 3 轮通过
+    assert state.status == "completed"
+    assert answer == "最终通过"
+    # 被拒的 final 仍存 rejected_finals（记录候选，但没触发快速收敛）
+    assert len(state.rejected_finals) == 2
+    # 首次 read 记 evidence；后两次 read 是重复（被拦）不新增
+    assert len(state.evidence) == 1

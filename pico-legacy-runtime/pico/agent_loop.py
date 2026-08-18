@@ -741,7 +741,10 @@ class AgentLoop:
             current = (len(task_state.evidence), len(task_state.completed_items))
             if prev_end is not None:
                 reasons = []
-                if not turn_tool_called and not turn_talked:
+                # §7.8.9 修正（2026-08-18）：final 被 review 拒的轮次不算 silent——
+                # 模型有产出（final 内容），只是方向/验证没过，走 review 反馈循环
+                # 而非坏轮窗口（否则有工具被拒不进快速收敛，却会被通用坏轮误杀）。
+                if not turn_final_rejected and not turn_tool_called and not turn_talked:
                     reasons.append("silent_turn_no_output")
                 elif turn_tool_called and turn_tool_repeated:
                     reasons.append("tool_repeated_or_failed")
@@ -808,8 +811,9 @@ class AgentLoop:
             prev_end = current
             # §7.8.9 修正（2026-08-18）：「重复无工具 final 被 review 拒」独立计数，
             # 连续 2 轮即触发收敛（比通用坏轮阈值 3 更激进——纯语言空转最严重）。
-            # final 被拒本身算坏轮信号；连续 2 次直接强制收敛，不等通用窗口。
-            if turn_final_rejected:
+            # 只对「无工具 final 被拒」计数：有工具被拒 ≠ 空转（可能差最后一步验证，
+            # 有产出不该急停），走通用坏轮窗口（阶段 1）+ review 继续给反馈。
+            if turn_final_rejected and not turn_tool_called:
                 consecutive_final_rejected += 1
             else:
                 consecutive_final_rejected = 0
