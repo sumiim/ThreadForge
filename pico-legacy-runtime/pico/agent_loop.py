@@ -1,7 +1,9 @@
 """Agent control loop extracted from the runtime facade."""
 
+import concurrent.futures
 import hashlib
 import json
+import threading
 import time
 import uuid
 from collections import deque
@@ -328,6 +330,64 @@ def _normalize_batch_reads(tools):
     return normalized, merged_count
 
 
+def _extract_tool_path(name, args):
+    """从工具参数里取规范化路径（写工具 / read_file 有 path 参数）。"""
+    if not isinstance(args, dict):
+        return None
+    path = args.get("path")
+    if isinstance(path, str) and path.strip():
+        return path.strip().replace("\\", "/")
+    return None
+
+
+def _partition_batch_tools(tools):
+    """§7.8.9 P5 批内分区：并发组（只读且无同路径写冲突） vs 串行组。
+
+    判定规则（按工具单位截断/拦阻，与 P1/P2/P4 一致）：
+    - 只读工具（list_files / read_file / search）：
+      - 批内早于它没有写工具 → 并发组（可并行执行；提交仍按声明顺序，
+        重复判定窗口与 evidence 有序）。
+      - 批内已有写工具：
+        - list_files / search 枚举全工作区，无法预知写的影响面 → 保守串行；
+        - read_file 只读指定路径，仅当该路径已被批内更早的写改过才串行
+          （否则并发读到旧状态无妨，写不影响它）。
+    - 写工具（write_file / patch_file）与 run_shell → 串行组，并污染路径：
+      - 有 path 的写只污染该路径；
+      - run_shell 影响面未知，视为污染所有路径（其后所有只读只能串行）。
+    - P5 写切片（plan B）：patch_file 单条 old_text→new_text 语义不变，
+      同文件多条 patch_file 天然构成写切片，串行组按声明顺序执行即可。
+
+    返回 (concurrent_items, serial_items)，每项为 (index_in_tools, item)，
+    index 用于按声明顺序合并执行结果与提交。
+    """
+    dirty_paths = set()   # 批内已被写过的具体路径
+    any_dirty = False     # 批内是否已出现写/shell
+    concurrent = []
+    serial = []
+    for index, item in enumerate(tools):
+        name = str(item.get("name", ""))
+        args = item.get("args", {}) if isinstance(item.get("args"), dict) else {}
+        if name in _READ_ONLY_TOOL_NAMES:
+            if not any_dirty:
+                concurrent.append((index, item))
+                continue
+            if name in {"list_files", "search"}:
+                # 枚举全工作区：批内已有写 → 保守串行。
+                serial.append((index, item))
+                continue
+            path = _extract_tool_path(name, args)
+            if path in dirty_paths or "*" in dirty_paths:
+                serial.append((index, item))
+            else:
+                concurrent.append((index, item))
+        else:
+            path = _extract_tool_path(name, args)
+            any_dirty = True
+            dirty_paths.add(path if path else "*")
+            serial.append((index, item))
+    return concurrent, serial
+
+
 class AgentLoop:
     def __init__(self, agent):
         self.agent = agent
@@ -445,11 +505,16 @@ class AgentLoop:
         recent_tool_fps,
         recent_tool_names,
         started_at,
+        *,
+        defer_commit=False,
     ):
         """执行单个工具动作（§7.8.9 阶段 2：串行队列的最小单元）。
 
         批内每个动作独立走完整链路：P4 重复拦截 → 预算拒绝 → 执行 →
         工具信号（窗口）→ evidence 记录。返回 ToolExecutionResult。
+
+        ``defer_commit=True``（并发批）：只执行，跳过窗口/evidence 提交——
+        由调用方按声明顺序统一提交（保持重复判定窗口有序）。
         """
         agent = self.agent
         agent.emit_progress(f"step {attempts}: running tool {name}")
@@ -504,6 +569,32 @@ class AgentLoop:
             )
         else:
             tool_result = agent.execute_tool(name, args, tool_call_id=tool_call_id)
+        if defer_commit:
+            # 并发批：执行完成，提交由调用方按声明顺序统一做（保持窗口有序）。
+            return tool_result
+        return self._commit_tool_action(
+            task_state, attempts, name, args, tool_call_id,
+            recent_tool_fps, recent_tool_names, started_at, tool_result,
+        )
+
+    def _commit_tool_action(
+        self,
+        task_state,
+        attempts,
+        name,
+        args,
+        tool_call_id,
+        recent_tool_fps,
+        recent_tool_names,
+        started_at,
+        tool_result,
+    ):
+        """工具执行的「提交」阶段：重复判定 + 窗口 + read_files + evidence。
+
+        与执行分离：并发批先并发执行（defer_commit），再按声明顺序逐个提交，
+        保证重复判定窗口有序、共享状态无竞争。
+        """
+        agent = self.agent
         task_state.record_affected_paths(tool_result.metadata.get("affected_paths", []))
         tool_status = str(tool_result.metadata.get("tool_status", "unknown"))
         # 工具信号：本轮是否调了工具、是否与窗口内重复（写工具介入豁免）。
@@ -1182,6 +1273,9 @@ class AgentLoop:
                     tools = deduped
                 # §7.8.9 P3 读归并 + P4 读切片（同文件重叠合并、超长切片）。
                 tools, merged_reads = _normalize_batch_reads(tools)
+                # §7.8.9 P5 分区：并发组（只读、无同路径写冲突）并行执行，
+                # 提交按声明顺序统一做；串行组保持原有链路。
+                concurrent_items, serial_items = _partition_batch_tools(tools)
                 batch_started_at = time.monotonic()
                 agent.emit_trace(
                     task_state,
@@ -1193,11 +1287,83 @@ class AgentLoop:
                         "limit": MAX_PARALLEL_TOOLS,
                         "deduped": deduped_count,
                         "merged_reads": merged_reads,
+                        "concurrent": len(concurrent_items),
+                        "serial": len(serial_items),
                     },
                 )
                 batch_results = []
                 batch_all_bad = True  # 批内所有动作都重复/失败才计本轮坏
-                for item in tools:
+                batch_acc = {"all_bad": batch_all_bad, "results": batch_results}
+
+                def _collect_batch_result(acc, name, args, tool_result, repeated):
+                    status = str(tool_result.metadata.get("tool_status", "unknown"))
+                    if status in {"ok", "partial_success"} and not repeated:
+                        acc["all_bad"] = False
+                    acc["results"].append(
+                        {
+                            "name": name,
+                            "args": args,
+                            "status": status,
+                            "summary": agent.summarize_tool_result(name, args, tool_result),
+                        }
+                    )
+
+                # 并发组：ThreadPoolExecutor 并行执行（defer_commit=True，
+                # 只执行不提交），主线程按声明顺序逐个 _commit_tool_action——
+                # 重复判定窗口、read_files、evidence 保持有序、无竞争。
+                executed = {}
+                if concurrent_items:
+                    def _run_concurrent(index_item):
+                        index, item = index_item
+                        name = str(item.get("name", ""))
+                        args = item.get("args", {})
+                        tool_call_id = _new_tool_call_id()
+                        tool_started_at = time.monotonic()
+                        tool_result = self._execute_tool_action(
+                            task_state,
+                            attempts,
+                            name,
+                            args,
+                            tool_call_id,
+                            recent_tool_fps,
+                            recent_tool_names,
+                            tool_started_at,
+                            defer_commit=True,
+                        )
+                        return index, name, args, tool_call_id, tool_started_at, tool_result
+
+                    with concurrent.futures.ThreadPoolExecutor(
+                        max_workers=min(MAX_PARALLEL_TOOLS, len(concurrent_items))
+                    ) as pool:
+                        futures = [
+                            pool.submit(_run_concurrent, item) for item in concurrent_items
+                        ]
+                        for future in futures:
+                            # 任一并发工具抛异常（RunCancelled/清理失败）→ 上抛，
+                            # with 退出时等待其余 future 收尾；整批提交跳过（运行中止）。
+                            index, name, args, tool_call_id, tool_started_at, tool_result = future.result()
+                            executed[index] = (name, args, tool_call_id, tool_started_at, tool_result)
+                    for index in sorted(executed):
+                        name, args, tool_call_id, tool_started_at, tool_result = executed[index]
+                        tool_steps += 1
+                        turn_actions += 1
+                        task_state.record_tool(name)
+                        tool_result, repeated = self._commit_tool_action(
+                            task_state,
+                            attempts,
+                            name,
+                            args,
+                            tool_call_id,
+                            recent_tool_fps,
+                            recent_tool_names,
+                            tool_started_at,
+                            tool_result,
+                        )
+                        _collect_batch_result(batch_acc, name, args, tool_result, repeated)
+
+                # 串行组：保持声明顺序（写工具互相串行；读到批内已写路径的
+                # 只读工具也串行，保证读到写后状态）。
+                for index, item in serial_items:
                     name = str(item.get("name", ""))
                     args = item.get("args", {})
                     tool_steps += 1
@@ -1215,17 +1381,8 @@ class AgentLoop:
                         recent_tool_names,
                         tool_started_at,
                     )
-                    status = str(tool_result.metadata.get("tool_status", "unknown"))
-                    if status in {"ok", "partial_success"} and not repeated:
-                        batch_all_bad = False
-                    batch_results.append(
-                        {
-                            "name": name,
-                            "args": args,
-                            "status": status,
-                            "summary": agent.summarize_tool_result(name, args, tool_result),
-                        }
-                    )
+                    _collect_batch_result(batch_acc, name, args, tool_result, repeated)
+                batch_all_bad = batch_acc["all_bad"]
                 agent.emit_trace(
                     task_state,
                     "tool_batch_completed",

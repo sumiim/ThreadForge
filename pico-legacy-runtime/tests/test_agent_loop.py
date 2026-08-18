@@ -484,3 +484,151 @@ def test_result_fingerprint_distinguishes_changed_file_reload(tmp_path):
     # 无结果指纹（shell/写）→ 只看动作
     assert _tool_call_repeats("run_shell", {"command": "ls"}, None, window) is False  # 工具不同
     assert _tool_call_repeats("read_file", {"path": "a.txt", "start": 1, "end": 1}, None, window) is True
+
+
+def test_partition_batch_tools(tmp_path):
+    """§7.8.9 P5：批内分区纯函数——并发组 vs 串行组判定。
+
+    只读且批内早于它没有写冲突 → 并发；写工具 / shell 与「读到已写路径」的
+    只读工具 → 串行；list_files / search 在批内已有写时保守串行。
+    """
+    from pico.agent_loop import _partition_batch_tools
+
+    # 全部只读 → 全部并发，保持声明顺序
+    concurrent, serial = _partition_batch_tools(
+        [
+            {"name": "read_file", "args": {"path": "a.txt", "start": 1, "end": 1}},
+            {"name": "list_files", "args": {"path": "."}},
+            {"name": "search", "args": {"pattern": "x"}},
+        ]
+    )
+    assert [i for i, _ in concurrent] == [0, 1, 2]
+    assert serial == []
+
+    # read(A) → write(A) → read(A)：首个读并发；写串行；写后同路径读串行
+    concurrent, serial = _partition_batch_tools(
+        [
+            {"name": "read_file", "args": {"path": "a.txt", "start": 1, "end": 1}},
+            {"name": "write_file", "args": {"path": "a.txt", "content": "v2"}},
+            {"name": "read_file", "args": {"path": "a.txt", "start": 1, "end": 1}},
+        ]
+    )
+    assert [i for i, _ in concurrent] == [0]
+    assert [i for i, _ in serial] == [1, 2]
+
+    # write(A) → read(B)：B 未被批内写污染 → read(B) 仍并发（读 A 前状态无妨）
+    concurrent, serial = _partition_batch_tools(
+        [
+            {"name": "write_file", "args": {"path": "a.txt", "content": "v2"}},
+            {"name": "read_file", "args": {"path": "b.txt", "start": 1, "end": 1}},
+        ]
+    )
+    assert [i for i, _ in concurrent] == [1]
+    assert [i for i, _ in serial] == [0]
+
+    # read(A) → write(B) → list_files：批内已有写 → list_files 保守串行
+    concurrent, serial = _partition_batch_tools(
+        [
+            {"name": "read_file", "args": {"path": "a.txt", "start": 1, "end": 1}},
+            {"name": "write_file", "args": {"path": "b.txt", "content": "v2"}},
+            {"name": "list_files", "args": {"path": "."}},
+        ]
+    )
+    assert [i for i, _ in concurrent] == [0]
+    assert [i for i, _ in serial] == [1, 2]
+
+    # run_shell 影响面未知 → 其后所有只读只能串行
+    concurrent, serial = _partition_batch_tools(
+        [
+            {"name": "run_shell", "args": {"command": "make"}},
+            {"name": "read_file", "args": {"path": "a.txt", "start": 1, "end": 1}},
+            {"name": "search", "args": {"pattern": "x"}},
+        ]
+    )
+    assert concurrent == []
+    assert [i for i, _ in serial] == [0, 1, 2]
+
+    # patch_file 同文件多条 = P5 写切片：天然串行（无 schema 变更）
+    concurrent, serial = _partition_batch_tools(
+        [
+            {"name": "patch_file", "args": {"path": "a.txt", "old_text": "x", "new_text": "y"}},
+            {"name": "patch_file", "args": {"path": "a.txt", "old_text": "y", "new_text": "z"}},
+        ]
+    )
+    assert concurrent == []
+    assert [i for i, _ in serial] == [0, 1]
+
+
+def test_agent_loop_concurrent_batch_commits_in_declaration_order(tmp_path):
+    """§7.8.9 P5：只读批走并发组——ThreadPoolExecutor 并行执行、按声明顺序提交。
+
+    3 个不同文件 read 全部进并发组；提交后 tool_steps / read_files / evidence
+    与串行链路一致；trace 带 concurrent/serial 分区统计。
+    """
+    (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("bravo\n", encoding="utf-8")
+    (tmp_path / "c.txt").write_text("charlie\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [
+            {
+                "tools": [
+                    {"name": "read_file", "args": {"path": "a.txt", "start": 1, "end": 1}},
+                    {"name": "read_file", "args": {"path": "b.txt", "start": 1, "end": 1}},
+                    {"name": "read_file", "args": {"path": "c.txt", "start": 1, "end": 1}},
+                ]
+            },
+            "<final>Concurrent batch done.</final>",
+        ],
+    )
+
+    answer = AgentLoop(agent).run("Read the three files")
+
+    assert answer == "Concurrent batch done."
+    state = agent.current_task_state
+    assert state.status == "completed"
+    assert state.tool_steps == 3
+    assert state.read_files == 3
+    assert len(state.evidence) == 3
+    trace = agent.run_store.trace_path(state).read_text(encoding="utf-8")
+    assert '"event": "tool_batch_started"' in trace
+    assert '"concurrent": 3' in trace
+    assert '"serial": 0' in trace
+
+
+def test_agent_loop_batch_same_path_write_then_read_serial(tmp_path):
+    """§7.8.9 P5：同路径写→读分区强制串行——读必须看到写后状态。
+
+    批内 write_file(a.txt) 后紧跟 read_file(a.txt)：read 落串行组（写后
+    读取），若并发先读会读到旧内容 v1。验证读结果含写后内容 v2。
+    """
+    (tmp_path / "a.txt").write_text("v1\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [
+            {
+                "tools": [
+                    {"name": "write_file", "args": {"path": "a.txt", "content": "v2\n"}},
+                    {"name": "read_file", "args": {"path": "a.txt", "start": 1, "end": 1}},
+                ]
+            },
+            "<final>Verified write.</final>",
+        ],
+    )
+
+    answer = AgentLoop(agent).run("Rewrite a.txt and read it back")
+
+    assert answer == "Verified write."
+    state = agent.current_task_state
+    assert state.status == "completed"
+    assert state.tool_steps == 2
+    # 写后读落串行组 → 读结果包含写后内容 v2
+    tool_records = [
+        r for r in agent.session["history"]
+        if r.get("role") == "tool" and r.get("name") == "read_file"
+    ]
+    assert tool_records, "read_file must execute after the write"
+    assert "v2" in tool_records[-1]["content"]
+    trace = agent.run_store.trace_path(state).read_text(encoding="utf-8")
+    assert '"concurrent": 0' in trace
+    assert '"serial": 2' in trace
