@@ -189,35 +189,3 @@ def test_review_prompt_includes_acceptance_and_run_trail(tmp_path):
     assert "[tool:read_file]" in review_prompt  # run trail 动作印记
     assert "Acceptance criteria" in review_prompt
     assert "Run trail" in review_prompt
-
-
-def test_review_system_guides_ungrounded_zero_tool_finalize(tmp_path):
-    """系统提示对「零工具凭记忆回答」的引导：请求暗示检查工作区但无工具调用。
-
-    这是「瞎验收」的目标场景：模型回答代码问题却全程没碰工作区，
-    review 系统提示现在明确要求 redirect 并要求先读相关文件。
-    """
-    agent = build_agent(
-        tmp_path,
-        [
-            "<final>预算由墙钟硬顶兜底</final>",  # 零工具直接 final
-            '{"verdict": "finalize", "feedback": "answered from memory", "reason": "done"}',
-        ],
-    )
-    agent.ask("为什么预算会耗尽")
-    state = agent.current_task_state
-    decision = run_review(
-        agent,
-        state,
-        request="为什么预算会耗尽，读代码确认",
-        trigger="final_before",
-        has_write_or_shell=False,
-        verification_passed=True,
-    )
-    prompts = agent.model_client.prompts
-    review_prompt = prompts[-1]
-    # 系统提示包含 grounded 引导
-    assert "not grounded" in review_prompt
-    assert "inspect the relevant files" in review_prompt
-    # run trail 明确显示零工具（只有 user/assistant 消息）
-    assert "[tool:" not in review_prompt

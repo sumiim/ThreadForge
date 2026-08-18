@@ -101,10 +101,22 @@ def _start_failed_task_state(agent, task):
 
 
 class NativeBackendRunner:
-    def __init__(self, max_new_tokens=64, model_client_factory=None, event_sink_factory=None):
+    def __init__(
+        self,
+        max_new_tokens=64,
+        model_client_factory=None,
+        event_sink_factory=None,
+        feature_flags=None,
+    ):
         self.max_new_tokens = int(max_new_tokens)
         self.model_client_factory = model_client_factory
         self.event_sink_factory = event_sink_factory or default_event_sink_factory
+        # §7.8.9 阶段 3：评测默认开启 review subagent（真模型验证「瞎验收」修复）。
+        # 显式传入的 flags 覆盖；FakeModelClient 评测用 feature_flags={"review_subagent": False}
+        # 避免 review 消费脚本化输出的顺序。
+        self.feature_flags = dict({"review_subagent": True})
+        if feature_flags:
+            self.feature_flags.update({str(k): bool(v) for k, v in feature_flags.items()})
 
     def run_task(self, task, workspace, session_store, run_store, fixture_copy_root, model_client=None):
         from ..runtime import Pico
@@ -128,6 +140,7 @@ class NativeBackendRunner:
             max_new_tokens=self.max_new_tokens,
             allowed_tools=task["allowed_tools"],
             event_sink=event_sink,
+            feature_flags=self.feature_flags,
         )
         _apply_task_setup(agent, task, fixture_copy_root)
 
