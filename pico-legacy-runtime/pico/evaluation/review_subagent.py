@@ -53,7 +53,9 @@ def build_review_obstacles(task_state, *, has_write_or_shell: bool, verification
     来源全部是客观状态，不是模型自报：
     - R1 验证：有写/shell 且验证未过 → verification
     - checklist：剩余未完成项（真实 planning checklist）→ checklist
-    - 失败动作：evidence 里有 failed/error 未处理 → failed
+    - 失败动作：坏轮审计里有工具失败/被拒（tool_repeated_or_failed）→ failed。
+      §7.8.9 修正（2026-08-18）：不再从 evidence 读——evidence 只在
+      ok/partial_success 时记录，永远不含 failed/error，原判定是死代码。
     """
     obstacles = []
     if has_write_or_shell and not verification_passed:
@@ -63,8 +65,9 @@ def build_review_obstacles(task_state, *, has_write_or_shell: bool, verification
     remaining = [item for item in checklist if item not in completed]
     if remaining:
         obstacles.append(OBSTACLE_CHECKLIST)
-    for item in getattr(task_state, "evidence", []) or []:
-        if str(item.get("status", "")) in {"failed", "error", "rejected"}:
+    for item in getattr(task_state, "stagnation_audit", []) or []:
+        reasons = item.get("reasons", []) or []
+        if "tool_repeated_or_failed" in reasons:
             obstacles.append(OBSTACLE_FAILED)
             break
     return obstacles

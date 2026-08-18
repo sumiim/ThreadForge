@@ -125,7 +125,6 @@ def test_run_request_lazily_dispatches_to_langgraph(monkeypatch):
         "agent": agent,
         "prompt": "change README",
         "acceptance": "done",
-        "step_budget": 7,
         "requires_research": False,
         "focus_paths": ["README.md"],
         "task_mode": "auto",
