@@ -151,6 +151,14 @@ class NativeRuntimeAdapter:
             shell_cleanup_grace_seconds=self._settings.shell_cleanup_grace_seconds,
             allow_durable_memory_write=False,  # Web path must not write Workspace .pico/memory/
             shell_factory=self._shell_factory,
+            # §7.8.9 阶段 3：真实模型开启 review subagent（程序强制）。
+            # 离线 FakeModelClient 没有独立 review 输出流，必须显式关闭，
+            # 否则会消费脚本化主循环输出并把任务误判为 model_error。
+            feature_flags={
+                "review_subagent": bool(
+                    getattr(self._model_client, "supports_review_subagent", True)
+                )
+            },
         )
         started = time.monotonic()
         try:

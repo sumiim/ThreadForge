@@ -68,9 +68,13 @@ def test_public_tool_args_preview_allowlists_read_only_fields():
     assert preview == {"path": "README.md", "start": 2, "end": 8}
 
 
-def test_public_tool_result_preview_is_bounded_and_excludes_risky_tools():
+def test_public_tool_result_preview_is_bounded_and_allows_redacted_shell_output(monkeypatch):
     preview, truncated = public_tool_result_preview("read_file", "x" * 9000)
     assert truncated is True
     assert len(preview) <= 8000
 
-    assert public_tool_result_preview("run_shell", "secret command output") == ("", False)
+    monkeypatch.setenv("PICO_OPENAI_API_KEY", "secret-value")
+    assert public_tool_result_preview(
+        "run_shell", "exit_code: 0\nsecret-value\nshell-ok"
+    ) == ("exit_code: 0\n<redacted>\nshell-ok", False)
+    assert public_tool_result_preview("write_file", "private content") == ("", False)

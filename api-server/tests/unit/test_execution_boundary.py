@@ -56,7 +56,7 @@ def test_read_only_tool_events_publish_allowlisted_previews():
     assert publisher.events[-1]["data"]["result_preview"] == "# README.md\nhello"
 
 
-def test_risky_tool_events_do_not_publish_arguments_or_results():
+def test_shell_tool_events_hide_arguments_but_publish_result_preview():
     publisher, boundary = _boundary()
 
     boundary.tool_requested(
@@ -67,7 +67,7 @@ def test_risky_tool_events_do_not_publish_arguments_or_results():
     boundary.after_tool(None, ToolExecutionResult(content="private output", metadata={}))
 
     assert "args_preview" not in publisher.events[0]["data"]
-    assert "result_preview" not in publisher.events[-1]["data"]
+    assert publisher.events[-1]["data"]["result_preview"] == "private output"
 
 
 def test_unified_event_contract_lifts_phase_parent_and_interval():

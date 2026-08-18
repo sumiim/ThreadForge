@@ -34,7 +34,7 @@ def test_read_only_tool_event_keeps_allowlisted_arguments_and_preview():
     assert completed["result_preview"] == "# README.md\nhello"
 
 
-def test_risky_tool_event_drops_arguments_and_result_preview():
+def test_shell_event_drops_arguments_but_keeps_result_preview():
     requested = _sanitize_event_data(
         "tool.requested",
         {
@@ -54,7 +54,7 @@ def test_risky_tool_event_drops_arguments_and_result_preview():
     )
 
     assert "args_preview" not in requested
-    assert "result_preview" not in completed
+    assert completed["result_preview"] == "private command output"
 
 
 def test_agent_state_event_is_bounded_and_does_not_expose_evidence():

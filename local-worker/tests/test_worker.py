@@ -953,7 +953,7 @@ def test_blocking_model_call_is_interrupted_by_worker_cancellation():
     assert isinstance(errors[0], RunCancelled)
 
 
-def test_remote_execution_hooks_publish_read_only_preview_and_hide_risky_result():
+def test_remote_execution_hooks_publish_read_only_and_shell_result_previews():
     events = []
     hooks = RemoteExecutionHooks(lambda event_type, data: events.append((event_type, data)), CancellationToken())
 
@@ -988,7 +988,7 @@ def test_remote_execution_hooks_publish_read_only_preview_and_hide_risky_result(
         ToolExecutionResult(content="private output", metadata={"tool_status": "ok"}),
     )
     assert "args_preview" not in events[0][1]
-    assert "result_preview" not in events[-1][1]
+    assert events[-1][1]["result_preview"] == "private output"
     hooks.commentary(None, "still working")
     assert events[-1] == ("assistant.commentary", {"text": "still working"})
 

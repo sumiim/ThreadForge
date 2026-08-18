@@ -110,16 +110,16 @@ export default function CodeBlock({ code, lang, className }: CodeBlockProps) {
   }, [copied, trimmed])
 
   return (
-    <div ref={rootRef} className={`group/code relative my-3 overflow-hidden rounded-xl border border-stone-200 bg-stone-900 dark:border-stone-700 dark:bg-[#0d1117] ${className ?? ''}`}>
+    <div ref={rootRef} className={`group/code relative my-3 overflow-hidden rounded-lg border border-stone-200 bg-white dark:border-stone-700 dark:bg-[#0d1117] ${className ?? ''}`}>
       {/* Banner: 语言标签 + 复制按钮 */}
-      <div className="flex items-center justify-between border-b border-white/10 bg-white/5 px-4 py-1.5 text-xs">
-        <span className="font-mono text-stone-400 uppercase tracking-wide">
+      <div className="flex items-center justify-between border-b border-stone-200 bg-stone-50 px-4 py-1.5 text-xs dark:border-white/10 dark:bg-white/5">
+        <span className="font-mono uppercase tracking-wide text-stone-500 dark:text-stone-400">
           {lang ?? 'code'}
         </span>
         <button
           type="button"
           onClick={onCopy}
-          className="flex items-center gap-1 rounded-md px-2 py-1 font-sans text-stone-400 transition-colors hover:bg-white/10 hover:text-stone-200 active:scale-95"
+          className="flex items-center gap-1 rounded-md px-2 py-1 font-sans text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-700 active:scale-95 dark:text-stone-400 dark:hover:bg-white/10 dark:hover:text-stone-200"
         >
           {copied ? (
             <>
@@ -149,7 +149,7 @@ export default function CodeBlock({ code, lang, className }: CodeBlockProps) {
           dangerouslySetInnerHTML={{ __html: highlighted }}
         />
       ) : (
-        <pre className="overflow-x-auto p-4 text-sm leading-relaxed text-stone-200">
+        <pre className="overflow-x-auto p-4 text-sm leading-relaxed text-stone-700 dark:text-stone-200">
           <code>{trimmed}</code>
         </pre>
       )}
