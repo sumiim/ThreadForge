@@ -392,3 +392,36 @@ def test_agent_loop_repeated_actions_do_not_pollute_repeat_window(tmp_path):
     # 验证：b.txt 成功执行了（read_files 至少 2：a 和 b 各一次成功）
     assert state.read_files == 2
     assert answer == "done"
+
+
+def test_repeated_final_rejected_converges_with_rejected_finals(tmp_path):
+    """连续 2 次无工具 final 被 review redirect → 程序强制收敛，输出 rejected_finals 内容。
+
+    §7.8.9 修正（2026-08-18）：纯语言空转（模型反复 final 但 review 拒）不能烧到
+    步数上限，连续 2 轮即收敛；被拒的 final 存 rejected_finals，收敛时拼进 best-effort。
+    """
+    agent = build_agent(
+        tmp_path,
+        [
+            "<final>候选回答一：我根据记忆回答。</final>",   # 主循环第 1 次 final
+            '{"verdict": "redirect", "feedback": "需要先读工作区", "reason": "ungrounded"}',  # review 1
+            "<final>候选回答二：我再回答一次。</final>",   # 主循环第 2 次 final
+            '{"verdict": "redirect", "feedback": "仍无证据", "reason": "ungrounded"}',      # review 2
+            # 收敛触发，不再调模型
+        ],
+        feature_flags={"review_subagent": True},
+    )
+
+    answer = AgentLoop(agent).run("你是谁")
+
+    state = agent.current_task_state
+    # 收敛：stopped（非 blocked），且输出包含被拒候选内容
+    assert state.status == "stopped"
+    assert state.stop_reason == "step_limit_reached"
+    assert "候选回答一" in answer
+    assert "候选回答二" in answer
+    # rejected_finals 独立于 evidence 存储（不污染 evidence 计数）
+    assert len(state.rejected_finals) == 2
+    assert all(item["status"] == "final_rejected" for item in state.rejected_finals)
+    # evidence 未被污染（纯对话无工具）
+    assert len(state.evidence) == 0

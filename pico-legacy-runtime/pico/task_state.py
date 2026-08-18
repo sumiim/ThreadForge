@@ -92,6 +92,11 @@ class TaskState:
     budget_converged: bool = False
     talk_steps: int = 0
     evidence: list[dict] = field(default_factory=list)
+    # §7.8.9 阶段 3 修正（2026-08-18）：被 review redirect 拒绝的 final 候选答案。
+    # 独立于 evidence 存储——塞进 evidence 会让 len(evidence) 计数污染
+    # _round_signature（停滞签名误判「有进展」）与坏轮审计。收敛时拼 best-effort
+    # 结论用（状态 final_rejected），不进完成门禁判定。
+    rejected_finals: list[dict] = field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
     error_stage: str = ""
@@ -175,6 +180,9 @@ class TaskState:
             budget_converged=bool(data.get("budget_converged", False)),
             talk_steps=max(0, int(data.get("talk_steps", 0))),
             evidence=[dict(item) for item in data.get("evidence", []) if isinstance(item, dict)],
+            rejected_finals=[
+                dict(item) for item in data.get("rejected_finals", []) if isinstance(item, dict)
+            ],
             input_tokens=max(0, int(data.get("input_tokens", 0) or 0)),
             output_tokens=max(0, int(data.get("output_tokens", 0) or 0)),
             error_stage=str(data.get("error_stage", "")),
@@ -344,6 +352,7 @@ class TaskState:
             "budget_converged": self.budget_converged,
             "talk_steps": self.talk_steps,
             "evidence": [dict(item) for item in self.evidence],
+            "rejected_finals": [dict(item) for item in self.rejected_finals],
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "error_stage": self.error_stage,

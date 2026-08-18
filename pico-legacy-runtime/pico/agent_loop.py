@@ -20,7 +20,10 @@ from .task_state import (
     PHASE_UNDERSTAND_REQUEST,
     PHASE_VERIFY,
     STATUS_FAILED,
+    STATUS_STOPPED,
+    STOP_REASON_BUDGET_EXHAUSTED,
     STOP_REASON_PROCESS_CLEANUP_FAILED,
+    STOP_REASON_STEP_LIMIT_REACHED,
     TaskState,
 )
 from .tool_executor import ToolExecutionResult
@@ -33,10 +36,15 @@ def _new_tool_call_id():
 
 
 def _best_effort_step_limit(task_state, reason):
-    """预算/重试耗尽时的可读收尾：列出已收集证据，而非一句英文裸失败。"""
+    """预算/重试耗尽时的可读收尾：列出已收集证据 + 被 review 拒的候选答案。
+
+    §7.8.9 修正（2026-08-18）：纯语言空转收敛（连续 2 次 final 被拒）时，
+    rejected_finals 里有模型产出过的候选答案——拼进收尾，避免裸 blocked。
+    """
     evidence = list(task_state.evidence or [])
+    rejected = list(task_state.rejected_finals or [])
     header = f"⚠️ 运行中断：{reason}，未能在预算内产出最终结论。"
-    if not evidence:
+    if not evidence and not rejected:
         return header + " 本轮未成功读取任何工作区证据，建议缩小请求范围后重试。"
     lines = []
     for item in evidence[-12:]:
@@ -44,12 +52,15 @@ def _best_effort_step_limit(task_state, reason):
         paths = item.get("relative_paths") or []
         path_text = "、".join(str(path) for path in paths[:4])
         lines.append(f"- {tool}：{path_text or '（无路径）'}")
-    return (
-        header
-        + " 本轮已收集的部分证据：\n"
-        + "\n".join(lines)
-        + "\n\n请缩小范围、换一个更具体的请求，或提高预算后重试。"
-    )
+    text = header + " 本轮已收集的部分证据：\n" + "\n".join(lines)
+    if rejected:
+        text += "\n\n模型曾给出的候选回答（未经 review 确认）：\n"
+        for item in rejected[-3:]:
+            content = str(item.get("content", "") or "").strip()
+            if content:
+                text += f"- {content[:400]}\n"
+    text += "\n\n请缩小范围、换一个更具体的请求，或提高预算后重试。"
+    return text
 
 
 MAX_CONSECUTIVE_TALKS = 2
@@ -658,7 +669,11 @@ class AgentLoop:
         turn_tool_called = False
         turn_tool_repeated = False
         turn_talked = False
+        turn_final_rejected = False
         turn_actions = 0
+        # §7.8.9 修正（2026-08-18）：连续「无工具 final 被 review 拒」计数，
+        # 达 2 触发收敛（纯语言空转最严重，比通用坏轮更激进）。
+        consecutive_final_rejected = 0
         # §7.8.9 Review subagent 状态（阶段 3）：程序强制触发。
         # 每 REVIEW_POLL_ACTIONS 个动作触发一次；final 前必确认。
         actions_since_review = 0
@@ -791,10 +806,53 @@ class AgentLoop:
                     finalization_attempted = True
             # 本轮结束时的状态 = 下轮顶部的 prev_end 基准。
             prev_end = current
+            # §7.8.9 修正（2026-08-18）：「重复无工具 final 被 review 拒」独立计数，
+            # 连续 2 轮即触发收敛（比通用坏轮阈值 3 更激进——纯语言空转最严重）。
+            # final 被拒本身算坏轮信号；连续 2 次直接强制收敛，不等通用窗口。
+            if turn_final_rejected:
+                consecutive_final_rejected += 1
+            else:
+                consecutive_final_rejected = 0
+            if consecutive_final_rejected >= 2:
+                # §7.8.9 修正（2026-08-18）：连续 2 次无工具 final 被 review 拒
+                # → 纯语言空转，直接收敛产出 best-effort（含 rejected_finals 候选），
+                # 不再进 finalization 等模型——review 的 redirect 已证明方向无法收敛。
+                task_state.record_malformed_output_recovered()
+                task_state.set_phase(
+                    PHASE_ACT_OR_ANSWER,
+                    next_step="Converge on a best-effort answer using collected evidence and rejected candidates",
+                )
+                audit_tail = list(task_state.stagnation_audit)[-STAGNATION_TOLERANCE:]
+                agent.emit_trace(
+                    task_state,
+                    "stagnation_detected",
+                    {
+                        "error_code": "final_rejected_stagnation",
+                        "threshold": 2,
+                        "window": [item.get("bad", False) for item in audit_tail],
+                        "remaining_turns": remaining_turns,
+                        "audit": audit_tail,
+                        "reasons_all": [item.get("reasons", []) for item in audit_tail],
+                    },
+                )
+                final = _best_effort_step_limit(
+                    task_state,
+                    "模型连续两次提交 final 均被审查驳回（无工具动作），停止空转",
+                )
+                task_state.stop(
+                    STOP_REASON_STEP_LIMIT_REACHED,
+                    status=STATUS_STOPPED,
+                    final_answer=final,
+                )
+                agent.run_store.write_task_state(task_state)
+                agent.emit_agent_state(task_state, "run_stopped")
+                agent.record({"role": "assistant", "content": final, "created_at": now()})
+                return final
             # 本轮信号重置，供本轮执行分支设置。
             turn_tool_called = False
             turn_tool_repeated = False
             turn_talked = False
+            turn_final_rejected = False
             turn_actions = 0
             attempts += 1
             task_state.record_attempt()
@@ -1193,6 +1251,21 @@ class AgentLoop:
                 prior_feedback=prior_review_feedback,
             )
             if review_decision.get("verdict") == "redirect":
+                # §7.8.9 修正（2026-08-18）：final 被 review 拒 → 内容不作为最终
+                # 输出，存入 rejected_finals（独立于 evidence，供收敛拼 best-effort），
+                # 并置 turn_final_rejected 信号（连续 2 次触发收敛，防纯语言空转）。
+                rejected = str(payload or raw or "").strip()
+                if rejected:
+                    task_state.rejected_finals.append(
+                        {
+                            "status": "final_rejected",
+                            "content": rejected[:4000],
+                            "feedback": str(review_decision.get("feedback", ""))[:500],
+                            "reason": str(review_decision.get("reason", ""))[:200],
+                            "created_at": now(),
+                        }
+                    )
+                turn_final_rejected = True
                 # 方向/验证有问题：注入 feedback，继续循环（不 final）。
                 prior_review_feedback = str(review_decision.get("feedback", "") or "")
                 task_state.set_phase(
@@ -1207,10 +1280,13 @@ class AgentLoop:
                         "reason": str(review_decision.get("reason", ""))[:200],
                     },
                 )
+                agent.run_store.write_task_state(task_state)
                 # §7.8.9 阶段 3.5：review redirect → replan（保留已完成项）。
                 self._replan(task_state, user_message, str(review_decision.get("feedback", "") or ""))
                 continue
-            consecutive_talks = 0
+            # final 通过 review：清零连续被拒计数。
+            consecutive_final_rejected = 0
+            turn_final_rejected = False
             final = (payload or raw).strip()
             if task_state.requires_post_tool_reasoning:
                 # Defensive fallback for custom runtimes that bypass the
