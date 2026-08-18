@@ -25,6 +25,7 @@ import type {
   AgentProgress,
   McpServerMetadata,
   Message,
+  MessageBlock,
   ModelCapability,
   PendingApproval,
   PermissionMode,
@@ -54,6 +55,51 @@ import type { HistoryStatus } from './session-state.ts'
 import { filterNavigableSessions, selectInitialNavigableSession } from '../features/sessions/session-groups'
 import { workspaceKey } from '../features/sessions/workspaceIdentity'
 import { mergeRunIndex } from './run-events'
+
+// ---- assistant 消息交替块(commentary 与行为按事件顺序) ----
+
+function appendThinkingBlock(blocks: MessageBlock[] | undefined, text: string): MessageBlock[] {
+  const list = blocks ?? []
+  const last = list[list.length - 1]
+  if (last && last.kind === 'behavior') {
+    return [...list.slice(0, -1), { ...last, thinking: `${last.thinking ?? ''}${text}` }]
+  }
+  return [...list, { kind: 'behavior', thinking: text }]
+}
+
+function appendToolCallBlock(blocks: MessageBlock[] | undefined, toolCall: ToolCall): MessageBlock[] {
+  const list = blocks ?? []
+  const last = list[list.length - 1]
+  if (last && last.kind === 'behavior') {
+    return [
+      ...list.slice(0, -1),
+      {
+        ...last,
+        toolCalls: applyToolEvent(last.toolCalls, {
+          id: toolCall.id,
+          toolName: toolCall.toolName,
+          status: toolCall.status,
+          args: toolCall.args,
+          result: toolCall.result,
+        }),
+      },
+    ]
+  }
+  return [...list, { kind: 'behavior', toolCalls: [toolCall] }]
+}
+
+function updateToolCallInBlocks(
+  blocks: MessageBlock[] | undefined,
+  toolCallId: string,
+  updater: (tool: ToolCall) => ToolCall,
+): MessageBlock[] {
+  return (blocks ?? []).map((block) => {
+    if (block.kind !== 'behavior' || !block.toolCalls?.some((tool) => tool.id === toolCallId)) {
+      return block
+    }
+    return { ...block, toolCalls: block.toolCalls.map((tool) => tool.id === toolCallId ? updater(tool) : tool) }
+  })
+}
 
 let idCounter = 0
 const nextId = (prefix: string) => `${prefix}-${Date.now()}-${idCounter++}`
@@ -483,6 +529,12 @@ export function useSessions(): UseSessions {
                 args,
                 status: 'running',
               }),
+              blocks: appendToolCallBlock(m.blocks, {
+                id: toolCallId,
+                toolName,
+                args,
+                status: 'running',
+              }),
             }
           }),
         )
@@ -502,6 +554,14 @@ export function useSessions(): UseSessions {
               status,
               result,
             }),
+            blocks: updateToolCallInBlocks(message.blocks, toolCallId, (tool) =>
+              applyToolEvent([tool], {
+                id: toolCallId,
+                toolName,
+                status,
+                result,
+              })[0] ?? tool,
+            ),
           } : message,
         ))
       }
@@ -779,7 +839,11 @@ export function useSessions(): UseSessions {
             appendActivity(envelope, '过程更新', text)
             updateSessionMessages(sessionId, (messages) => messages.map((message) =>
               message.id === assistantId
-                ? { ...message, commentary: `${message.commentary ?? ''}${message.commentary ? '\n' : ''}${text}` }
+                ? {
+                    ...message,
+                    commentary: `${message.commentary ?? ''}${message.commentary ? '\n' : ''}${text}`,
+                    blocks: [...(message.blocks ?? []), { kind: 'commentary', text }],
+                  }
                 : message,
             ))
             return
@@ -790,7 +854,11 @@ export function useSessions(): UseSessions {
             if (!text) return
             updateSessionMessages(sessionId, (messages) => messages.map((message) =>
               message.id === assistantId
-                ? { ...message, thinking: `${message.thinking ?? ''}${text}` }
+                ? {
+                    ...message,
+                    thinking: `${message.thinking ?? ''}${text}`,
+                    blocks: appendThinkingBlock(message.blocks, text),
+                  }
                 : message,
             ))
             return
@@ -1146,6 +1214,7 @@ export function useSessions(): UseSessions {
                         content: '',
                         createdAt: new Date().toISOString(),
                         status: 'streaming',
+                        blocks: [],
                       },
                     ],
                   }
@@ -1337,7 +1406,7 @@ export function useSessions(): UseSessions {
       updateSessionMessages(sessionId, (messages) => [
         ...messages,
         { id: userId, role: 'user', content: content.trim(), createdAt: now },
-        { id: assistantId, role: 'assistant', content: '', createdAt: now, status: 'streaming' },
+        { id: assistantId, role: 'assistant', content: '', createdAt: now, status: 'streaming', blocks: [] },
       ])
       updateSession(sessionId, (session) => ({
         ...session,

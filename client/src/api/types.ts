@@ -453,10 +453,20 @@ export interface Message {
   /** DeepSeek 思考过程（assistant.thinking 流式累积；独立于 content，UI 折叠展示） */
   thinking?: string
   toolCalls?: ToolCall[]
+  /**
+   * 按事件到达顺序的交替块（commentary 与行为交替，而非行为全堆顶部）。
+   * 历史消息（无 blocks）回退到 commentary/thinking/toolCalls 顶层字段渲染。
+   */
+  blocks?: MessageBlock[]
   activity?: AgentActivity[]
   runId?: string
   status?: 'streaming' | 'done' // assistant 消息运行状态
 }
+
+/** 一条 assistant 消息内的交替内容块：中途说话 或 行为（思考 + 工具）。 */
+export type MessageBlock =
+  | { kind: 'commentary'; text: string }
+  | { kind: 'behavior'; thinking?: string; toolCalls?: ToolCall[] }
 
 export interface Session {
   id: string

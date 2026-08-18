@@ -132,21 +132,21 @@ function ToolFold({ toolCalls, streaming, onApprove, onReject }: {
  * 每轮行为折叠面板（仿左侧 RunTimeline：折叠窄条 ↔ 展开面板，默认折叠）。
  * 内容按三级组织：思考 → 工具（工具内并行最小行动）→ 中途对话。
  */
-function BehaviorFold({ message, onApprove, onReject }: {
-  message: Message
-  onApprove: (messageId: string, toolCallId: string) => void
-  onReject: (messageId: string, toolCallId: string) => void
+function BehaviorFold({ thinking, toolCalls, streaming, onApprove, onReject }: {
+  thinking?: string
+  toolCalls: ToolCall[]
+  streaming: boolean
+  onApprove: (toolCallId: string) => void
+  onReject: (toolCallId: string) => void
 }) {
   const [open, setOpen] = useState(false)
-  const streaming = message.status === 'streaming'
-  const toolCalls = message.toolCalls ?? []
-  const hasThinking = Boolean(message.thinking)
+  const hasThinking = Boolean(thinking)
   const hasTools = toolCalls.length > 0
   // 中途对话（commentary）不进面板——与 final 同级直接展示。
   if (!hasThinking && !hasTools) return null
 
   const summary = [
-    hasThinking ? `${message.thinking!.length} chars` : null,
+    hasThinking ? `${thinking!.length} chars` : null,
     hasTools ? `${toolCalls.length} tool${toolCalls.length > 1 ? 's' : ''}` : null,
   ].filter(Boolean).join(' · ')
 
@@ -164,13 +164,13 @@ function BehaviorFold({ message, onApprove, onReject }: {
       </button>
       {open && (
         <div className="space-y-1 border-t border-stone-200/70 py-1.5 dark:border-stone-700/50">
-          {hasThinking && <ThinkingFold text={message.thinking!} streaming={streaming} />}
+          {hasThinking && <ThinkingFold text={thinking!} streaming={streaming} />}
           {hasTools && (
             <ToolFold
               toolCalls={toolCalls}
               streaming={streaming}
-              onApprove={(toolCallId) => onApprove(message.id, toolCallId)}
-              onReject={(toolCallId) => onReject(message.id, toolCallId)}
+              onApprove={onApprove}
+              onReject={onReject}
             />
           )}
         </div>
@@ -196,6 +196,9 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
     )
   }
 
+  const streaming = message.status === 'streaming'
+  const blocks = message.blocks
+
   return (
     <div
       id={`message-${message.id}`}
@@ -203,15 +206,43 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
       className="message-enter flex justify-start"
     >
       <div className="min-w-0 max-w-[90%]">
-        <BehaviorFold
-          message={message}
-          onApprove={onApprove}
-          onReject={onReject}
-        />
-        {message.commentary && (
-          <div className="whitespace-pre-wrap py-1 text-sm italic text-stone-500 dark:text-stone-400">
-            {message.commentary}
-          </div>
+        {blocks && blocks.length > 0 ? (
+          // 交替块：commentary 与行为按事件到达顺序出现，而非行为全堆顶部。
+          blocks.map((block, index) =>
+            block.kind === 'commentary' ? (
+              <div
+                key={index}
+                className="whitespace-pre-wrap py-1 text-sm italic text-stone-500 dark:text-stone-400"
+              >
+                {block.text}
+              </div>
+            ) : (
+              <BehaviorFold
+                key={index}
+                thinking={block.thinking}
+                toolCalls={block.toolCalls ?? []}
+                streaming={streaming}
+                onApprove={(toolCallId) => onApprove(message.id, toolCallId)}
+                onReject={(toolCallId) => onReject(message.id, toolCallId)}
+              />
+            ),
+          )
+        ) : (
+          // 历史消息（无 blocks）回退：行为 + 顶层 commentary。
+          <>
+            <BehaviorFold
+              thinking={message.thinking}
+              toolCalls={message.toolCalls ?? []}
+              streaming={streaming}
+              onApprove={(toolCallId) => onApprove(message.id, toolCallId)}
+              onReject={(toolCallId) => onReject(message.id, toolCallId)}
+            />
+            {message.commentary && (
+              <div className="whitespace-pre-wrap py-1 text-sm italic text-stone-500 dark:text-stone-400">
+                {message.commentary}
+              </div>
+            )}
+          </>
         )}
         {message.content && (
           <div className="py-1">
@@ -219,7 +250,7 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
           </div>
         )}
         <div className="mt-1 font-mono text-[11px] text-stone-500 dark:text-stone-400">
-          {message.status === 'streaming' ? (
+          {streaming ? (
             <StreamingStatus />
           ) : (
             formatTime(message.createdAt)
