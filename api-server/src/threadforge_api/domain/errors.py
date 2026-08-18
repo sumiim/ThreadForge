@@ -172,6 +172,30 @@ class WorkerCommandPendingError(AppError):
     code = "worker_command_pending"
 
 
+class WorkerBusyError(AppError):
+    """Worker 正在执行任务/更新中,无法受理设备级命令(更新/卸载)。"""
+    http_status = 409
+    code = "worker_busy"
+
+
+class UpdateUnavailableError(AppError):
+    """Worker 无法执行手动更新(未启用自动更新/协议不支持)。"""
+    http_status = 503
+    code = "update_unavailable"
+
+
+class UpdateBackoffError(AppError):
+    """Worker 更新刚失败过,处于冷却期,拒绝立即重试。"""
+    http_status = 409
+    code = "update_backoff"
+
+
+class UninstallUnavailableError(AppError):
+    """Worker 无法执行卸载(协议不支持卸载)。"""
+    http_status = 503
+    code = "uninstall_unavailable"
+
+
 class WorkerCommandFailedError(AppError):
     http_status = 422
     code = "worker_command_failed"
