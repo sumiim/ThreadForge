@@ -384,13 +384,36 @@ def test_list_files_hides_internal_agent_state(tmp_path):
 
 
 def test_repeated_identical_tool_call_is_rejected(tmp_path):
+    """写工具同参重复 → 执行前拒绝（P4 重复拦截）。
+
+    §7.8.9 修正（2026-08-18）：只读工具不做执行前拦截（结果可能已变，
+    重读合理），改为执行后结果指纹判定；写工具（write/patch/shell）仍
+    执行前拦截。
+    """
+    agent = build_agent(tmp_path, [])
+    agent.record({"role": "tool", "name": "write_file", "args": {"path": "x.txt", "content": "hi"}, "content": "ok", "created_at": "1"})
+    agent.record({"role": "tool", "name": "write_file", "args": {"path": "x.txt", "content": "hi"}, "content": "ok", "created_at": "2"})
+
+    result = agent.run_tool("write_file", {"path": "x.txt", "content": "hi"})
+
+    assert result == "error: repeated identical tool call for write_file; choose a different tool or return a final answer"
+
+
+def test_repeated_readonly_tool_call_is_not_pre_rejected(tmp_path):
+    """§7.8.9 修正（2026-08-18）：只读工具重复不再执行前拦截。
+
+    文件内容可能已变（被写工具改过），同动作重读是合理的——放行执行，
+    是否算重复/坏轮由 AgentLoop 执行后结果指纹判定（见 test_agent_loop.py
+    的 result-fingerprint 测试）。
+    """
     agent = build_agent(tmp_path, [])
     agent.record({"role": "tool", "name": "list_files", "args": {}, "content": "(empty)", "created_at": "1"})
     agent.record({"role": "tool", "name": "list_files", "args": {}, "content": "(empty)", "created_at": "2"})
 
     result = agent.run_tool("list_files", {})
 
-    assert result == "error: repeated identical tool call for list_files; choose a different tool or return a final answer"
+    assert "repeated identical tool call" not in result
+    assert "[F] README.md" in result
 
 
 def test_welcome_screen_keeps_box_shape_for_long_paths(tmp_path):
