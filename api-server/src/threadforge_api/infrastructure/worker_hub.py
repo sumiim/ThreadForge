@@ -228,7 +228,9 @@ class WorkerHub:
                 for task_id in task_ids:
                     self._device_by_task.pop(task_id, None)
         for task_id in task_ids:
-            self._fail_task(task_id, "worker_disconnected")
+            # §7.8.9 修正（2026-08-19）：断线 ≠ 运行失败——任务因连接中断而终止,
+            # 前端应显示「运行因服务重启或连接中断而终止」而非「Agent 运行失败」。
+            self._fail_task(task_id, "worker_disconnected", status=TaskStatus.INTERRUPTED)
         try:
             connection.outbox.put_nowait(None)
         except asyncio.QueueFull:
@@ -1858,7 +1860,10 @@ class WorkerHub:
             ):
                 self._task_repo.update(task.task_id, _clear_local_task_content)
 
-    def _fail_task(self, task_id: str, reason: str) -> None:
+    def _fail_task(
+        self, task_id: str, reason: str, *, status: TaskStatus = TaskStatus.FAILED
+    ) -> None:
+        interrupted = status == TaskStatus.INTERRUPTED
         with self._lock:
             try:
                 task = self._task_repo.get(task_id)
@@ -1867,15 +1872,15 @@ class WorkerHub:
                 self._cancel_pending_approvals(task, reason)
                 self._task_repo.update(
                     task_id,
-                    lambda item: _set_terminal(item, TaskStatus.FAILED, reason, ""),
+                    lambda item: _set_terminal(item, status, reason, ""),
                 )
                 self._publisher.publish(
                     task_id,
                     task.run_id,
-                    "task.failed",
+                    "task.interrupted" if interrupted else "task.failed",
                     {"stop_reason": reason, "final_answer": ""},
                     phase="final",
-                    status="failed",
+                    status="interrupted" if interrupted else "failed",
                     summary=reason,
                 )
             except Exception:
