@@ -923,6 +923,10 @@ export function useSessions(): UseSessions {
               message.id === assistantId
                 ? {
                     ...message,
+                    // §7.8.9 修正（2026-08-19）：final 被 review redirect → 清空 content——
+                    // 被拒的 final 不展示（只在最终通过时展示一次）,避免对话里重复
+                    // 出现多版相同答案。
+                    ...(verdict === 'redirect' ? { content: '' } : {}),
                     blocks: hasPendingReviewBlock(message.blocks)
                       ? appendReviewEntry(message.blocks, entry)
                       : appendReviewBlock(message.blocks, entry),
