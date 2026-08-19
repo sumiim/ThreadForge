@@ -1782,13 +1782,12 @@ class AgentLoop:
             )
             self._apply_review_completed_steps(task_state, review_decision)
             if review_decision.get("verdict") == "redirect":
-                # §7.8.9 修正（2026-08-19）：纯对话（你好/谢谢/ok 等社交短句）的 final
-                # 直接放行——review 反复 reject 纯说话 final 只会死循环收敛 blocked,
-                # 不如放行（用户定：总比一直 reject 好）。有实质任务（非纯对话）仍走
-                # 正常 redirect 反馈（方向监督/瞎验收拦截）。
-                from .planning import is_plain_conversation
-
-                if is_plain_conversation(user_message):
+                # §7.8.9 修正（2026-08-19）：**无写/shell 动作（只读/纯对话任务）直接
+                # 放行**（用户定）——读相关任务的空转由坏轮窗口 + 重叠读取拦截管,
+                # review 不需要拦 final（拦了只会反复 reject 死循环收敛 blocked）。
+                # 只有写相关任务（write/patch/shell,方向/验证/瞎验收风险高）才走
+                # review 拦截。
+                if not has_write_or_shell:
                     # 视为「review 同意且主循环已确认」→ 落到 awaiting 检查直接完成。
                     awaiting_review_confirmation = True
                     pending_review_decision = None

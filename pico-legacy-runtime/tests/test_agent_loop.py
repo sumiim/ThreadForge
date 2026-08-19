@@ -437,6 +437,32 @@ def test_repeated_final_rejected_converges_with_rejected_finals(tmp_path):
     assert state.rejected_finals == []
 
 
+def test_write_task_final_rejected_still_converges(tmp_path):
+    """§7.8.9 决策（2026-08-19）：写相关任务（有 write/patch/shell）review 仍拦截。
+
+    无写任务 final 直接放行;有写任务 final 被 review redirect → 正常 rejected_finals
+    收敛（方向/验证风险高,review 拦）。
+    """
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"write_file","args":{"path":"a.txt","content":"v2\\n"}}</tool>',
+            "<final>候选一</final>",
+            '{"verdict": "redirect", "feedback": "未验证", "reason": "verification"}',
+            "<final>候选二</final>",
+            '{"verdict": "redirect", "feedback": "仍需验证", "reason": "verification"}',
+        ],
+        feature_flags={"review_subagent": True},
+    )
+
+    answer = AgentLoop(agent).run("改 a.txt")
+
+    state = agent.current_task_state
+    assert state.status == "stopped"
+    assert len(state.rejected_finals) == 2  # 有写任务被 review 拒 → 收敛
+    assert "候选一" in answer and "候选二" in answer
+
+
 def test_pure_conversation_final_passes_without_tools(tmp_path):
     """§7.8.9 修正（2026-08-19）：无工具直接说话的 final,review redirect 也放行。
 
