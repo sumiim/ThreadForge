@@ -311,6 +311,16 @@ export default function RunTracePanel({ open, session, activeRunId, provider, on
                     ) : null}
                     <dt className="text-stone-400">Attempt</dt><dd className="text-stone-700">{selectedEvent.attempt ?? '—'}</dd>
                   </dl>
+                  {selectedEvent.text ? (
+                    <div>
+                      <div className="mb-1.5 text-xs font-medium text-stone-700">
+                        {selectedEvent.type === 'model.completed' ? '模型回复' : '正文'}
+                      </div>
+                      <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md border border-stone-200/70 bg-white p-2 font-mono text-[11px] leading-relaxed text-stone-600 dark:border-stone-700/60 dark:bg-stone-900/60 dark:text-stone-300">
+                        {selectedEvent.text}
+                      </pre>
+                    </div>
+                  ) : null}
                   <div>
                     <div className="mb-2 text-xs font-medium text-stone-700">Usage</div>
                     <dl className="grid grid-cols-[96px_minmax(0,1fr)] gap-x-3 gap-y-2 text-xs">
