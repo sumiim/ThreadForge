@@ -155,8 +155,12 @@ def test_checklist_review_semantic_hook(tmp_path):
         tmp_path,
         [
             '{"steps": [{"goal": "审查改动", "done_when": ["重构是否合理"]}]}',
+            '<tool>{"name":"write_file","args":{"path":"refactored.py","content":"print(1)"}}</tool>',
             "<final>ok</final>",
+            # review 内部跑验证（review_shell_ok）→ 语义打钩 finalize
+            '<tool>{"name":"run_shell","args":{"command":"echo ok"}}</tool>',
             '{"verdict": "finalize", "completed_steps": ["审查改动"], "feedback": "verified reasonable, test passed", "reason": "done"}',
+            # 双向对抗：review 同意后主循环确认（重提 final）→ review #2 finalize
             "<final>ok</final>",
             '{"verdict": "finalize", "feedback": "confirmed; test passed, verified", "reason": "done"}',
         ],
