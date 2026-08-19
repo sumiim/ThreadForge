@@ -65,6 +65,48 @@ def _best_effort_step_limit(task_state, reason):
     return text
 
 
+def _convergence_summary(agent, task_state, reason):
+    """§7.8.9 决策（2026-08-19）：截断/收敛兜底——有候选或证据时,让模型做一次
+    总结输出,而不是 raw 拼候选列表。
+
+    被拒候选（rejected_finals）和证据有内容 → LLM 总结成连贯、诚实的最终回答
+    （说明运行未完成 + 整合已确认信息）。模型调用失败或无可总结内容 → 回退
+    _best_effort_step_limit。
+    """
+    rejected = [
+        item
+        for item in (task_state.rejected_finals or [])
+        if str(item.get("content", "") or "").strip()
+    ]
+    evidence = list(task_state.evidence or [])
+    if not rejected and not evidence:
+        return _best_effort_step_limit(task_state, reason)
+    parts = []
+    for index, item in enumerate(rejected[-3:]):
+        parts.append(f"[被拒候选 {index + 1}]\n{str(item.get('content', ''))[:800]}")
+    for item in evidence[-5:]:
+        summary = str(item.get("summary", "") or "")[:300]
+        if summary:
+            parts.append(f"[证据:{item.get('tool_name', 'tool')}] {summary}")
+    prompt = (
+        "你是 ThreadForge 的收尾总结器。运行被中断（预算或收敛兜底），以下是模型被审查"
+        "驳回的候选回答和已收集证据。请总结成一个连贯、诚实、可直接展示给用户的最终回答：\n"
+        "- 开头说明运行未能完整完成\n"
+        "- 整合已确认的信息（证据）与候选回答中的可用内容\n"
+        "- 不要编造新证据，不要逐条罗列原始候选列表\n"
+        "输出纯文本。\n\n"
+        + "\n\n".join(parts)
+    )
+    try:
+        raw = agent.model_client.complete(prompt, 2048)
+        text = str(raw or "").strip()
+        if text:
+            return f"⚠️ 运行中断：{reason}。\n\n{text}"
+    except Exception:
+        pass
+    return _best_effort_step_limit(task_state, reason)
+
+
 MAX_CONSECUTIVE_TALKS = 2
 MAX_PROTOCOL_REPAIRS = 1
 # §7.8.9 决策（2026-08-18）：无 turn 硬顶——max_attempts 仅作「模型反复
@@ -518,8 +560,13 @@ class AgentLoop:
         """
         if not self.agent.feature_enabled("planning"):
             return False
-        from .planning import run_planning
+        from .planning import is_plain_conversation, run_planning
 
+        # §7.8.9 修正（2026-08-19）：纯对话（你好/谢谢/ok）不生成 explicit checklist——
+        # 否则 review 的 checklist 障碍恒真（打钩引擎无程序化验收标准、review 语义
+        # 打钩无工具可验证）→ 纯对话被反复拒死收敛 blocked。
+        if is_plain_conversation(user_message):
+            return False
         steps = run_planning(
             self.agent,
             task_state,
@@ -1014,7 +1061,7 @@ class AgentLoop:
                     if elapsed_s >= agent.max_elapsed_seconds
                     else "token_budget_cap"
                 )
-                final = _best_effort_step_limit(
+                final = _convergence_summary(self.agent, 
                     task_state, f"运行超时或 token 预算耗尽（{reason}）"
                 )
                 task_state.stop(
@@ -1154,7 +1201,7 @@ class AgentLoop:
                         "reasons_all": [item.get("reasons", []) for item in audit_tail],
                     },
                 )
-                final = _best_effort_step_limit(
+                final = _convergence_summary(self.agent, 
                     task_state,
                     "模型连续两次提交 final 均被审查驳回（无工具动作），停止空转",
                 )
@@ -1701,43 +1748,54 @@ class AgentLoop:
             )
             self._apply_review_completed_steps(task_state, review_decision)
             if review_decision.get("verdict") == "redirect":
-                # §7.8.9 修正（2026-08-18）：final 被 review 拒 → 内容不作为最终
-                # 输出，存入 rejected_finals（独立于 evidence，供收敛拼 best-effort），
-                # 并置 turn_final_rejected 信号（连续 2 次触发收敛，防纯语言空转）。
-                rejected = str(payload or raw or "").strip()
-                if rejected:
-                    task_state.rejected_finals.append(
+                # §7.8.9 修正（2026-08-19）：纯对话（你好/谢谢/ok 等社交短句）的 final
+                # 直接放行——review 反复 reject 纯说话 final 只会死循环收敛 blocked,
+                # 不如放行（用户定：总比一直 reject 好）。有实质任务（非纯对话）仍走
+                # 正常 redirect 反馈（方向监督/瞎验收拦截）。
+                from .planning import is_plain_conversation
+
+                if is_plain_conversation(user_message):
+                    # 视为「review 同意且主循环已确认」→ 落到 awaiting 检查直接完成。
+                    awaiting_review_confirmation = True
+                    pending_review_decision = None
+                else:
+                    # §7.8.9 修正（2026-08-18）：final 被 review 拒 → 内容不作为最终
+                    # 输出，存入 rejected_finals（独立于 evidence，供收敛拼 best-effort），
+                    # 并置 turn_final_rejected 信号（连续 2 次触发收敛，防纯语言空转）。
+                    rejected = str(payload or raw or "").strip()
+                    if rejected:
+                        task_state.rejected_finals.append(
+                            {
+                                "status": "final_rejected",
+                                "content": rejected[:4000],
+                                "feedback": str(review_decision.get("feedback", ""))[:500],
+                                "reason": str(review_decision.get("reason", ""))[:200],
+                                "created_at": now(),
+                            }
+                        )
+                    turn_final_rejected = True
+                    # §7.8.9 决策（2026-08-18）：双向对抗——主循环确认被 review #2 拒，
+                    # 结束确认流程（本次 final 被拒,理由入 rejected_finals）。
+                    awaiting_review_confirmation = False
+                    pending_review_decision = None
+                    # 方向/验证有问题：注入 feedback，继续循环（不 final）。
+                    prior_review_feedback = str(review_decision.get("feedback", "") or "")
+                    task_state.set_phase(
+                        PHASE_ACT_OR_ANSWER,
+                        next_step="Apply review feedback and converge on a verified final answer",
+                    )
+                    agent.emit_trace(
+                        task_state,
+                        "final_rejected_by_review",
                         {
-                            "status": "final_rejected",
-                            "content": rejected[:4000],
                             "feedback": str(review_decision.get("feedback", ""))[:500],
                             "reason": str(review_decision.get("reason", ""))[:200],
-                            "created_at": now(),
-                        }
+                        },
                     )
-                turn_final_rejected = True
-                # §7.8.9 决策（2026-08-18）：双向对抗——主循环确认被 review #2 拒，
-                # 结束确认流程（本次 final 被拒,理由入 rejected_finals）。
-                awaiting_review_confirmation = False
-                pending_review_decision = None
-                # 方向/验证有问题：注入 feedback，继续循环（不 final）。
-                prior_review_feedback = str(review_decision.get("feedback", "") or "")
-                task_state.set_phase(
-                    PHASE_ACT_OR_ANSWER,
-                    next_step="Apply review feedback and converge on a verified final answer",
-                )
-                agent.emit_trace(
-                    task_state,
-                    "final_rejected_by_review",
-                    {
-                        "feedback": str(review_decision.get("feedback", ""))[:500],
-                        "reason": str(review_decision.get("reason", ""))[:200],
-                    },
-                )
-                agent.run_store.write_task_state(task_state)
-                # §7.8.9 阶段 3.5：review redirect → replan（保留已完成项）。
-                self._replan(task_state, user_message, str(review_decision.get("feedback", "") or ""))
-                continue
+                    agent.run_store.write_task_state(task_state)
+                    # §7.8.9 阶段 3.5：review redirect → replan（保留已完成项）。
+                    self._replan(task_state, user_message, str(review_decision.get("feedback", "") or ""))
+                    continue
             # §7.8.9 决策（2026-08-18）：双向对抗协议——review 同意（finalize/continue）
             # 不直接放行。主循环需显式确认（重提 final）或反驳（继续调工具,行动即理由）。
             # review #2 就是下一次 final 前的 review（自然触发）。
@@ -1823,11 +1881,11 @@ class AgentLoop:
             return final
 
         if protocol_failed or attempts >= max_attempts:
-            final = _best_effort_step_limit(task_state, "模型反复返回无效输出或达到尝试保险丝（retry_limit_reached）")
+            final = _convergence_summary(self.agent, task_state, "模型反复返回无效输出或达到尝试保险丝（retry_limit_reached）")
             task_state.stop_retry_limit(final)
         else:
             # finalization 轮（证据截停触发）模型未给出有效 final → best-effort。
-            final = _best_effort_step_limit(task_state, "停滞收敛：连续坏轮后未能产出最终结论")
+            final = _convergence_summary(self.agent, task_state, "停滞收敛：连续坏轮后未能产出最终结论")
             task_state.stop_step_limit(final)
         task_state.set_phase(PHASE_FINAL, next_step="Explain the budget or execution blocker")
         agent.run_store.write_task_state(task_state)

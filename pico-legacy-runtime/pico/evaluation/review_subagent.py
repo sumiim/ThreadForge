@@ -93,10 +93,16 @@ def build_review_obstacles(task_state, *, has_write_or_shell: bool, verification
     obstacles = []
     if has_write_or_shell and not verification_passed:
         obstacles.append(OBSTACLE_VERIFICATION)
+    # §7.8.9 修正（2026-08-19）：checklist 障碍只对 planning 生成的真实清单生效
+    #（explicit）——默认阶段模板（无 planning 的纯对话/直接回答）剩余项不算障碍,
+    # 否则「你好」这类纯对话会被 checklist 障碍反复拒死（review 语义打钩无工具可
+    # 验证 → checklist 恒剩 → 收敛 blocked）。
+    from .review_gate import _checklist_is_explicit
+
     checklist = list(getattr(task_state, "checklist", []) or [])
     completed = set(getattr(task_state, "completed_items", []) or [])
     remaining = [item for item in checklist if item not in completed]
-    if remaining:
+    if remaining and _checklist_is_explicit(task_state):
         obstacles.append(OBSTACLE_CHECKLIST)
     for item in getattr(task_state, "stagnation_audit", []) or []:
         reasons = item.get("reasons", []) or []
