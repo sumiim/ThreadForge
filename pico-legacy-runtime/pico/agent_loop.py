@@ -216,6 +216,11 @@ def _tool_call_repeats(name, args, result_fp, recent_entries):
     - 窗口内匹配到同动作指纹 → 看结果：只读工具要求结果相同（结果变了 =
       文件被改，重读合理 → 不算重复）；result_fp 为 None（shell/写/未执行）
       只看动作。
+    - **read_file 部分重叠区间例外**（§7.8.9 修正 2026-08-19）：区间不同但
+      重叠 ≥60%（如 1-250 → 20-200）→ 直接判重复——区间微调 = 同一区域打转，
+      结果 hash 因区间不同必然不同，若比较会让「1-250 → 20-200 → 38-200」
+      每次都是新读取、绕开重复判定。完全同区间才用结果指纹（结果变 = 文件
+      被改，重读合理）。
     - 但若「匹配之后有写工具介入」，工作区已变，重读/重列是合理的 → 不重复
       （对齐 runtime.repeated_tool_call 的语义）。
 
@@ -225,8 +230,14 @@ def _tool_call_repeats(name, args, result_fp, recent_entries):
     for index, (action_prev, result_prev) in enumerate(recent_entries):
         if not _tool_fingerprints_match(action_fp, action_prev):
             continue
-        # 结果参与：只读工具要求结果相同；任何一方无结果（None）→ 只看动作。
-        if (
+        partial_overlap = (
+            name == "read_file"
+            and action_prev[0] == "read_file"
+            and action_fp[2] != action_prev[2]
+        )
+        # 结果参与（只读工具）：完全同区间 + 结果变 = 文件被改 → 不重复；
+        # 部分重叠区间 → 跳过结果比较,直接判重复（区间微调是空转）。
+        if not partial_overlap and (
             result_fp is not None
             and result_prev is not None
             and result_fp != result_prev
