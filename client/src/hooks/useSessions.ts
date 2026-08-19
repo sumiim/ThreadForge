@@ -645,6 +645,10 @@ export function useSessions(): UseSessions {
           args_preview: envelope.data.args_preview && typeof envelope.data.args_preview === 'object'
             ? envelope.data.args_preview as Record<string, unknown>
             : undefined,
+          result_preview: typeof envelope.data.result_preview === 'string' && envelope.data.result_preview
+            ? envelope.data.result_preview
+            : undefined,
+          result_truncated: envelope.data.result_truncated === true ? true : undefined,
           intent: envelope.data.intent ? String(envelope.data.intent) : undefined,
           step_count: envelope.data.step_count == null ? undefined : Number(envelope.data.step_count),
           status: envelope.status ? String(envelope.status) : envelope.data.status ? String(envelope.data.status) : undefined,

@@ -291,6 +291,10 @@ export interface RunIndexItem {
   tool_call_id?: string
   /** 只读工具脱敏后的参数预览（如 list_files 的 path、read_file 的行区间）。 */
   args_preview?: Record<string, unknown>
+  /** 工具结果预览（脱敏限长，run_shell/read_file 等允许结果透传的工具）。 */
+  result_preview?: string
+  /** 结果预览是否被截断。 */
+  result_truncated?: boolean
   intent?: string
   step_count?: number
   status?: string

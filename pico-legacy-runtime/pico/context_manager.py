@@ -117,8 +117,10 @@ class ContextManager:
                 "Agent control state:",
                 f"- phase: {task_state.phase}",
                 f"- next_step: {task_state.next_step}",
-                f"- tool_budget: {task_state.tool_steps}/{task_state.max_tool_steps}",
-                f"- read_file_budget: {task_state.read_files}/{task_state.max_read_files}",
+                # §7.8.9 修正（2026-08-19）：无动作预算硬顶——只报累计计数
+                #（tool_calls / read_files），不再展示会被误读为上限的 X/Y 预算。
+                f"- tool_calls: {task_state.tool_steps}",
+                f"- read_files: {task_state.read_files}",
                 "- checklist:",
             ]
             control_lines.extend(

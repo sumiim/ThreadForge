@@ -34,13 +34,15 @@ def test_read_only_tool_event_keeps_allowlisted_arguments_and_preview():
     assert completed["result_preview"] == "# README.md\nhello"
 
 
-def test_shell_event_drops_arguments_but_keeps_result_preview():
+def test_shell_event_keeps_command_and_result_preview():
+    # §7.8.9 决策（2026-08-19）：审计/审批需要看到 run_shell 的具体命令，
+    # 脱敏 + 限长后放行 command 字段。
     requested = _sanitize_event_data(
         "tool.requested",
         {
             "tool_call_id": "call_shell",
             "tool_name": "run_shell",
-            "args_preview": {"command": "echo private"},
+            "args_preview": {"command": "echo private", "timeout": 30},
         },
     )
     completed = _sanitize_event_data(
@@ -53,7 +55,7 @@ def test_shell_event_drops_arguments_but_keeps_result_preview():
         },
     )
 
-    assert "args_preview" not in requested
+    assert requested["args_preview"] == {"command": "echo private"}
     assert completed["result_preview"] == "private command output"
 
 
@@ -145,6 +147,70 @@ def test_streaming_events_keep_only_safe_public_fields():
         "run_elapsed_seconds": 12.8,
         "round": 4,
     }
+
+
+def test_run_index_keeps_tool_command_and_result_for_audit():
+    task = SimpleNamespace(run_index=[], updated_at="")
+    _append_run_index(
+        task,
+        {
+            "event_id": "evt_tool_req",
+            "run_id": "run_1",
+            "type": "tool.requested",
+            "timestamp": "2026-08-14T00:00:01Z",
+            "phase": "execute",
+        },
+        {
+            "tool_call_id": "call_shell",
+            "tool_name": "run_shell",
+            "args_preview": {"command": "pytest -q"},
+        },
+    )
+    _append_run_index(
+        task,
+        {
+            "event_id": "evt_tool_done",
+            "run_id": "run_1",
+            "type": "tool.completed",
+            "timestamp": "2026-08-14T00:00:02Z",
+            "phase": "execute",
+        },
+        {
+            "tool_call_id": "call_shell",
+            "tool_name": "run_shell",
+            "tool_status": "ok",
+            "result_preview": "1 passed",
+            "result_truncated": False,
+        },
+    )
+
+    assert task.run_index[0]["args_preview"] == {"command": "pytest -q"}
+    assert task.run_index[1]["result_preview"] == "1 passed"
+    assert "result_truncated" not in task.run_index[1]
+    assert task.run_index[1]["tool_call_id"] == "call_shell"
+
+
+def test_run_index_marks_truncated_result():
+    task = SimpleNamespace(run_index=[], updated_at="")
+    _append_run_index(
+        task,
+        {
+            "event_id": "evt_tool_done",
+            "run_id": "run_1",
+            "type": "tool.completed",
+            "timestamp": "2026-08-14T00:00:02Z",
+        },
+        {
+            "tool_call_id": "call_1",
+            "tool_name": "run_shell",
+            "tool_status": "ok",
+            "result_preview": "big output",
+            "result_truncated": True,
+        },
+    )
+
+    assert task.run_index[0]["result_preview"] == "big output"
+    assert task.run_index[0]["result_truncated"] is True
 
 
 def test_run_index_keeps_chronology_and_public_usage_for_audit():

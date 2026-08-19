@@ -987,7 +987,7 @@ def test_remote_execution_hooks_publish_read_only_and_shell_result_previews():
         None,
         ToolExecutionResult(content="private output", metadata={"tool_status": "ok"}),
     )
-    assert "args_preview" not in events[0][1]
+    assert events[0][1]["args_preview"] == {"command": "whoami"}
     assert events[-1][1]["result_preview"] == "private output"
     hooks.commentary(None, "still working")
     assert events[-1] == ("assistant.commentary", {"text": "still working"})

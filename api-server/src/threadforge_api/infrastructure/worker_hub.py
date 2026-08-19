@@ -2269,6 +2269,19 @@ def _append_run_index(task, event: dict, data: dict):
     if event_type.startswith("tool."):
         item["tool_name"] = str(data.get("tool_name", ""))[:100]
         item["tool_call_id"] = str(data.get("tool_call_id", ""))[:200]
+        # §7.8.9 决策（2026-08-19）：审计持久化工具具体参数与结果——
+        # 参数（args_preview，已脱敏限长）挂 tool.requested；结果预览
+        # （result_preview，已脱敏限长）挂 tool.completed/tool.failed。
+        if event_type == "tool.requested":
+            args_preview = data.get("args_preview")
+            if isinstance(args_preview, dict) and args_preview:
+                item["args_preview"] = args_preview
+        elif event_type in {"tool.completed", "tool.failed"}:
+            result_preview = data.get("result_preview")
+            if isinstance(result_preview, str) and result_preview:
+                item["result_preview"] = result_preview[:8000]
+                if data.get("result_truncated"):
+                    item["result_truncated"] = True
     elif event_type == "model.completed":
         usage = data.get("usage", {})
         if isinstance(usage, dict):
