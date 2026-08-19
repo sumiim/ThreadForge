@@ -10,11 +10,28 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 
 PLANNING_MAX_NEW_TOKENS = 800
 MAX_PLAN_STEPS = 20
 MIN_PLAN_STEPS = 1
+
+# §7.8.9 修正（2026-08-19）：纯对话请求（你好/谢谢/ok 等社交短句）跳过 planning——
+# 否则 LLM 也会生成 explicit checklist,review 的 checklist 障碍恒真（打钩引擎对
+# 纯对话无程序化验收标准、review 语义打钩无工具可验证）→ 纯对话被反复拒死。
+PLAIN_CONVERSATION_PATTERN = re.compile(
+    r"^(?:"
+    r"(?:hi|hello|hey|thanks|thank\s+you|ok|okay|yes|no)"
+    r"|(?:你好|您好|嗨|哈喽|在吗|谢谢|谢了|好的|好|收到|再见|拜拜)"
+    r")[!！。.?？\s]*$",
+    re.IGNORECASE,
+)
+
+
+def is_plain_conversation(task) -> bool:
+    """纯社交短句（无需工作区上下文/计划的对话）→ True。"""
+    return bool(PLAIN_CONVERSATION_PATTERN.fullmatch(str(task or "").strip()))
 
 # 普通字符串（不用 .format，避免花括号冲突），{payload} 由 replace 填充。
 _PLANNING_PROMPT = (

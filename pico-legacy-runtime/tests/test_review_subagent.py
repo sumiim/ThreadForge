@@ -23,11 +23,20 @@ def build_agent(tmp_path, outputs, **kwargs):
 def test_review_obstacles_verification_when_write_unverified(tmp_path):
     agent = build_agent(tmp_path, ["<final>ok</final>"])
     agent.ask("hello")
+    state = agent.current_task_state
     obstacles = build_review_obstacles(
-        agent.current_task_state, has_write_or_shell=True, verification_passed=False
+        state, has_write_or_shell=True, verification_passed=False
     )
     assert "verification" in obstacles
-    assert "checklist" in obstacles  # 默认阶段模板 checklist 未完成也计
+    # §7.8.9 修正（2026-08-19）：默认阶段模板（无 planning 的纯对话）不算 checklist 障碍
+    assert "checklist" not in obstacles
+    # explicit checklist（planning 生成）才算障碍
+    state.checklist = ["改 README"]
+    state.step_done_when = {"改 README": ["grep:README.md:新"]}
+    obstacles_explicit = build_review_obstacles(
+        state, has_write_or_shell=True, verification_passed=False
+    )
+    assert "checklist" in obstacles_explicit
 
 
 def test_review_obstacles_no_verification_for_readonly_verified(tmp_path):
@@ -72,7 +81,7 @@ def test_review_finalize_without_obstacles(tmp_path):
 
 
 def test_review_adversarial_rejects_unrebutted_finalize(tmp_path):
-    """对抗性验证：finalize 有障碍（checklist）且无证据反驳 → 拒 finalize 转 redirect。
+    """对抗性验证：finalize 有障碍（explicit checklist）且无证据反驳 → 拒 finalize 转 redirect。
 
     verification_passed=True：程序 R1 门槛不触发，落到模型反驳层——
     review 无证据关键词 → unrebutted_obstacles。
@@ -86,6 +95,9 @@ def test_review_adversarial_rejects_unrebutted_finalize(tmp_path):
     )
     agent.ask("hello")
     state = agent.current_task_state
+    # explicit checklist（planning 生成）→ 剩余项算障碍（默认模板不算,见上方测试）
+    state.checklist = ["改代码"]
+    state.done_when = ["改代码"]
     decision = run_review(
         agent,
         state,

@@ -407,14 +407,18 @@ def test_agent_loop_repeated_actions_do_not_pollute_repeat_window(tmp_path):
 
 
 def test_repeated_final_rejected_converges_with_rejected_finals(tmp_path):
-    """连续 2 次无工具 final 被 review redirect → 程序强制收敛，输出 rejected_finals 内容。
+    """有工具 evidence 后连续 2 次 final 被 review redirect → 程序强制收敛。
 
     §7.8.9 修正（2026-08-18）：纯语言空转（模型反复 final 但 review 拒）不能烧到
     步数上限，连续 2 轮即收敛；被拒的 final 存 rejected_finals，收敛时拼进 best-effort。
+    §7.8.9 修正（2026-08-19）：无 evidence（纯对话）的 final 直接放行不再收敛——
+    本测试用有 evidence（read_file 成功）的场景验证收敛仍生效。
     """
+    (tmp_path / "a.txt").write_text("v1\n", encoding="utf-8")
     agent = build_agent(
         tmp_path,
         [
+            '<tool>{"name":"read_file","args":{"path":"a.txt","start":1,"end":1}}</tool>',  # 成功 → evidence
             "<final>候选回答一：我根据记忆回答。</final>",   # 主循环第 1 次 final
             '{"verdict": "redirect", "feedback": "需要先读工作区", "reason": "ungrounded"}',  # review 1
             "<final>候选回答二：我再回答一次。</final>",   # 主循环第 2 次 final
@@ -434,9 +438,62 @@ def test_repeated_final_rejected_converges_with_rejected_finals(tmp_path):
     assert "候选回答二" in answer
     # rejected_finals 独立于 evidence 存储（不污染 evidence 计数）
     assert len(state.rejected_finals) == 2
+
+
+def test_pure_conversation_final_passes_without_tools(tmp_path):
+    """§7.8.9 修正（2026-08-19）：无工具直接说话的 final,review redirect 也放行。
+
+    纯对话（"你好"）模型直接 final 无 evidence——review 反复 reject 只会死循环
+    收敛 blocked,不如放行（用户定：总比一直 reject 好）。
+    """
+    agent = build_agent(
+        tmp_path,
+        [
+            "<final>你好</final>",
+            '{"verdict": "redirect", "feedback": "no workspace evidence", "reason": "ungrounded"}',
+        ],
+        feature_flags={"review_subagent": True},
+    )
+
+    answer = AgentLoop(agent).run("你好")
+
+    assert answer == "你好"
+    state = agent.current_task_state
+    assert state.status == "completed"
+    assert state.rejected_finals == []  # 无工具 final 被放行,不入 rejected_finals
+
+
+def test_convergence_summarizes_rejected_finals(tmp_path):
+    """§7.8.9 决策（2026-08-19）：截断兜底——有候选时模型总结成连贯输出。
+
+    收敛触发时,_convergence_summary 让模型基于 rejected_finals + evidence 生成
+    总结（而非 raw 拼候选列表）。
+    """
+    (tmp_path / "a.txt").write_text("v1\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"read_file","args":{"path":"a.txt","start":1,"end":1}}</tool>',
+            "<final>候选回答一</final>",
+            '{"verdict": "redirect", "feedback": "需要更多证据", "reason": "verification"}',
+            "<final>候选回答二</final>",
+            '{"verdict": "redirect", "feedback": "仍缺证据", "reason": "verification"}',
+            "总结后的最终回答：已读取 a.txt,内容为 v1,未能完成全部验证。",
+        ],
+        feature_flags={"review_subagent": True},
+    )
+
+    answer = AgentLoop(agent).run("你是谁")
+
+    state = agent.current_task_state
+    assert state.status == "stopped"
+    # 收敛输出是模型总结后的连贯回答,而非 raw 候选列表
+    assert "总结后的最终回答" in answer
+    assert "v1" in answer
+    assert len(state.rejected_finals) == 2
     assert all(item["status"] == "final_rejected" for item in state.rejected_finals)
-    # evidence 未被污染（纯对话无工具）
-    assert len(state.evidence) == 0
+    # evidence 只有 read_file 一条（不被被拒 final 污染）
+    assert len(state.evidence) == 1
 
 
 def test_tooled_final_rejected_does_not_trigger_quick_convergence(tmp_path):
