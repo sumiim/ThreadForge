@@ -206,18 +206,6 @@ export default function RunTracePanel({ open, session, activeRunId, provider, on
   const modelTurns = rows.filter((row) => row.type === 'model.started').length
   const toolCalls = new Set(rows.filter((row) => row.type === 'tool.requested' && row.tool_call_id).map((row) => row.tool_call_id)).size
 
-  // 终答正文：优先 message.completed 的 text；兜底最后一次 assistant.delta 的流式文本。
-  const finalAnswer = useMemo(() => {
-    if (!activeRun) return ''
-    const completed = (activeRun.items ?? []).filter((item) =>
-      item.type === 'message.completed' || item.type === 'task.completed',
-    )
-    const fromCompleted = completed[completed.length - 1]?.text ?? ''
-    if (fromCompleted.trim()) return fromCompleted
-    const deltas = (activeRun.items ?? []).filter((item) => item.type === 'assistant.delta')
-    return deltas[deltas.length - 1]?.text ?? ''
-  }, [activeRun])
-
   const selectAndJump = (eventId: string) => {
     setSelectedEventId(eventId)
     window.setTimeout(() => document.getElementById(`audit-event-${eventId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 0)
@@ -250,12 +238,6 @@ export default function RunTracePanel({ open, session, activeRunId, provider, on
         <div className="flex flex-1 items-center justify-center"><Empty description="该运行没有可审计的事件" /></div>
       ) : (
         <>
-          {finalAnswer ? (
-            <div className="shrink-0 border-b border-emerald-100 bg-emerald-50/50 px-5 py-3 dark:border-emerald-900/40 dark:bg-emerald-950/20">
-              <div className="text-[10px] font-medium uppercase tracking-wide text-emerald-700 dark:text-emerald-300">最终回答</div>
-              <div className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-stone-800 dark:text-stone-100">{finalAnswer}</div>
-            </div>
-          ) : null}
           <div className="grid shrink-0 grid-cols-3 divide-x divide-stone-100 border-b border-stone-200 bg-stone-50/40">
             <div className="px-5 py-2"><div className="text-[10px] uppercase text-stone-400">Duration</div><div className="font-mono text-sm text-stone-800">{formatDurationMs(lastTime - firstTime)}</div></div>
             <div className="px-5 py-2"><div className="text-[10px] uppercase text-stone-400">Turns</div><div className="font-mono text-sm text-stone-800">{modelTurns}</div></div>
@@ -329,16 +311,6 @@ export default function RunTracePanel({ open, session, activeRunId, provider, on
                     ) : null}
                     <dt className="text-stone-400">Attempt</dt><dd className="text-stone-700">{selectedEvent.attempt ?? '—'}</dd>
                   </dl>
-                  {selectedEvent.text ? (
-                    <div>
-                      <div className="mb-1.5 text-xs font-medium text-stone-700">
-                        {selectedEvent.type === 'model.completed' ? '模型回复' : '正文'}
-                      </div>
-                      <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md border border-stone-200/70 bg-white p-2 font-mono text-[11px] leading-relaxed text-stone-600 dark:border-stone-700/60 dark:bg-stone-900/60 dark:text-stone-300">
-                        {selectedEvent.text}
-                      </pre>
-                    </div>
-                  ) : null}
                   <div>
                     <div className="mb-2 text-xs font-medium text-stone-700">Usage</div>
                     <dl className="grid grid-cols-[96px_minmax(0,1fr)] gap-x-3 gap-y-2 text-xs">

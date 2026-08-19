@@ -290,7 +290,7 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
             block.kind === 'commentary' ? (
               <div
                 key={index}
-                className="whitespace-pre-wrap py-1 text-sm leading-relaxed text-stone-800 dark:text-stone-100"
+                className="whitespace-pre-wrap py-1 text-sm italic text-stone-500 dark:text-stone-400"
               >
                 {block.text}
               </div>
@@ -321,7 +321,7 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
               onReject={(toolCallId) => onReject(message.id, toolCallId)}
             />
             {message.commentary && (
-              <div className="whitespace-pre-wrap py-1 text-sm leading-relaxed text-stone-800 dark:text-stone-100">
+              <div className="whitespace-pre-wrap py-1 text-sm italic text-stone-500 dark:text-stone-400">
                 {message.commentary}
               </div>
             )}

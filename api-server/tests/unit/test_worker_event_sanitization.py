@@ -253,42 +253,6 @@ def test_run_index_keeps_chronology_and_public_usage_for_audit():
     ]
 
 
-def test_model_completed_keeps_reply_text_and_heartbeat_skipped_in_run_index():
-    task = SimpleNamespace(run_index=[], updated_at="")
-    _append_run_index(
-        task,
-        {"event_id": "evt_model", "run_id": "run_1", "type": "model.completed", "timestamp": "t0"},
-        {
-            "usage": {"input_tokens": 10, "output_tokens": 5},
-            "text": "本轮模型回复",
-        },
-    )
-    _append_run_index(
-        task,
-        {"event_id": "evt_beat", "run_id": "run_1", "type": "model.heartbeat", "timestamp": "t1"},
-        {"stage": "tool", "elapsed_seconds": 1.0},
-    )
-
-    assert len(task.run_index) == 1
-    assert task.run_index[0]["type"] == "model.completed"
-    assert task.run_index[0]["text"] == "本轮模型回复"
-    assert task.run_index[0]["usage"]["input_tokens"] == 10
-
-
-def test_model_completed_sanitizer_keeps_text():
-    safe = _sanitize_event_data(
-        "model.completed",
-        {
-            "usage": {"input_tokens": 10},
-            "text": "可见回复",
-            "secret": "must not pass",
-        },
-    )
-
-    assert safe["text"] == "可见回复"
-    assert "secret" not in safe
-
-
 def test_run_index_keeps_review_battle_and_thinking_details():
     task = SimpleNamespace(run_index=[], updated_at="")
     _append_run_index(

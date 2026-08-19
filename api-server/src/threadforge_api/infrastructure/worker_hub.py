@@ -228,9 +228,7 @@ class WorkerHub:
                 for task_id in task_ids:
                     self._device_by_task.pop(task_id, None)
         for task_id in task_ids:
-            # §7.8.9 修正（2026-08-19）：断线 ≠ 运行失败——任务因连接中断而终止,
-            # 前端应显示「运行因服务重启或连接中断而终止」而非「Agent 运行失败」。
-            self._fail_task(task_id, "worker_disconnected", status=TaskStatus.INTERRUPTED)
+            self._fail_task(task_id, "worker_disconnected")
         try:
             connection.outbox.put_nowait(None)
         except asyncio.QueueFull:
@@ -1860,10 +1858,7 @@ class WorkerHub:
             ):
                 self._task_repo.update(task.task_id, _clear_local_task_content)
 
-    def _fail_task(
-        self, task_id: str, reason: str, *, status: TaskStatus = TaskStatus.FAILED
-    ) -> None:
-        interrupted = status == TaskStatus.INTERRUPTED
+    def _fail_task(self, task_id: str, reason: str) -> None:
         with self._lock:
             try:
                 task = self._task_repo.get(task_id)
@@ -1872,15 +1867,15 @@ class WorkerHub:
                 self._cancel_pending_approvals(task, reason)
                 self._task_repo.update(
                     task_id,
-                    lambda item: _set_terminal(item, status, reason, ""),
+                    lambda item: _set_terminal(item, TaskStatus.FAILED, reason, ""),
                 )
                 self._publisher.publish(
                     task_id,
                     task.run_id,
-                    "task.interrupted" if interrupted else "task.failed",
+                    "task.failed",
                     {"stop_reason": reason, "final_answer": ""},
                     phase="final",
-                    status="interrupted" if interrupted else "failed",
+                    status="failed",
                     summary=reason,
                 )
             except Exception:
@@ -2224,10 +2219,6 @@ def _clear_local_task_content(task):
 
 def _append_run_index(task, event: dict, data: dict):
     event_type = str(event.get("type", ""))
-    # §7.8.9 决策（2026-08-19）：model.heartbeat 不写入运行审计——心跳每秒一条,
-    # 纯 keepalive/计时用途,持久化几百条会淹没真正的工具/审查/模型事件。
-    if event_type == "model.heartbeat":
-        return task
     labels = {
         "plan.created": "计划已创建",
         "plan.skipped": "直接回答",
@@ -2307,10 +2298,6 @@ def _append_run_index(task, event: dict, data: dict):
                 and not isinstance(value, bool)
                 and value >= 0
             }
-        # §7.8.9 决策（2026-08-19）：模型回复进审计。
-        text = str(data.get("text", ""))[:4000]
-        if text:
-            item["text"] = text
     elif event_type == "plan.created":
         item["intent"] = str(data.get("intent", ""))[:32]
         item["step_count"] = _nonnegative_int(data.get("step_count", 0))
@@ -2400,8 +2387,6 @@ def _sanitize_event_data(event_type: str, data: dict) -> dict:
             "round_id": str(data.get("round_id", ""))[:64],
             "started_at": str(data.get("started_at", ""))[:64],
             "ended_at": str(data.get("ended_at", ""))[:64],
-            # §7.8.9 决策（2026-08-19）：本轮模型回复进审计（已脱敏,截断）。
-            "text": redact_artifact(str(data.get("text", ""))[:4000]),
         }
     if event_type == "model.started":
         return {

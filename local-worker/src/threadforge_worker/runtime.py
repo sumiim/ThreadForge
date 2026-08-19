@@ -198,9 +198,6 @@ class RemoteExecutionHooks:
         self._stream_buffer = ""
         self._stream_mode = "pending"
         self._redaction_buffer = ""
-        # §7.8.9 决策（2026-08-19）：本轮模型回复累积（可见正文,已脱敏）——
-        # model.completed 带上,审计能看到模型每轮说了什么。
-        self._model_reply = ""
         self._answer_candidate_active = False
         self._answer_candidate_deltas: list[str] = []
         self._stream_secrets = tuple(
@@ -221,7 +218,6 @@ class RemoteExecutionHooks:
         self._stream_buffer = ""
         self._stream_mode = "pending"
         self._redaction_buffer = ""
-        self._model_reply = ""
         self._send(
             "model.started",
             {
@@ -249,8 +245,6 @@ class RemoteExecutionHooks:
                 "round_id": self._model_round_id,
                 "started_at": self._model_started_wall,
                 "ended_at": _utc_now(),
-                # §7.8.9 决策（2026-08-19）：本轮模型回复进审计（已脱敏,截断）。
-                "text": str(self._model_reply or "")[:4000],
             },
         )
 
@@ -508,7 +502,6 @@ class RemoteExecutionHooks:
                 visible = self._redaction_buffer
                 self._redaction_buffer = ""
         if visible:
-            self._model_reply += visible
             for offset in range(0, len(visible), 4000):
                 chunk = visible[offset:offset + 4000]
                 if self._answer_candidate_active:

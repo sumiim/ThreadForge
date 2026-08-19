@@ -1,0 +1,101 @@
+# ThreadForge Issue Log
+
+生产/开发中遇到的问题记录。每条按【现象】【诊断】【修复】【验证】记录,
+供复现、回归与 badcase→benchmark 沉淀(策略见文末附录)。
+
+**用法**:遇到新问题,把现象贴到本文件末尾(新建条目),保持条目结构一致;
+修复后补全【诊断】【修复】【验证】,并把可回归的最小场景写进对应测试或 benchmark。
+
+---
+
+## 2026-08-19 · 纯对话/只读任务被 review 误杀 → step_limit_reached/blocked
+
+- **现象**:生产 run「你好」等纯对话请求 blocked(`step_limit_reached`);只读探索 run(review_gate.py 1-250/20-200/38-200 重叠读)空转后 blocked。
+- **诊断**:
+  1. 纯对话:review 反复 redirect 纯语言 final,checklist 障碍恒真 → 死循环直到收敛。
+  2. 只读空转:read_file 部分重叠区间被结果指纹误判「结果变了→不重复」→ 反复重读不收敛。
+- **修复**:
+  - #127:纯对话跳过 planning + review checklist 障碍只对 explicit checklist + 纯对话 final 放行。
+  - #128:只读任务 review 直接跳过(`review_skipped`);read_file 部分重叠区间(≥60%)直接判重复;完全同区间+结果变=文件被改→不重复。
+- **验证**:`test_pure_conversation_final_passes_without_tools`、`test_result_fingerprint_partial_overlap_read_counts_as_repeat`、`test_agent_loop_partial_overlap_read_counts_once`。
+
+---
+
+## 2026-08-19 · read_file 预算硬顶拦截合法读取
+
+- **现象**:agent 读第 5 个文件时被拒(`read_file budget exhausted (4)`),只读任务无法深读。
+- **诊断**:`agent_loop._execute_tool_action` 有 `read_files >= max_read_files`(默认 4)硬顶;去 max_steps 硬顶时漏了这条。
+- **修复**:#129 移除 read_file 预算拦截——空转由重复动作拦截 + 墙钟/token 硬顶兜底;prompt 控制状态只报计数(`tool_calls`/`read_files`),不再展示会被误读为上限的 X/Y。
+- **验证**:`test_read_file_budget_no_longer_blocks_reads`(max_read_files=2 仍可读第 3 个文件)。
+
+---
+
+## 2026-08-19 · 审计看不到工具命令与结果、对话回放丢工具/审查
+
+- **现象**:审计导出里 tool.completed 只有 `summary: "run_shell"`,没有命令、没有结果;刷新后对话只剩纯文本,工具卡/审查对抗块全丢。
+- **诊断**:
+  1. `_append_run_index` 只持久化 tool_name/tool_call_id/summary,丢弃 args_preview/result_preview。
+  2. run_shell 不在 `PUBLIC_READ_ONLY_TOOLS`,命令在 worker 端就被 `public_tool_args_preview` 滤空(#13 起的安全策略)。
+  3. 历史消息加载(useSessions)只映射 `id/role/content/createdAt/status`;`request_session_history` 也只回纯文本——工具/思考/审查只在流式内存,刷新即丢。
+- **修复**:
+  - #129:run_shell command 进参数预览白名单(脱敏+限长);`_append_run_index` 持久化 args_preview/result_preview;`get_session` 从 run_index 还原 tool_calls/thinking/review_entries 挂到 assistant 消息;前端历史消息渲染 ReviewBattle(含「审查跳过(只读)」)。
+  - #131:model.completed 带本轮模型回复(已脱敏截断);RunTracePanel 审计详情渲染模型回复/工具结果。
+- **验证**:`test_attach_run_detail_*`、`test_run_index_keeps_tool_command_and_result_for_audit`、`test_model_completed_keeps_reply_text_*`。
+- **注意**:旧 run 不会回溯,新 run 起生效(需 worker 更新)。
+
+---
+
+## 2026-08-19 · model.heartbeat 刷屏审计
+
+- **现象**:一次 run 的审计导出里有数百条 `model.heartbeat`(每秒一条),淹没真正的工具/审查/模型事件。
+- **诊断**:heartbeat 是纯 keepalive/计时事件,`_append_run_index` 全部持久化。
+- **修复**:#131 心跳不写入 run_index(SSE 实时流保留,前端计时/进度提示仍用)。
+- **验证**:`test_model_completed_keeps_reply_text_and_heartbeat_skipped_in_run_index`。
+
+---
+
+## 2026-08-19 · 最后一个 shell 失败后误报「Agent 运行失败」(真因:连接断开)
+
+- **现象**:run_4558…(worker 0.3.73)跑多个 shell,最后一个(fc.exe 比较)失败后弹出「Agent 运行失败,请稍后重试。」;worker 侧 task_state 却是 `stopped/user_cancelled`,trace 尾部 `review_failed` 的 `error_type=RunCancelled`。
+- **诊断**:
+  1. fc.exe 非零退出只是工具级失败,不是 run 失败原因。
+  2. 真因:**worker↔api-server WebSocket 连接断开**(16:42:45)。
+  3. api-server 侧:`disconnect → _fail_task("worker_disconnected")` 把任务标 **FAILED** → 前端 `terminalFailureMessage(failed)` → 「Agent 运行失败」。
+  4. worker 侧:连接断 → 自动 `active.cancel(5)` → token 取消 → review 模型调用抛 `RunCancelled` → `review_subagent` 的 `except Exception` **吞掉取消信号**(降级 continue)→ 主循环多跑一轮才取消。
+- **修复**:#132
+  - `review_subagent`:RunCancelled 不再被 except Exception 吞掉(模型调用处 + review 内部工具执行处传播取消)。
+  - api-server:断线任务标 `TaskStatus.INTERRUPTED` + `task.interrupted` 事件 → 前端显示「运行因服务重启或连接中断而终止」而非「Agent 运行失败」。
+- **验证**:pico review_subagent + agent_loop 46 passed;api-server unit 138 passed。断开原因在生产侧,需看生产 api-server 日志(uvicorn 重启时间/worker 断线)。
+
+---
+
+## 附录 A · Badcase → Benchmark 策略
+
+### 分类(按失败环节)
+
+| 类别 | 典型 badcase | 断言什么 | 形态 |
+|---|---|---|---|
+| 收敛/空转 | 只读重叠读空转、纯对话误杀 | `stop_reason`、`tool_steps`、重复判定 | **确定性 harness(进 CI)** |
+| review 门禁 | 只读误杀、取消被吞 | `review_audit`、`review_skipped`、取消传播 | 确定性 harness(进 CI) |
+| 工具边界 | read_file 预算拦截、shell 失败 | 工具可执行、失败不崩 run | 确定性 harness(进 CI) |
+| 协议/展示 | 审计丢字段、心跳刷屏、断线误报 | run_index 字段、task 终止状态 | 单测(进 CI) |
+| 模型行为 | 真模型空转、瞎验收 | 最终工件 + 运行态 | **真模型任务(`real_model: true`,手动/定期)** |
+
+### 两种 benchmark 形态(沿用 `benchmarks/coding_tasks.json` 现有基建)
+
+1. **确定性 harness 任务(`real_model: false`,进 CI)**
+   - FakeModelClient 脚本化模型输出,复现 badcase 的决策序列。
+   - verifier 断言**运行态**而非只断言工件:读 `report.json` / `trace.jsonl`(`checkpoint_id`、`resume_status`、`runtime_identity_mismatch` 事件等,见 context_reduction_checkpoint / workspace_mismatch_resume 先例)。
+   - 本次坏例多数已以单测落地(test_agent_loop / test_planning / test_worker_event_sanitization),如需提升到 benchmark 级,按上述 verifier 模式并入 coding_tasks.json。
+
+2. **真模型任务(`real_model: true`,手动/定期)**
+   - 验证模型在真实 prompt 下不回归(如「只读探索不自证」这类模型行为),跑真实 API,不进 CI。
+   - 用 `run_real_benchmark --min-pass-rate` 门禁 + repetitions 聚合(any/all)。
+
+### 沉淀流程
+
+1. **复现**:把生产 run 的 trace/task_state 抓下来,锁定最小决策序列。
+2. **归因**:定位失败环节(收敛/review/工具/协议/展示/模型)。
+3. **最小断言**:写脚本化单测断言修复后的运行态(优先 CI 单测,快且稳定)。
+4. **提升**:需要防模型回归的 → 加 `real_model: true` 任务,定期跑。
+5. **留痕**:本文件记录现象/诊断/修复,与测试互相引用。

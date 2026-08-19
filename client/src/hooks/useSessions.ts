@@ -607,6 +607,7 @@ export function useSessions(): UseSessions {
           'model.completed': '模型完成',
           'model.retrying': '模型重试',
           'model.protocol_retrying': '协议重试',
+          'model.heartbeat': '模型心跳',
           'review.started': '开始审查',
           'review.completed': '审查完成',
           'tool.requested': '工具请求',
@@ -648,9 +649,6 @@ export function useSessions(): UseSessions {
             ? envelope.data.result_preview
             : undefined,
           result_truncated: envelope.data.result_truncated === true ? true : undefined,
-          text: typeof envelope.data.text === 'string' && envelope.data.text
-            ? envelope.data.text
-            : undefined,
           intent: envelope.data.intent ? String(envelope.data.intent) : undefined,
           step_count: envelope.data.step_count == null ? undefined : Number(envelope.data.step_count),
           status: envelope.status ? String(envelope.status) : envelope.data.status ? String(envelope.data.status) : undefined,

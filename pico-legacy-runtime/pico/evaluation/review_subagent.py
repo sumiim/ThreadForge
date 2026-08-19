@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import time
 
-from ..execution_hooks import RunCancelled
 from ..workspace import clip
 
 REVIEW_POLL_ACTIONS = 6          # 每 N 个工具动作触发一次 review
@@ -231,9 +230,6 @@ def _execute_review_tool(agent, name: str, args) -> str:
         agent.validate_tool(name, args)
         content = tool["run"](args)
         return clip(str(content), 4000)
-    except RunCancelled:
-        # §7.8.9 修正（2026-08-19）：取消信号传播,不当工具错误吞掉。
-        raise
     except Exception as exc:
         return f"error: {type(exc).__name__}: {exc}"
 
@@ -321,11 +317,6 @@ def run_review(
                     agent.execution_hooks, "model_thinking_delta", lambda *_args: None
                 )(task_state, "review", delta),
             )
-        except RunCancelled:
-            # §7.8.9 修正（2026-08-19）：取消信号必须传播——用户停止/连接断开时
-            # review 的模型调用会被取消,若吞成 review_failed 降级 continue,
-            # 取消语义被破坏（主循环还会再跑一轮才取消,白白浪费时间）。
-            raise
         except Exception as exc:
             decision = {
                 "verdict": "continue",
