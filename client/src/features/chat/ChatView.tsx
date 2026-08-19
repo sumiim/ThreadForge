@@ -55,10 +55,6 @@ export default function ChatView({ session, historyStatus, running, isMobile = f
               aria-hidden
             />
             <span className="font-medium text-stone-800">阶段：{phaseLabels[agentProgress.phase] ?? agentProgress.phase}</span>
-            <span className="ml-auto text-stone-400">
-              工具 {agentProgress.toolSteps}/{agentProgress.maxToolSteps || '-'}
-              {' · '}读取 {agentProgress.readFiles}/{agentProgress.maxReadFiles || '-'}
-            </span>
           </div>
           {agentProgress.nextStep ? <div className="mt-1 truncate text-stone-500">下一步：{agentProgress.nextStep}</div> : null}
           {agentProgress.reason === 'post_tool_waiting' ? (
