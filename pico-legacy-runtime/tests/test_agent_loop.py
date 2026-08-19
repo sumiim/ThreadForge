@@ -407,7 +407,7 @@ def test_agent_loop_repeated_actions_do_not_pollute_repeat_window(tmp_path):
 
 
 def test_repeated_final_rejected_converges_with_rejected_finals(tmp_path):
-    """有工具 evidence 后连续 2 次 final 被 review redirect → 程序强制收敛。
+    """只读任务的 final 不再进入 Review 驳回循环。
 
     §7.8.9 修正（2026-08-18）：纯语言空转（模型反复 final 但 review 拒）不能烧到
     步数上限，连续 2 轮即收敛；被拒的 final 存 rejected_finals，收敛时拼进 best-effort。
@@ -431,13 +431,10 @@ def test_repeated_final_rejected_converges_with_rejected_finals(tmp_path):
     answer = AgentLoop(agent).run("你是谁")
 
     state = agent.current_task_state
-    # 收敛：stopped（非 blocked），且输出包含被拒候选内容
-    assert state.status == "stopped"
-    assert state.stop_reason == "step_limit_reached"
-    assert "候选回答一" in answer
-    assert "候选回答二" in answer
-    # rejected_finals 独立于 evidence 存储（不污染 evidence 计数）
-    assert len(state.rejected_finals) == 2
+    assert state.status == "completed"
+    assert answer == "候选回答一：我根据记忆回答。"
+    assert state.review_audit == []
+    assert state.rejected_finals == []
 
 
 def test_pure_conversation_final_passes_without_tools(tmp_path):
@@ -464,7 +461,7 @@ def test_pure_conversation_final_passes_without_tools(tmp_path):
 
 
 def test_convergence_summarizes_rejected_finals(tmp_path):
-    """§7.8.9 决策（2026-08-19）：截断兜底——有候选时模型总结成连贯输出。
+    """只读任务不调用 Review，总结器不会吞掉正常终答。
 
     收敛触发时,_convergence_summary 让模型基于 rejected_finals + evidence 生成
     总结（而非 raw 拼候选列表）。
@@ -486,13 +483,10 @@ def test_convergence_summarizes_rejected_finals(tmp_path):
     answer = AgentLoop(agent).run("你是谁")
 
     state = agent.current_task_state
-    assert state.status == "stopped"
-    # 收敛输出是模型总结后的连贯回答,而非 raw 候选列表
-    assert "总结后的最终回答" in answer
-    assert "v1" in answer
-    assert len(state.rejected_finals) == 2
-    assert all(item["status"] == "final_rejected" for item in state.rejected_finals)
-    # evidence 只有 read_file 一条（不被被拒 final 污染）
+    assert state.status == "completed"
+    assert answer == "候选回答一"
+    assert state.review_audit == []
+    assert state.rejected_finals == []
     assert len(state.evidence) == 1
 
 
@@ -526,15 +520,13 @@ def test_tooled_final_rejected_does_not_trigger_quick_convergence(tmp_path):
         feature_flags={"review_subagent": True},
     )
 
-    answer = AgentLoop(agent).run("改 a.txt")
+    answer = AgentLoop(agent).run("读取 a.txt")
 
     state = agent.current_task_state
-    # 有工具被拒 2 次不触发快速收敛 → 正常继续到第 3 轮通过
     assert state.status == "completed"
-    assert answer == "最终通过"
-    # 被拒的 final 仍存 rejected_finals（记录候选，但没触发快速收敛）
-    assert len(state.rejected_finals) == 2
-    # 首次 read 记 evidence；后两次 read 是重复（被拦）不新增
+    assert answer == "回答一（有工具）"
+    assert state.review_audit == []
+    assert state.rejected_finals == []
     assert len(state.evidence) == 1
 
 
@@ -561,14 +553,13 @@ def test_dual_confirmation_main_loop_rebuts_with_tool(tmp_path):
 
     answer = AgentLoop(agent).run("inspect a.txt")
 
-    assert answer == "answer final"
+    assert answer == "answer one"
     assert agent.current_task_state.status == "completed"
-    # 主循环用工具反驳过 review 的同意（review_audit 含 3 次 review：agree → redirect 后重判 → 确认）
-    assert len(agent.current_task_state.review_audit) == 3
+    assert agent.current_task_state.review_audit == []
 
 
 def test_redirect_tracking_converges_after_two_rejects(tmp_path):
-    """§7.8.9 redirect 跟踪：review 连续 2 次 redirect（模型未收敛）→ 程序强制收敛。
+    """只读探索不触发 Review redirect 跟踪。
 
     action_poll review#1 redirect → interval 6→3 提前复查；再 3 动作后 review#2
     redirect → tracking_rejects=2 → 强制收敛（review_tracking_converged），
@@ -590,8 +581,8 @@ def test_redirect_tracking_converges_after_two_rejects(tmp_path):
     state = agent.current_task_state
     assert state.status in {"stopped", "blocked"}
     trace = agent.run_store.trace_path(state).read_text(encoding="utf-8")
-    assert '"event": "review_tracking_converged"' in trace
-    assert "运行中断" in answer or "停滞收敛" in answer
+    assert '"event": "review_completed"' not in trace
+    assert '"event": "review_skipped"' in trace
 
 
 def test_review_can_list_files_for_direction_check(tmp_path):
@@ -618,12 +609,10 @@ def test_review_can_list_files_for_direction_check(tmp_path):
 
     answer = AgentLoop(agent).run("inspect")
 
-    assert answer == "found"
+    assert answer == "ok"
     state = agent.current_task_state
     assert state.status == "completed"
-    first = state.review_audit[0]
-    assert first["verdict"] == "redirect"
-    assert first.get("tool_rounds", 0) >= 1  # review 内部跑过 list_files 实证
+    assert state.review_audit == []
 
 
 def test_result_fingerprint_distinguishes_changed_file_reload(tmp_path):
@@ -644,6 +633,25 @@ def test_result_fingerprint_distinguishes_changed_file_reload(tmp_path):
     # 无结果指纹（shell/写）→ 只看动作
     assert _tool_call_repeats("run_shell", {"command": "ls"}, None, window) is False  # 工具不同
     assert _tool_call_repeats("read_file", {"path": "a.txt", "start": 1, "end": 1}, None, window) is True
+
+
+def test_overlapping_read_is_rejected_before_execution(tmp_path):
+    """部分重叠的 read_file 区间在执行前拦截，避免重复工具卡片和空转。"""
+    (tmp_path / "a.txt").write_text("\n".join(f"line {i}" for i in range(1, 101)), encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"read_file","args":{"path":"a.txt","start":1,"end":80}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"a.txt","start":20,"end":70}}</tool>',
+            "<final>done</final>",
+        ],
+    )
+
+    assert AgentLoop(agent).run("inspect a.txt") == "done"
+    state = agent.current_task_state
+    trace = agent.run_store.trace_path(state).read_text(encoding="utf-8")
+    assert '"event": "tool_rejected_repeat"' in trace
+    assert state.read_files == 1
 
 
 def test_result_fingerprint_partial_overlap_read_counts_as_repeat():

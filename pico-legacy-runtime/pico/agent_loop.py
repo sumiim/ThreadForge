@@ -534,6 +534,19 @@ class AgentLoop:
         feature flag `review_subagent` 关闭时跳过（阶段推进中；测试用
         FakeModelClient 不开启，避免 review 消费其顺序输出）。
         """
+        # 只读任务不需要 Review 门禁。重复动作和停滞窗口仍然负责收敛，
+        # 但不会再额外消耗模型回合或因方向审查误驳回正常答案。
+        if not has_write_or_shell:
+            self.agent.emit_trace(
+                task_state,
+                "review_skipped",
+                {"trigger": trigger, "reason": "read_only_task"},
+            )
+            return {
+                "verdict": "finalize",
+                "feedback": "read-only task does not require review",
+                "reason": "review_skipped_read_only",
+            }
         if not self.agent.feature_enabled("review_subagent"):
             return {
                 "verdict": "continue",
@@ -661,19 +674,24 @@ class AgentLoop:
         """
         agent = self.agent
         agent.emit_progress(f"step {attempts}: running tool {name}")
-        # P4 重复动作执行前拦截：只对非只读工具（shell/写）生效——只读工具
-        # 的结果可能已变（文件被改，重读合理），执行前无法预知，放行后由
-        # 执行后判定（结果参与）决定是否算重复/坏轮。
-        pre_repeat = (
-            _tool_call_repeats(
+        # P4 重复动作执行前拦截：部分重叠的 read_file 区间已经可以确定
+        # 是同一区域空转，因此直接拦截；完全相同区间仍在执行后比较结果，
+        # 避免文件在两次读取之间变化时误伤。
+        if name == "read_file":
+            current_fp = _tool_fingerprint(name, args)
+            pre_repeat = any(
+                previous_fp[0] == "read_file"
+                and _tool_fingerprints_match(current_fp, previous_fp)
+                and current_fp[2] != previous_fp[2]
+                for previous_fp, _ in tuple(recent_tool_fps)
+            )
+        else:
+            pre_repeat = _tool_call_repeats(
                 name,
                 args,
                 None,
                 tuple(recent_tool_fps),
             )
-            if name not in _READ_ONLY_TOOL_NAMES
-            else False
-        )
         if pre_repeat:
             tool_result = ToolExecutionResult(
                 content=(
@@ -1367,17 +1385,33 @@ class AgentLoop:
             )
 
             if finalization_only and kind != "final":
-                task_state.record_malformed_output_recovered()
-                agent.emit_trace(
-                    task_state,
-                    "finalization_protocol_rejected",
-                    {
-                        "kind": kind,
-                        "error_code": "stagnation_finalization",
-                        "tool_steps": tool_steps,
-                    },
-                )
-                break
+                # 收尾轮已经禁用了工具。只读任务的模型有时会返回普通文本，
+                # 而不是再次包裹 <final>；此时文本本身就是可展示的终答，不能
+                # 因协议外壳缺失把已经收集到的证据丢成 blocked。
+                raw_text = str(raw or "").strip()
+                action_markers = ("<tool", "<retry", "<talk", '"name"', '"tools"')
+                if not has_write_or_shell and raw_text and not any(
+                    marker in raw_text for marker in action_markers
+                ):
+                    kind = "final"
+                    payload = raw_text
+                    agent.emit_trace(
+                        task_state,
+                        "finalization_plain_text_accepted",
+                        {"tool_steps": tool_steps},
+                    )
+                else:
+                    task_state.record_malformed_output_recovered()
+                    agent.emit_trace(
+                        task_state,
+                        "finalization_protocol_rejected",
+                        {
+                            "kind": kind,
+                            "error_code": "stagnation_finalization",
+                            "tool_steps": tool_steps,
+                        },
+                    )
+                    break
 
             if kind == "talk":
                 # §7.8.9：talk 是思考信号（trace + 前端 commentary 可见），
@@ -1804,7 +1838,10 @@ class AgentLoop:
                 # finalize/continue → review 同意或无异议 → 双方同意,放行。
                 awaiting_review_confirmation = False
                 pending_review_decision = None
-            elif review_decision.get("reason") == "review_subagent_disabled" or review_decision.get("review_failed"):
+            elif review_decision.get("reason") in {
+                "review_subagent_disabled",
+                "review_skipped_read_only",
+            } or review_decision.get("review_failed"):
                 # review 未启用（测试/降级）或模型调用失败——按原语义直接放行,
                 # 不强制双向确认（避免 review 故障把 run 卡死）。
                 awaiting_review_confirmation = False
