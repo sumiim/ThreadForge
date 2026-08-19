@@ -2219,6 +2219,10 @@ def _clear_local_task_content(task):
 
 def _append_run_index(task, event: dict, data: dict):
     event_type = str(event.get("type", ""))
+    # §7.8.9 决策（2026-08-19）：model.heartbeat 不写入运行审计——心跳每秒一条,
+    # 纯 keepalive/计时用途,持久化几百条会淹没真正的工具/审查/模型事件。
+    if event_type == "model.heartbeat":
+        return task
     labels = {
         "plan.created": "计划已创建",
         "plan.skipped": "直接回答",
@@ -2298,6 +2302,10 @@ def _append_run_index(task, event: dict, data: dict):
                 and not isinstance(value, bool)
                 and value >= 0
             }
+        # §7.8.9 决策（2026-08-19）：模型回复进审计。
+        text = str(data.get("text", ""))[:4000]
+        if text:
+            item["text"] = text
     elif event_type == "plan.created":
         item["intent"] = str(data.get("intent", ""))[:32]
         item["step_count"] = _nonnegative_int(data.get("step_count", 0))
@@ -2387,6 +2395,8 @@ def _sanitize_event_data(event_type: str, data: dict) -> dict:
             "round_id": str(data.get("round_id", ""))[:64],
             "started_at": str(data.get("started_at", ""))[:64],
             "ended_at": str(data.get("ended_at", ""))[:64],
+            # §7.8.9 决策（2026-08-19）：本轮模型回复进审计（已脱敏,截断）。
+            "text": redact_artifact(str(data.get("text", ""))[:4000]),
         }
     if event_type == "model.started":
         return {

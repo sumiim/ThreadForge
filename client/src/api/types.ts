@@ -315,6 +315,8 @@ export interface RunIndexItem {
   result_preview?: string
   /** 结果预览是否被截断。 */
   result_truncated?: boolean
+  /** 模型回复 / 思考正文（model.completed 的本轮输出、assistant.thinking）。 */
+  text?: string
   intent?: string
   step_count?: number
   status?: string
