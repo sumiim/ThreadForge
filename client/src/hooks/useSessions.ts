@@ -118,10 +118,18 @@ function appendReviewEntry(blocks: MessageBlock[] | undefined, entry: ReviewBatt
 function appendReviewThinking(blocks: MessageBlock[] | undefined, text: string): MessageBlock[] {
   const list = blocks ?? []
   const last = list[list.length - 1]
-  if (last && last.kind === 'review') {
+  // §7.8.9 修正：thinking 只累积到「未完成(entries 为空)」的激活 review 块——
+  // 已 completed 的块（entries 非空）另起新块,避免多次 review 的思考堆叠错位。
+  if (last && last.kind === 'review' && last.entries.length === 0) {
     return [...list.slice(0, -1), { ...last, thinking: `${last.thinking ?? ''}${text}` }]
   }
   return [...list, { kind: 'review', entries: [], thinking: text }]
+}
+
+/** 是否存在「未完成(entries 为空)」的激活 review 块（thinking 已累积,等 completed 塞结果）。 */
+function hasPendingReviewBlock(blocks: MessageBlock[] | undefined): boolean {
+  const last = (blocks ?? [])[blocks?.length ? blocks.length - 1 : -1]
+  return Boolean(last && last.kind === 'review' && last.entries.length === 0)
 }
 
 let idCounter = 0
@@ -913,7 +921,12 @@ export function useSessions(): UseSessions {
             }
             updateSessionMessages(sessionId, (messages) => messages.map((message) =>
               message.id === assistantId
-                ? { ...message, blocks: appendReviewBlock(message.blocks, entry) }
+                ? {
+                    ...message,
+                    blocks: hasPendingReviewBlock(message.blocks)
+                      ? appendReviewEntry(message.blocks, entry)
+                      : appendReviewBlock(message.blocks, entry),
+                  }
                 : message,
             ))
             updateProgress(sessionId, (progress) => progress ? { ...progress, nextStep: `审查结果：${verdict || String(data.status ?? '')}` } : progress)
