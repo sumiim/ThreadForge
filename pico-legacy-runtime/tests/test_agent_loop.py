@@ -589,6 +589,51 @@ def test_result_fingerprint_distinguishes_changed_file_reload(tmp_path):
     assert _tool_call_repeats("read_file", {"path": "a.txt", "start": 1, "end": 1}, None, window) is True
 
 
+def test_result_fingerprint_partial_overlap_read_counts_as_repeat():
+    """§7.8.9 修正（2026-08-19）：read_file 部分重叠区间（区间不同但重叠 ≥60%）
+    直接判重复——区间微调绕不过重复判定。
+
+    1-250 → 20-200 → 38-200：结果 hash 因区间不同必然不同,若用结果指纹豁免,
+    每次都是「新读取」,重叠读取空转不被识别。部分重叠区间不看结果,直接判重复。
+    """
+    from pico.agent_loop import _tool_call_repeats
+
+    # 窗口：read_file(a.txt, 1-250) + 结果 hash "h1"
+    window = [(("read_file", "a.txt", (1, 250)), "h1")]
+
+    # 20-200：区间重叠 ≥60%、区间不同 → 即使结果 hash 不同也算重复（区间微调 = 空转）
+    assert _tool_call_repeats("read_file", {"path": "a.txt", "start": 20, "end": 200}, "h2", window) is True
+    # 完全同区间 + 结果变（文件被改）→ 不重复（重读合理）
+    assert _tool_call_repeats("read_file", {"path": "a.txt", "start": 1, "end": 250}, "h2", window) is False
+    # 完全不重叠区间 → 不重复（读不同区段是新的）
+    assert _tool_call_repeats("read_file", {"path": "a.txt", "start": 500, "end": 600}, "h1", window) is False
+
+
+def test_agent_loop_partial_overlap_read_counts_once(tmp_path):
+    """§7.8.9 修正（2026-08-19）：重叠区间读取被判重复 → read_files 只计第一次。
+
+    模型 1-250 → 20-200 → 38-200 同一文件重叠读取：后两次判重复被拦,
+    read_files 不重复计,坏轮窗口能识别这种空转。
+    """
+    (tmp_path / "a.txt").write_text("\n".join(f"line {index}" for index in range(1, 300)), encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"read_file","args":{"path":"a.txt","start":1,"end":250}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"a.txt","start":20,"end":200}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"a.txt","start":38,"end":200}}</tool>',
+            "<final>done</final>",
+        ],
+        max_steps=6,
+    )
+
+    answer = AgentLoop(agent).run("Inspect a.txt")
+
+    assert answer == "done"
+    state = agent.current_task_state
+    assert state.read_files == 1  # 只有第一次读取计数；重叠读取判重复不计
+
+
 def test_partition_batch_tools(tmp_path):
     """§7.8.9 P5：批内分区纯函数——并发组 vs 串行组判定。
 
