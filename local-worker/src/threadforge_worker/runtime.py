@@ -564,6 +564,9 @@ class RemoteAgentStateSink(EventSink):
             "plan_skipped": "plan.skipped",
             "review_started": "review.started",
             "review_completed": "review.completed",
+            # §7.8.9 决策（2026-08-19）：只读任务 review 跳过也上报——审计/对话
+            # 能明确看到「审查已跳过（只读任务）」，而不是没有任何审查痕迹。
+            "review_skipped": "review.skipped",
         }.get(event_type)
         if public_type:
             self._send_event(public_type, dict(payload))

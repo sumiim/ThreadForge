@@ -308,8 +308,11 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
             ),
           )
         ) : (
-          // 历史消息（无 blocks）回退：行为 + 顶层 commentary。
+          // 历史消息（无 blocks）回退：行为 + 审查对抗 + 顶层 commentary。
           <>
+            {message.reviewEntries && message.reviewEntries.length > 0 ? (
+              <ReviewBattle entries={message.reviewEntries} />
+            ) : null}
             <BehaviorFold
               thinking={message.thinking}
               toolCalls={message.toolCalls ?? []}

@@ -42,6 +42,94 @@ def _clip(text: str, limit: int) -> str:
     return text[: limit - 1] + "…"
 
 
+def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dict]:
+    """§7.8.9 决策（2026-08-19）：对话历史回放——把运行审计还原挂到 assistant 消息。
+
+    工具卡（参数/结果）、thinking、审查对抗（verdict/feedback/反驳）只存在于
+    前端内存的流式状态里，刷新即丢。这里从持久化的 ``run_index`` 重建这三类
+    内容，挂到对应 assistant 消息上，让历史对话也能看到工具使用与审查过程。
+    任务 ↔ 消息按时间顺序从尾部配对（历史可能被 message_limit 裁掉头部）。
+    """
+    if not messages or not task_items:
+        return messages
+    assistant_indices = [index for index, item in enumerate(messages) if item.get("role") == "assistant"]
+    tasks = sorted(task_items, key=lambda task: str(task.get("created_at", "")))
+    pairs = list(zip(reversed(assistant_indices), reversed(tasks)))
+    for message_index, task in pairs:
+        run = task.get("run_index") or []
+        if not run:
+            continue
+        tool_by_id: dict[str, dict] = {}
+        tool_calls: list[dict] = []
+        thinking_parts: list[str] = []
+        review_entries: list[dict] = []
+        review_skipped = False
+        for item in run:
+            event_type = str(item.get("type", ""))
+            if event_type == "tool.requested":
+                call = {
+                    "id": str(item.get("tool_call_id", "")),
+                    "tool_name": str(item.get("tool_name", "")),
+                    "args": item.get("args_preview"),
+                    "status": "completed",
+                }
+                tool_by_id[call["id"]] = call
+                tool_calls.append(call)
+            elif event_type in {"tool.completed", "tool.failed"}:
+                call = tool_by_id.get(str(item.get("tool_call_id", "")))
+                if call is None:
+                    continue
+                result = item.get("result_preview")
+                if isinstance(result, str) and result:
+                    call["result"] = result + ("\n\n[预览已截断]" if item.get("result_truncated") else "")
+                call["status"] = "error" if event_type == "tool.failed" else "completed"
+            elif event_type == "assistant.thinking":
+                text = str(item.get("text", "")).strip()
+                if text:
+                    thinking_parts.append(text)
+            elif event_type == "review.started":
+                review_entries.append({"side": "review", "action": str(item.get("trigger", ""))})
+            elif event_type == "review.completed":
+                review_entries.append(
+                    {
+                        "side": "review",
+                        "verdict": str(item.get("verdict", "")) or None,
+                        "feedback": item.get("feedback"),
+                        "reason": item.get("reason"),
+                        "obstacles": item.get("obstacles") or None,
+                    }
+                )
+            elif event_type == "main_loop_rebuttal":
+                review_entries.append(
+                    {
+                        "side": "main_loop",
+                        "against_verdict": item.get("against_verdict"),
+                        "action": item.get("action"),
+                        "feedback": item.get("feedback"),
+                    }
+                )
+            elif event_type == "review.skipped":
+                review_skipped = True
+        if review_skipped and not review_entries:
+            review_entries.append(
+                {
+                    "side": "review",
+                    "verdict": "skipped",
+                    "feedback": "只读任务,审查已跳过(重复动作/停滞窗口仍负责收敛)",
+                    "reason": str(item.get("reason", "")) if item.get("reason") else "read_only_task",
+                }
+            )
+        message = dict(messages[message_index])
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+        if thinking_parts:
+            message["thinking"] = "\n".join(thinking_parts)
+        if review_entries:
+            message["review_entries"] = review_entries
+        messages[message_index] = message
+    return messages
+
+
 class SessionService:
     def __init__(
         self,
@@ -234,6 +322,7 @@ class SessionService:
                 for item in recent
             ]
             message_total = len(history)
+        messages = _attach_run_detail(messages, task_items)
         return {
             "session_id": session.get("id"),
             "workspace_id": session.get("workspace_id"),

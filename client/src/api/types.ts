@@ -195,6 +195,26 @@ export interface SessionMessage {
   name: string
   content: string
   created_at: string
+  /** §7.8.9 决策（2026-08-19）：历史回放——该消息对应运行累积的思考文本。 */
+  thinking?: string
+  /** §7.8.9 决策（2026-08-19）：历史回放——该消息对应运行的工具卡（参数/结果）。 */
+  tool_calls?: Array<{
+    id: string
+    tool_name: string
+    args?: Record<string, unknown> | null
+    result?: string
+    status?: string
+  }>
+  /** §7.8.9 决策（2026-08-19）：历史回放——审查对抗回合（含只读跳过）。 */
+  review_entries?: Array<{
+    side: 'review' | 'main_loop'
+    verdict?: string | null
+    feedback?: string | null
+    reason?: string | null
+    obstacles?: string[] | null
+    action?: string | null
+    against_verdict?: string | null
+  }>
 }
 
 export interface SessionTask {
@@ -465,6 +485,8 @@ export interface Message {
    */
   blocks?: MessageBlock[]
   activity?: AgentActivity[]
+  /** §7.8.9 决策（2026-08-19）：历史回放——审查对抗回合（服务端从 run_index 还原）。 */
+  reviewEntries?: ReviewBattleEntry[]
   runId?: string
   status?: 'streaming' | 'done' // assistant 消息运行状态
 }
@@ -480,7 +502,7 @@ export interface ReviewBattleEntry {
   side: 'review' | 'main_loop'
   /** §7.8.9 决策：review 内部推理（assistant.thinking stage=review 累积）,审查块内展开 */
   thinking?: string
-  verdict?: 'finalize' | 'redirect' | 'continue'
+  verdict?: 'finalize' | 'redirect' | 'continue' | 'skipped'
   feedback?: string
   reason?: string
   obstacles?: string[]

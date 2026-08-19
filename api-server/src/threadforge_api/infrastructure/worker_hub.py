@@ -70,6 +70,7 @@ _PUBLIC_WORKER_EVENTS = {
     "assistant.commentary",
     "review.started",
     "review.completed",
+    "review.skipped",
     "main_loop_rebuttal",
 }
 _WORKSPACE_ID = re.compile(r"^ws_[a-f0-9]{32}$")
@@ -2222,12 +2223,16 @@ def _append_run_index(task, event: dict, data: dict):
         "plan.created": "计划已创建",
         "plan.skipped": "直接回答",
         "assistant.commentary": "过程更新",
+        "assistant.thinking": "思考",
         "model.started": "模型请求",
         "model.completed": "模型完成",
         "model.retrying": "模型重试",
         "model.protocol_retrying": "协议重试",
+        "model.heartbeat": "模型心跳",
         "review.started": "开始审查",
         "review.completed": "审查完成",
+        "review.skipped": "审查跳过",
+        "main_loop_rebuttal": "主循环反驳",
         "tool.requested": "工具请求",
         "tool.started": "工具开始",
         "tool.completed": "工具完成",
@@ -2296,8 +2301,35 @@ def _append_run_index(task, event: dict, data: dict):
     elif event_type == "plan.created":
         item["intent"] = str(data.get("intent", ""))[:32]
         item["step_count"] = _nonnegative_int(data.get("step_count", 0))
+    elif event_type == "assistant.thinking":
+        # §7.8.9 决策（2026-08-19）：thinking 持久化——对话回放/审计可看思考过程。
+        text = str(data.get("text", ""))[:4000]
+        if text:
+            item["text"] = text
+    elif event_type == "review.started":
+        item["trigger"] = str(data.get("trigger", ""))[:32]
     elif event_type == "review.completed":
-        item["status"] = str(data.get("status", ""))[:32]
+        # §7.8.9 决策（2026-08-19）：审查对抗明细持久化——verdict/feedback/
+        # obstacles/reason 写进运行审计，前端可回放「谁判了什么、为什么」。
+        item["verdict"] = str(data.get("verdict", ""))[:32]
+        feedback = str(data.get("feedback", ""))[:500]
+        if feedback:
+            item["feedback"] = feedback
+        item["reason"] = str(data.get("reason", ""))[:100]
+        obstacles = data.get("obstacles", [])
+        if isinstance(obstacles, list):
+            item["obstacles"] = [str(item)[:100] for item in obstacles[:10]]
+        item["tool_rounds"] = _nonnegative_int(data.get("tool_rounds", 0))
+    elif event_type == "review.skipped":
+        # §7.8.9 决策（2026-08-19）：只读任务 review 跳过——审计留痕避免
+        # 「没有审查提示」的误解。
+        item["reason"] = str(data.get("reason", ""))[:100]
+    elif event_type == "main_loop_rebuttal":
+        item["against_verdict"] = str(data.get("against_verdict", ""))[:32]
+        item["action"] = str(data.get("action", ""))[:100]
+        feedback = str(data.get("feedback", ""))[:500]
+        if feedback:
+            item["feedback"] = feedback
     elif event_type.startswith("task."):
         item["status"] = event_type.removeprefix("task.")[:32]
     task.run_index = [*task.run_index[-499:], item]
@@ -2462,7 +2494,10 @@ def _sanitize_event_data(event_type: str, data: dict) -> dict:
             }
         )
     if event_type == "review.started":
-        return {"attempt": _nonnegative_int(data.get("attempt", 0))}
+        return {"attempt": _nonnegative_int(data.get("attempt", 0)), "trigger": str(data.get("trigger", ""))[:32]}
+    if event_type == "review.skipped":
+        # §7.8.9 决策（2026-08-19）：只读任务 review 跳过——reason 透传留痕。
+        return {"reason": str(data.get("reason", ""))[:100]}
     if event_type == "review.completed":
         return redact_artifact(
             {

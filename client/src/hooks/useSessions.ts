@@ -1223,6 +1223,22 @@ export function useSessions(): UseSessions {
             content: m.content,
             createdAt: m.created_at,
             status: 'done' as const,
+            thinking: m.thinking,
+            toolCalls: m.tool_calls?.map((tool) => ({
+              id: tool.id,
+              toolName: tool.tool_name,
+              args: tool.args ?? undefined,
+              result: tool.result,
+              status: (tool.status === 'error' ? 'error' : 'completed') as ToolCall['status'],
+            })),
+            reviewEntries: m.review_entries?.map((entry) => ({
+              side: entry.side,
+              verdict: (entry.verdict as ReviewBattleEntry['verdict']) ?? undefined,
+              feedback: entry.feedback ?? undefined,
+              reason: entry.reason ?? undefined,
+              obstacles: entry.obstacles ?? undefined,
+              action: entry.action ?? undefined,
+            })),
           }))
         const lastTask = getLatestTask(detail.tasks)
         const runs: SessionRun[] = detail.tasks
