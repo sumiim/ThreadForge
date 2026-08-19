@@ -2248,6 +2248,7 @@ def _append_run_index(task, event: dict, data: dict):
         "tool.failed": "工具失败",
         "approval.required": "等待审批",
         "approval.resolved": "审批完成",
+        "message.completed": "最终回答",
         "task.completed": "运行完成",
         "task.cancelled": "运行已取消",
         "task.failed": "运行失败",
@@ -2314,6 +2315,11 @@ def _append_run_index(task, event: dict, data: dict):
     elif event_type == "plan.created":
         item["intent"] = str(data.get("intent", ""))[:32]
         item["step_count"] = _nonnegative_int(data.get("step_count", 0))
+    elif event_type == "message.completed":
+        # §7.8.9 修正（2026-08-19）：终答进审计——message.completed 带最终回答文本。
+        text = str(data.get("text", ""))[:4000]
+        if text:
+            item["text"] = text
     elif event_type == "assistant.thinking":
         # §7.8.9 决策（2026-08-19）：thinking 持久化——对话回放/审计可看思考过程。
         text = str(data.get("text", ""))[:4000]
@@ -2468,6 +2474,9 @@ def _sanitize_event_data(event_type: str, data: dict) -> dict:
         return {"text": redact_artifact(str(data.get("text", ""))[:4000])}
     if event_type == "assistant.commentary":
         return {"text": redact_artifact(str(data.get("text", ""))[:1000])}
+    if event_type == "message.completed":
+        # §7.8.9 修正（2026-08-19）：终答文本透传（脱敏截断）,进审计/前端。
+        return {"text": redact_artifact(str(data.get("text", ""))[:4000])}
     if event_type == "plan.created":
         raw_steps = data.get("steps", [])
         steps = []
