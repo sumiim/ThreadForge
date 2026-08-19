@@ -55,6 +55,34 @@ def test_agent_loop_allows_final_after_tool(tmp_path):
     assert "tool-call budget is exhausted" not in agent.model_client.prompts[-1]
 
 
+def test_read_file_budget_no_longer_blocks_reads(tmp_path):
+    """§7.8.9 修正（2026-08-19）：移除 read_file 预算硬顶。
+
+    空转由重复动作拦截 + 墙钟/token 硬顶兜底；max_read_files 只计数不再拦截。
+    max_read_files=2 时第 3 个不同文件仍可正常读取（不同路径不判重复）。
+    """
+    for index in range(3):
+        (tmp_path / f"f{index}.txt").write_text(f"content {index}\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"read_file","args":{"path":"f0.txt","start":1,"end":1}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"f1.txt","start":1,"end":1}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"f2.txt","start":1,"end":1}}</tool>',
+            "<final>three files read</final>",
+        ],
+        max_read_files=2,
+    )
+
+    answer = AgentLoop(agent).run("Read three files")
+
+    assert answer == "three files read"
+    state = agent.current_task_state
+    assert state.status == "completed"
+    assert state.read_files == 3  # 超过 max_read_files 仍成功
+    assert all("budget" not in str(item) for item in state.evidence)
+
+
 def test_agent_loop_rejects_tool_during_stagnation_finalization(tmp_path):
     """§7.8.9 决策（2026-08-18）：无 max_steps 硬顶——finalization 只由证据截停触发。
 

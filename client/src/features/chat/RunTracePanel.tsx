@@ -300,6 +300,15 @@ export default function RunTracePanel({ open, session, activeRunId, provider, on
                         <dt className="text-stone-400">参数</dt><dd className="break-all font-mono text-[10px] text-stone-700">{JSON.stringify(selectedEvent.args_preview)}</dd>
                       </>
                     ) : null}
+                    {selectedEvent.result_preview ? (
+                      <>
+                        <dt className="text-stone-400">结果</dt>
+                        <dd className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded border border-stone-200/70 bg-stone-50 p-1.5 font-mono text-[10px] leading-relaxed text-stone-700">
+                          {selectedEvent.result_preview}
+                          {selectedEvent.result_truncated ? '\n\n[预览已截断]' : ''}
+                        </dd>
+                      </>
+                    ) : null}
                     <dt className="text-stone-400">Attempt</dt><dd className="text-stone-700">{selectedEvent.attempt ?? '—'}</dd>
                   </dl>
                   <div>

@@ -715,19 +715,9 @@ class AgentLoop:
                     "error_code": "repeated_identical_call",
                 },
             )
-        elif name == "read_file" and task_state.read_files >= task_state.max_read_files:
-            tool_result = ToolExecutionResult(
-                content=(
-                    f"error: read_file budget exhausted ({task_state.max_read_files}); "
-                    "use the existing evidence or return a final answer"
-                ),
-                metadata={
-                    "tool_status": "rejected",
-                    "tool_error_code": "read_file_budget_exhausted",
-                    "read_only": True,
-                    "affected_paths": [],
-                },
-            )
+        # §7.8.9 修正（2026-08-19）：移除 read_file 预算硬顶——空转已由重复
+        # 动作拦截（含部分重叠区间直接判重复）+ 墙钟/token 硬顶兜底，只读任务
+        # 不再需要 4 次读取上限；read_files 仍计数供显示/审计。
         else:
             tool_result = agent.execute_tool(name, args, tool_call_id=tool_call_id)
         if defer_commit:

@@ -56,7 +56,8 @@ def test_read_only_tool_events_publish_allowlisted_previews():
     assert publisher.events[-1]["data"]["result_preview"] == "# README.md\nhello"
 
 
-def test_shell_tool_events_hide_arguments_but_publish_result_preview():
+def test_shell_tool_events_publish_command_and_result_preview():
+    # §7.8.9 决策（2026-08-19）：审批/审计需要看到 run_shell 具体命令。
     publisher, boundary = _boundary()
 
     boundary.tool_requested(
@@ -66,7 +67,7 @@ def test_shell_tool_events_hide_arguments_but_publish_result_preview():
     boundary.before_tool(None, {"id": "call_shell", "name": "run_shell"})
     boundary.after_tool(None, ToolExecutionResult(content="private output", metadata={}))
 
-    assert "args_preview" not in publisher.events[0]["data"]
+    assert publisher.events[0]["data"]["args_preview"] == {"command": "echo private"}
     assert publisher.events[-1]["data"]["result_preview"] == "private output"
 
 

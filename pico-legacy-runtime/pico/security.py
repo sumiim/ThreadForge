@@ -7,7 +7,10 @@ REDACTED_VALUE = "<redacted>"
 
 # Read-only tool previews are useful in the Web/Desktop timeline, but the
 # Worker must never stream unrestricted command arguments or full file contents.
+# 参数预览工具集：只读工具 + run_shell（§7.8.9 决策 2026-08-19——审计/审批需要
+# 看到 run_shell 的具体命令，脱敏 + 限长后放行 command 字段）。
 PUBLIC_READ_ONLY_TOOLS = frozenset({"list_files", "read_file", "search", "delegate"})
+PUBLIC_TOOL_ARG_TOOLS = PUBLIC_READ_ONLY_TOOLS | {"run_shell"}
 PUBLIC_TOOL_RESULT_TOOLS = PUBLIC_READ_ONLY_TOOLS | {"run_shell"}
 PUBLIC_TOOL_RESULT_MAX_CHARS = 8000
 PUBLIC_TOOL_ARG_MAX_CHARS = 1200
@@ -17,6 +20,7 @@ _PUBLIC_TOOL_ARG_FIELDS = {
     "read_file": ("path", "start", "end"),
     "search": ("pattern", "path"),
     "delegate": ("task", "max_steps"),
+    "run_shell": ("command",),
 }
 
 
@@ -109,8 +113,8 @@ def _clip_public_text(value, limit):
 
 
 def public_tool_args_preview(tool_name, args):
-    """Return bounded, allowlisted arguments for a read-only tool event."""
-    if str(tool_name) not in PUBLIC_READ_ONLY_TOOLS or not isinstance(args, dict):
+    """Return bounded, allowlisted arguments for a tool event."""
+    if str(tool_name) not in PUBLIC_TOOL_ARG_TOOLS or not isinstance(args, dict):
         return {}
     result = {}
     for field in _PUBLIC_TOOL_ARG_FIELDS[str(tool_name)]:

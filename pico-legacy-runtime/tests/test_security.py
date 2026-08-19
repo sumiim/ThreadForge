@@ -68,6 +68,18 @@ def test_public_tool_args_preview_allowlists_read_only_fields():
     assert preview == {"path": "README.md", "start": 2, "end": 8}
 
 
+def test_public_tool_args_preview_allows_shell_command():
+    # §7.8.9 决策（2026-08-19）：审计/审批需要看到 run_shell 具体命令。
+    preview = public_tool_args_preview(
+        "run_shell",
+        {"command": "pytest -q && echo done", "timeout": 30, "env": {"X": "secret"}},
+    )
+
+    assert preview == {"command": "pytest -q && echo done"}
+    # 非白名单工具（写工具）参数仍不对外。
+    assert public_tool_args_preview("write_file", {"path": "a.py", "content": "x"}) == {}
+
+
 def test_public_tool_result_preview_is_bounded_and_allows_redacted_shell_output(monkeypatch):
     preview, truncated = public_tool_result_preview("read_file", "x" * 9000)
     assert truncated is True
