@@ -67,39 +67,34 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
         commentary_parts: list[str] = []
         review_skipped = False
         # §7.8.9 修正（2026-08-19）：按模型轮重建交替块（执行 → turn N → 思考/工具）。
+        # 内联实现（不用闭包）：避免 ruff B023（嵌套函数引用循环中修改的绑定）。
         blocks: list[dict] = []
         current_turn = 0
         pending_behavior: dict | None = None
-
-        def flush_behavior() -> None:
-            nonlocal pending_behavior
-            if pending_behavior is not None:
-                blocks.append(pending_behavior)
-                pending_behavior = None
-
-        def behavior_block() -> dict:
-            nonlocal pending_behavior
-            if pending_behavior is None:
-                pending_behavior = {"kind": "behavior", "turn": current_turn or None}
-            return pending_behavior
 
         for item in run:
             event_type = str(item.get("type", ""))
             if event_type == "model.started":
                 current_turn += 1
-                flush_behavior()
+                if pending_behavior is not None:
+                    blocks.append(pending_behavior)
+                    pending_behavior = None
             elif event_type == "assistant.commentary":
                 text = str(item.get("text", "")).strip()
                 if text:
                     commentary_parts.append(text)
-                    flush_behavior()
+                    if pending_behavior is not None:
+                        blocks.append(pending_behavior)
+                        pending_behavior = None
                     blocks.append({"kind": "commentary", "text": text, "turn": current_turn or None})
             elif event_type == "assistant.thinking":
                 text = str(item.get("text", "")).strip()
                 if text:
                     thinking_parts.append(text)
-                    block = behavior_block()
-                    block["thinking"] = (block.get("thinking") or "") + ("" if not block.get("thinking") else "\n") + text
+                    if pending_behavior is None:
+                        pending_behavior = {"kind": "behavior", "turn": current_turn or None}
+                    previous = pending_behavior.get("thinking") or ""
+                    pending_behavior["thinking"] = previous + ("\n" if previous else "") + text
             elif event_type == "tool.requested":
                 call = {
                     "id": str(item.get("tool_call_id", "")),
@@ -109,7 +104,9 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
                 }
                 tool_by_id[call["id"]] = call
                 tool_calls.append(call)
-                behavior_block().setdefault("toolCalls", []).append(call)
+                if pending_behavior is None:
+                    pending_behavior = {"kind": "behavior", "turn": current_turn or None}
+                pending_behavior.setdefault("toolCalls", []).append(call)
             elif event_type in {"tool.completed", "tool.failed"}:
                 call = tool_by_id.get(str(item.get("tool_call_id", "")))
                 if call is None:
@@ -119,10 +116,14 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
                     call["result"] = result + ("\n\n[预览已截断]" if item.get("result_truncated") else "")
                 call["status"] = "error" if event_type == "tool.failed" else "completed"
             elif event_type == "review.started":
-                flush_behavior()
+                if pending_behavior is not None:
+                    blocks.append(pending_behavior)
+                    pending_behavior = None
                 review_entries.append({"side": "review", "action": str(item.get("trigger", ""))})
             elif event_type == "review.completed":
-                flush_behavior()
+                if pending_behavior is not None:
+                    blocks.append(pending_behavior)
+                    pending_behavior = None
                 review_entries.append(
                     {
                         "side": "review",
@@ -133,7 +134,9 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
                     }
                 )
             elif event_type == "main_loop_rebuttal":
-                flush_behavior()
+                if pending_behavior is not None:
+                    blocks.append(pending_behavior)
+                    pending_behavior = None
                 review_entries.append(
                     {
                         "side": "main_loop",
@@ -143,9 +146,12 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
                     }
                 )
             elif event_type == "review.skipped":
-                flush_behavior()
+                if pending_behavior is not None:
+                    blocks.append(pending_behavior)
+                    pending_behavior = None
                 review_skipped = True
-        flush_behavior()
+        if pending_behavior is not None:
+            blocks.append(pending_behavior)
         if review_skipped and not review_entries:
             review_entries.append(
                 {
