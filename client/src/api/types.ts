@@ -215,6 +215,30 @@ export interface SessionMessage {
     action?: string | null
     against_verdict?: string | null
   }>
+  /** §7.8.9 修正（2026-08-19）：历史回放——过程更新（中途话），final 后不消失。 */
+  commentary?: string
+  /** §7.8.9 修正（2026-08-19）：历史回放——交替块（行为/过程更新/审查），带 turn 编号。 */
+  blocks?: Array<{
+    kind: 'commentary' | 'behavior' | 'review'
+    text?: string
+    thinking?: string
+    turn?: number | null
+    toolCalls?: Array<{
+      id: string
+      tool_name: string
+      args?: Record<string, unknown> | null
+      result?: string
+      status?: string
+    }>
+    entries?: Array<{
+      side: 'review' | 'main_loop'
+      verdict?: string | null
+      feedback?: string | null
+      reason?: string | null
+      obstacles?: string[] | null
+      action?: string | null
+    }>
+  }>
 }
 
 export interface SessionTask {
@@ -495,9 +519,9 @@ export interface Message {
 
 /** 一条 assistant 消息内的交替内容块：中途说话 / 行为（思考 + 工具）/ 审查对抗。 */
 export type MessageBlock =
-  | { kind: 'commentary'; text: string }
-  | { kind: 'behavior'; thinking?: string; toolCalls?: ToolCall[] }
-  | { kind: 'review'; entries: ReviewBattleEntry[]; thinking?: string }
+  | { kind: 'commentary'; text: string; turn?: number }
+  | { kind: 'behavior'; thinking?: string; toolCalls?: ToolCall[]; turn?: number }
+  | { kind: 'review'; entries: ReviewBattleEntry[]; thinking?: string; turn?: number }
 
 /** §7.8.9 决策（2026-08-18）：双向对抗协议的审查回合——谁发的、各什么理由、结果。 */
 export interface ReviewBattleEntry {

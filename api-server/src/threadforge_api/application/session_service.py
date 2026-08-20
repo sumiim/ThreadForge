@@ -45,9 +45,10 @@ def _clip(text: str, limit: int) -> str:
 def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dict]:
     """§7.8.9 决策（2026-08-19）：对话历史回放——把运行审计还原挂到 assistant 消息。
 
-    工具卡（参数/结果）、thinking、审查对抗（verdict/feedback/反驳）只存在于
-    前端内存的流式状态里，刷新即丢。这里从持久化的 ``run_index`` 重建这三类
-    内容，挂到对应 assistant 消息上，让历史对话也能看到工具使用与审查过程。
+    工具卡（参数/结果）、thinking、过程更新（commentary）、审查对抗
+    （verdict/feedback/反驳）只存在于前端内存的流式状态里，刷新即丢。这里从
+    持久化的 ``run_index`` 重建这些内容（含按模型轮分组的 turn 编号），挂到
+    对应 assistant 消息上，让历史对话也能看到完整的执行过程。
     任务 ↔ 消息按时间顺序从尾部配对（历史可能被 message_limit 裁掉头部）。
     """
     if not messages or not task_items:
@@ -63,10 +64,38 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
         tool_calls: list[dict] = []
         thinking_parts: list[str] = []
         review_entries: list[dict] = []
+        commentary_parts: list[str] = []
         review_skipped = False
+        # §7.8.9 修正（2026-08-19）：按模型轮重建交替块（执行 → turn N → 思考/工具）。
+        # 内联实现（不用闭包）：避免 ruff B023（嵌套函数引用循环中修改的绑定）。
+        blocks: list[dict] = []
+        current_turn = 0
+        pending_behavior: dict | None = None
+
         for item in run:
             event_type = str(item.get("type", ""))
-            if event_type == "tool.requested":
+            if event_type == "model.started":
+                current_turn += 1
+                if pending_behavior is not None:
+                    blocks.append(pending_behavior)
+                    pending_behavior = None
+            elif event_type == "assistant.commentary":
+                text = str(item.get("text", "")).strip()
+                if text:
+                    commentary_parts.append(text)
+                    if pending_behavior is not None:
+                        blocks.append(pending_behavior)
+                        pending_behavior = None
+                    blocks.append({"kind": "commentary", "text": text, "turn": current_turn or None})
+            elif event_type == "assistant.thinking":
+                text = str(item.get("text", "")).strip()
+                if text:
+                    thinking_parts.append(text)
+                    if pending_behavior is None:
+                        pending_behavior = {"kind": "behavior", "turn": current_turn or None}
+                    previous = pending_behavior.get("thinking") or ""
+                    pending_behavior["thinking"] = previous + ("\n" if previous else "") + text
+            elif event_type == "tool.requested":
                 call = {
                     "id": str(item.get("tool_call_id", "")),
                     "tool_name": str(item.get("tool_name", "")),
@@ -75,6 +104,9 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
                 }
                 tool_by_id[call["id"]] = call
                 tool_calls.append(call)
+                if pending_behavior is None:
+                    pending_behavior = {"kind": "behavior", "turn": current_turn or None}
+                pending_behavior.setdefault("toolCalls", []).append(call)
             elif event_type in {"tool.completed", "tool.failed"}:
                 call = tool_by_id.get(str(item.get("tool_call_id", "")))
                 if call is None:
@@ -83,13 +115,15 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
                 if isinstance(result, str) and result:
                     call["result"] = result + ("\n\n[预览已截断]" if item.get("result_truncated") else "")
                 call["status"] = "error" if event_type == "tool.failed" else "completed"
-            elif event_type == "assistant.thinking":
-                text = str(item.get("text", "")).strip()
-                if text:
-                    thinking_parts.append(text)
             elif event_type == "review.started":
+                if pending_behavior is not None:
+                    blocks.append(pending_behavior)
+                    pending_behavior = None
                 review_entries.append({"side": "review", "action": str(item.get("trigger", ""))})
             elif event_type == "review.completed":
+                if pending_behavior is not None:
+                    blocks.append(pending_behavior)
+                    pending_behavior = None
                 review_entries.append(
                     {
                         "side": "review",
@@ -100,6 +134,9 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
                     }
                 )
             elif event_type == "main_loop_rebuttal":
+                if pending_behavior is not None:
+                    blocks.append(pending_behavior)
+                    pending_behavior = None
                 review_entries.append(
                     {
                         "side": "main_loop",
@@ -109,7 +146,12 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
                     }
                 )
             elif event_type == "review.skipped":
+                if pending_behavior is not None:
+                    blocks.append(pending_behavior)
+                    pending_behavior = None
                 review_skipped = True
+        if pending_behavior is not None:
+            blocks.append(pending_behavior)
         if review_skipped and not review_entries:
             review_entries.append(
                 {
@@ -119,13 +161,19 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
                     "reason": str(item.get("reason", "")) if item.get("reason") else "read_only_task",
                 }
             )
+        if review_entries:
+            blocks.append({"kind": "review", "entries": review_entries, "turn": None})
         message = dict(messages[message_index])
         if tool_calls:
             message["tool_calls"] = tool_calls
         if thinking_parts:
             message["thinking"] = "\n".join(thinking_parts)
+        if commentary_parts:
+            message["commentary"] = "\n".join(commentary_parts)
         if review_entries:
             message["review_entries"] = review_entries
+        if blocks:
+            message["blocks"] = blocks
         messages[message_index] = message
     return messages
 

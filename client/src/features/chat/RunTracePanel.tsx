@@ -332,7 +332,9 @@ export default function RunTracePanel({ open, session, activeRunId, provider, on
                   {selectedEvent.text ? (
                     <div>
                       <div className="mb-1.5 text-xs font-medium text-stone-700">
-                        {selectedEvent.type === 'model.completed' ? '模型回复' : '正文'}
+                        {selectedEvent.type === 'model.completed' ? '模型回复'
+                          : selectedEvent.type === 'message.completed' ? '最终回答'
+                            : '正文'}
                       </div>
                       <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md border border-stone-200/70 bg-white p-2 font-mono text-[11px] leading-relaxed text-stone-600 dark:border-stone-700/60 dark:bg-stone-900/60 dark:text-stone-300">
                         {selectedEvent.text}

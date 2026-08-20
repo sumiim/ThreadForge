@@ -253,6 +253,25 @@ def test_run_index_keeps_chronology_and_public_usage_for_audit():
     ]
 
 
+def test_message_completed_keeps_final_answer_in_run_index():
+    task = SimpleNamespace(run_index=[], updated_at="")
+    _append_run_index(
+        task,
+        {"event_id": "evt_final", "run_id": "run_1", "type": "message.completed", "timestamp": "t0"},
+        {"text": "这是最终回答"},
+    )
+
+    assert len(task.run_index) == 1
+    assert task.run_index[0]["label"] == "最终回答"
+    assert task.run_index[0]["text"] == "这是最终回答"
+
+
+def test_message_completed_sanitizer_keeps_text():
+    safe = _sanitize_event_data("message.completed", {"text": "终答", "secret": "no"})
+
+    assert safe == {"text": "终答"}
+
+
 def test_model_completed_keeps_reply_text_and_heartbeat_skipped_in_run_index():
     task = SimpleNamespace(run_index=[], updated_at="")
     _append_run_index(

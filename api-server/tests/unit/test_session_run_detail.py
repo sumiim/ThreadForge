@@ -62,8 +62,40 @@ def test_attach_run_detail_rebuilds_tools_thinking_and_review():
     assert entries[1]["verdict"] == "finalize"
     assert entries[2]["action"] == "tool:read_file"  # 主循环反驳
     assert entries[3]["verdict"] == "finalize"
+    # blocks 重建：thinking+工具归入 behavior 块,review 独立块。
+    blocks = messages[1]["blocks"]
+    assert blocks[0]["kind"] == "behavior"
+    assert blocks[0]["thinking"] == "先看结构"
+    assert blocks[0]["toolCalls"][0]["tool_name"] == "list_files"
+    assert blocks[1]["kind"] == "review"
+    assert len(blocks[1]["entries"]) == 4
     # 第二条 assistant 消息不存在于单轮夹具；此处确认无越界。
     assert len(messages) == 2
+
+
+def test_attach_run_detail_groups_blocks_by_turn_and_keeps_commentary():
+    run = [
+        {"type": "assistant.commentary", "text": "我现在去查查配置"},
+        {"type": "model.started"},
+        {"type": "assistant.thinking", "text": "先看 A"},
+        {"type": "tool.requested", "tool_call_id": "c1", "tool_name": "list_files", "args_preview": {"path": "."}},
+        {"type": "tool.completed", "tool_call_id": "c1", "tool_name": "list_files", "result_preview": "a.txt"},
+        {"type": "model.started"},
+        {"type": "assistant.thinking", "text": "再看 B"},
+    ]
+    messages = _attach_run_detail(_messages(), [_task(run)])
+
+    message = messages[1]
+    assert message["commentary"] == "我现在去查查配置"
+    blocks = message["blocks"]
+    assert [block["kind"] for block in blocks] == ["commentary", "behavior", "behavior"]
+    assert blocks[0]["text"] == "我现在去查查配置"
+    # turn：commentary 在 model.started 前(turn 0),两个 behavior 块分别归属 turn 1 / turn 2
+    assert blocks[1]["turn"] == 1
+    assert blocks[2]["turn"] == 2
+    assert blocks[1]["thinking"] == "先看 A"
+    assert blocks[2]["thinking"] == "再看 B"
+    assert blocks[1]["toolCalls"][0]["tool_name"] == "list_files"
 
 
 def test_attach_run_detail_marks_truncated_result():
