@@ -728,6 +728,28 @@ def test_result_fingerprint_partial_overlap_read_counts_as_repeat():
     assert _tool_call_repeats("read_file", {"path": "a.txt", "start": 500, "end": 600}, "h1", window) is False
 
 
+def test_extended_read_with_new_lines_is_not_repeat():
+    """§7.8.9 修正（2026-08-19）：扩展读放行——新区间含未读新行不算重复。
+
+    1-200 → 1-260：260 覆盖了 201-260 的未读新行,是有增量信息的合法扩展读,
+    不应被「部分重叠判重复」误杀（此前 agent 想补行号细节读扩展区间被拒）。
+    纯子集（如 30-130 ⊆ 1-200 并集）仍判重复。
+    """
+    from pico.agent_loop import _tool_call_repeats
+
+    # 窗口：先读过 1-200
+    window = [(("read_file", "a.txt", (1, 200)), "h1")]
+
+    # 扩展读：1-260 含 201-260 未读行 → 放行（不重复）
+    assert _tool_call_repeats("read_file", {"path": "a.txt", "start": 1, "end": 260}, "h2", window) is False
+    # 扩展读：150-350 含 201-350 未读行 → 放行
+    assert _tool_call_repeats("read_file", {"path": "a.txt", "start": 150, "end": 350}, "h3", window) is False
+    # 子集微调：30-130 完全在已读并集内,无新行 → 判重复（防空转）
+    assert _tool_call_repeats("read_file", {"path": "a.txt", "start": 30, "end": 130}, "h4", window) is True
+    # 相邻扩展：1-201 仅多 1 行 → 有增量,放行
+    assert _tool_call_repeats("read_file", {"path": "a.txt", "start": 1, "end": 201}, "h5", window) is False
+
+
 def test_agent_loop_partial_overlap_read_counts_once(tmp_path):
     """§7.8.9 修正（2026-08-19）：重叠区间读取被判重复 → read_files 只计第一次。
 

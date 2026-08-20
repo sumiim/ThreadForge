@@ -277,8 +277,23 @@ def _tool_call_repeats(name, args, result_fp, recent_entries):
             and action_prev[0] == "read_file"
             and action_fp[2] != action_prev[2]
         )
+        # §7.8.9 修正（2026-08-19）：read_file 部分重叠分「扩展读」与「子集微调」。
+        # 扩展读（新区间含未读新行,如 1-200 → 1-260）→ 有增量信息,放行执行;
+        # 纯子集/微调（30-130、40-80 ⊆ 已读并集）→ 空转,判重复（防空转）——
+        # 但拒绝消息会给明确指引（内容已在上下文,勿重读;如需未读行请指定新区间）。
+        if partial_overlap:
+            merged_intervals = _merge_read_intervals(
+                [
+                    entry[0][2]
+                    for entry in recent_entries
+                    if entry[0][0] == "read_file" and entry[0][1] == action_fp[1]
+                ]
+            )
+            new_start, new_end = action_fp[2]
+            if _uncovered_read_lines(new_start, new_end, merged_intervals) > 0:
+                continue  # 扩展读：本次读到未覆盖的新行,不算重复
+            return True
         # 结果参与（只读工具）：完全同区间 + 结果变 = 文件被改 → 不重复；
-        # 部分重叠区间 → 跳过结果比较,直接判重复（区间微调是空转）。
         if not partial_overlap and (
             result_fp is not None
             and result_prev is not None
@@ -316,6 +331,32 @@ def _merge_read_intervals(intervals):
         else:
             merged.append((start, end))
     return merged + open_ended
+
+
+def _uncovered_read_lines(start, end, merged_intervals):
+    """新区间 (start, end) 中未被已读区间并集覆盖的行数。
+
+    >0 = 这次读有增量信息（扩展读）→ 放行；=0 = 纯子集/微调 → 空转判重复。
+    """
+    if start is None or end is None:
+        return 0
+    uncovered = 0
+    cursor = start
+    for iv_start, iv_end in sorted(merged_intervals):
+        if iv_start is None or iv_end is None:
+            continue
+        if iv_end < cursor:
+            continue
+        if iv_start > end:
+            break
+        if iv_start > cursor:
+            uncovered += iv_start - cursor
+        cursor = max(cursor, iv_end + 1)
+        if cursor > end:
+            break
+    if cursor <= end:
+        uncovered += end - cursor + 1
+    return uncovered
 
 
 def _chunk_read_intervals(merged):
@@ -674,9 +715,9 @@ class AgentLoop:
         """
         agent = self.agent
         agent.emit_progress(f"step {attempts}: running tool {name}")
-        # P4 重复动作执行前拦截：部分重叠的 read_file 区间已经可以确定
-        # 是同一区域空转，因此直接拦截；完全相同区间仍在执行后比较结果，
-        # 避免文件在两次读取之间变化时误伤。
+        # P4 重复动作执行前拦截：read_file 部分重叠且无未读新行（纯子集/微调）
+        # 是同一区域空转,直接拦截;扩展读（含未读新行）放行执行;完全相同区间
+        # 仍在执行后比较结果,避免文件在两次读取之间变化时误伤。
         if name == "read_file":
             current_fp = _tool_fingerprint(name, args)
             pre_repeat = any(
@@ -685,6 +726,17 @@ class AgentLoop:
                 and current_fp[2] != previous_fp[2]
                 for previous_fp, _ in tuple(recent_tool_fps)
             )
+            if pre_repeat:
+                merged_intervals = _merge_read_intervals(
+                    [
+                        fp[2]
+                        for fp, _ in tuple(recent_tool_fps)
+                        if fp[0] == "read_file" and fp[1] == current_fp[1]
+                    ]
+                )
+                start, end = current_fp[2]
+                if _uncovered_read_lines(start, end, merged_intervals) > 0:
+                    pre_repeat = False  # 扩展读：有增量信息,放行
         else:
             pre_repeat = _tool_call_repeats(
                 name,
@@ -693,10 +745,15 @@ class AgentLoop:
                 tuple(recent_tool_fps),
             )
         if pre_repeat:
+            hint = (
+                "该文件区间(或其子集)已在本轮读取,内容在上下文中;"
+                "如需未读行,请指定未读的行区间"
+                if name == "read_file"
+                else "use the existing evidence or try a different action"
+            )
             tool_result = ToolExecutionResult(
                 content=(
-                    f"error: repeated identical call ({name}); "
-                    "use the existing evidence or try a different action"
+                    f"error: repeated identical call ({name}); {hint}"
                 ),
                 metadata={
                     "tool_status": "rejected",
