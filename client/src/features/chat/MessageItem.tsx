@@ -205,12 +205,13 @@ function ReviewBattle({ entries, thinking }: { entries: ReviewBattleEntry[]; thi
  * 每轮行为折叠面板（仿左侧 RunTimeline：折叠窄条 ↔ 展开面板，默认折叠）。
  * 内容按三级组织：思考 → 工具（工具内并行最小行动）→ 中途对话。
  */
-function BehaviorFold({ thinking, toolCalls, streaming, onApprove, onReject }: {
+function BehaviorFold({ thinking, toolCalls, streaming, onApprove, onReject, turn }: {
   thinking?: string
   toolCalls: ToolCall[]
   streaming: boolean
   onApprove: (toolCallId: string) => void
   onReject: (toolCallId: string) => void
+  turn?: number
 }) {
   const [open, setOpen] = useState(false)
   const hasThinking = Boolean(thinking)
@@ -222,6 +223,7 @@ function BehaviorFold({ thinking, toolCalls, streaming, onApprove, onReject }: {
     hasThinking ? `${thinking!.length} chars` : null,
     hasTools ? `${toolCalls.length} tool${toolCalls.length > 1 ? 's' : ''}` : null,
   ].filter(Boolean).join(' · ')
+  const title = turn != null ? `Turn ${turn}` : '行为'
 
   return (
     <div className="mb-2 max-w-full overflow-hidden rounded-lg border border-stone-200/80 bg-stone-50/60 dark:border-stone-700/50 dark:bg-stone-800/40">
@@ -232,7 +234,7 @@ function BehaviorFold({ thinking, toolCalls, streaming, onApprove, onReject }: {
         aria-expanded={open}
       >
         <span className="text-stone-400" aria-hidden>{open ? <DownOutlined className="text-[9px]" /> : <RightOutlined className="text-[9px]" />}</span>
-        <span className="font-medium">行为</span>
+        <span className="font-medium">{title}</span>
         {summary && <span className="ml-auto truncate font-mono text-stone-400 dark:text-stone-500">{summary}</span>}
       </button>
       {open && (
@@ -302,6 +304,7 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
                 thinking={block.thinking}
                 toolCalls={block.toolCalls ?? []}
                 streaming={streaming}
+                turn={block.turn}
                 onApprove={(toolCallId) => onApprove(message.id, toolCallId)}
                 onReject={(toolCallId) => onReject(message.id, toolCallId)}
               />

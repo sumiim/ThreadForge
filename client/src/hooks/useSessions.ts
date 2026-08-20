@@ -59,16 +59,16 @@ import { mergeRunIndex } from './run-events'
 
 // ---- assistant 消息交替块(commentary 与行为按事件顺序) ----
 
-function appendThinkingBlock(blocks: MessageBlock[] | undefined, text: string): MessageBlock[] {
+function appendThinkingBlock(blocks: MessageBlock[] | undefined, text: string, turn?: number): MessageBlock[] {
   const list = blocks ?? []
   const last = list[list.length - 1]
   if (last && last.kind === 'behavior') {
-    return [...list.slice(0, -1), { ...last, thinking: `${last.thinking ?? ''}${text}` }]
+    return [...list.slice(0, -1), { ...last, turn: turn ?? last.turn, thinking: `${last.thinking ?? ''}${text}` }]
   }
-  return [...list, { kind: 'behavior', thinking: text }]
+  return [...list, { kind: 'behavior', thinking: text, turn }]
 }
 
-function appendToolCallBlock(blocks: MessageBlock[] | undefined, toolCall: ToolCall): MessageBlock[] {
+function appendToolCallBlock(blocks: MessageBlock[] | undefined, toolCall: ToolCall, turn?: number): MessageBlock[] {
   const list = blocks ?? []
   const last = list[list.length - 1]
   if (last && last.kind === 'behavior') {
@@ -76,6 +76,7 @@ function appendToolCallBlock(blocks: MessageBlock[] | undefined, toolCall: ToolC
       ...list.slice(0, -1),
       {
         ...last,
+        turn: turn ?? last.turn,
         toolCalls: applyToolEvent(last.toolCalls, {
           id: toolCall.id,
           toolName: toolCall.toolName,
@@ -86,7 +87,7 @@ function appendToolCallBlock(blocks: MessageBlock[] | undefined, toolCall: ToolC
       },
     ]
   }
-  return [...list, { kind: 'behavior', toolCalls: [toolCall] }]
+  return [...list, { kind: 'behavior', toolCalls: [toolCall], turn }]
 }
 
 function updateToolCallInBlocks(
@@ -102,28 +103,28 @@ function updateToolCallInBlocks(
   })
 }
 
-function appendReviewBlock(blocks: MessageBlock[] | undefined, entry: ReviewBattleEntry): MessageBlock[] {
-  return [...(blocks ?? []), { kind: 'review', entries: [entry] }]
+function appendReviewBlock(blocks: MessageBlock[] | undefined, entry: ReviewBattleEntry, turn?: number): MessageBlock[] {
+  return [...(blocks ?? []), { kind: 'review', entries: [entry], turn }]
 }
 
-function appendReviewEntry(blocks: MessageBlock[] | undefined, entry: ReviewBattleEntry): MessageBlock[] {
+function appendReviewEntry(blocks: MessageBlock[] | undefined, entry: ReviewBattleEntry, turn?: number): MessageBlock[] {
   const list = blocks ?? []
   const last = list[list.length - 1]
   if (last && last.kind === 'review') {
-    return [...list.slice(0, -1), { ...last, entries: [...last.entries, entry] }]
+    return [...list.slice(0, -1), { ...last, turn: turn ?? last.turn, entries: [...last.entries, entry] }]
   }
-  return [...list, { kind: 'review', entries: [entry] }]
+  return [...list, { kind: 'review', entries: [entry], turn }]
 }
 
-function appendReviewThinking(blocks: MessageBlock[] | undefined, text: string): MessageBlock[] {
+function appendReviewThinking(blocks: MessageBlock[] | undefined, text: string, turn?: number): MessageBlock[] {
   const list = blocks ?? []
   const last = list[list.length - 1]
   // §7.8.9 修正：thinking 只累积到「未完成(entries 为空)」的激活 review 块——
   // 已 completed 的块（entries 非空）另起新块,避免多次 review 的思考堆叠错位。
   if (last && last.kind === 'review' && last.entries.length === 0) {
-    return [...list.slice(0, -1), { ...last, thinking: `${last.thinking ?? ''}${text}` }]
+    return [...list.slice(0, -1), { ...last, turn: turn ?? last.turn, thinking: `${last.thinking ?? ''}${text}` }]
   }
-  return [...list, { kind: 'review', entries: [], thinking: text }]
+  return [...list, { kind: 'review', entries: [], thinking: text, turn }]
 }
 
 /** 是否存在「未完成(entries 为空)」的激活 review 块（thinking 已累积,等 completed 塞结果）。 */
@@ -506,6 +507,9 @@ export function useSessions(): UseSessions {
 
   const attachEventStream = useCallback(
     (taskId: string, sessionId: string, assistantId: string) => {
+      // §7.8.9 修正（2026-08-19）：live turn 计数——模型每轮调用 +1,
+      // 行为/过程更新块按 turn 分组展示（执行 → Turn N → 思考/工具）。
+      let liveTurn = 0
       esByTaskRef.current.get(taskId)?.close()
       const es = openTaskEventStream(taskId)
       esByTaskRef.current.set(taskId, es)
@@ -565,7 +569,7 @@ export function useSessions(): UseSessions {
                 toolName,
                 args,
                 status: 'running',
-              }),
+              }, liveTurn),
             }
           }),
         )
@@ -779,6 +783,7 @@ export function useSessions(): UseSessions {
           }
           case 'model.started':
           case 'model.completed': {
+            if (envelope.type === 'model.started') liveTurn += 1
             return
           }
           case 'model.heartbeat': {
@@ -880,7 +885,7 @@ export function useSessions(): UseSessions {
                 ? {
                     ...message,
                     commentary: `${message.commentary ?? ''}${message.commentary ? '\n' : ''}${text}`,
-                    blocks: [...(message.blocks ?? []), { kind: 'commentary', text }],
+                    blocks: [...(message.blocks ?? []), { kind: 'commentary', text, turn: liveTurn }],
                   }
                 : message,
             ))
@@ -898,11 +903,11 @@ export function useSessions(): UseSessions {
                 ? stage === 'planning'
                   ? { ...message, planningThinking: `${message.planningThinking ?? ''}${text}` }
                   : stage === 'review'
-                    ? { ...message, blocks: appendReviewThinking(message.blocks, text) }
+                    ? { ...message, blocks: appendReviewThinking(message.blocks, text, liveTurn) }
                     : {
                         ...message,
                         thinking: `${message.thinking ?? ''}${text}`,
-                        blocks: appendThinkingBlock(message.blocks, text),
+                        blocks: appendThinkingBlock(message.blocks, text, liveTurn),
                       }
                 : message,
             ))
@@ -934,8 +939,8 @@ export function useSessions(): UseSessions {
                     // 出现多版相同答案。
                     ...(verdict === 'redirect' ? { content: '' } : {}),
                     blocks: hasPendingReviewBlock(message.blocks)
-                      ? appendReviewEntry(message.blocks, entry)
-                      : appendReviewBlock(message.blocks, entry),
+                      ? appendReviewEntry(message.blocks, entry, liveTurn)
+                      : appendReviewBlock(message.blocks, entry, liveTurn),
                   }
                 : message,
             ))
@@ -952,7 +957,7 @@ export function useSessions(): UseSessions {
             }
             updateSessionMessages(sessionId, (messages) => messages.map((message) =>
               message.id === assistantId
-                ? { ...message, blocks: appendReviewEntry(message.blocks, entry) }
+                ? { ...message, blocks: appendReviewEntry(message.blocks, entry, liveTurn) }
                 : message,
             ))
             appendActivity(envelope, '主循环反驳', String(data.action ?? ''))
@@ -1241,6 +1246,38 @@ export function useSessions(): UseSessions {
               obstacles: entry.obstacles ?? undefined,
               action: entry.action ?? undefined,
             })),
+            commentary: m.commentary,
+            blocks: m.blocks?.map((block) => {
+              if (block.kind === 'commentary') {
+                return { kind: 'commentary' as const, text: block.text ?? '', turn: block.turn ?? undefined }
+              }
+              if (block.kind === 'review') {
+                return {
+                  kind: 'review' as const,
+                  turn: block.turn ?? undefined,
+                  entries: (block.entries ?? []).map((entry) => ({
+                    side: entry.side,
+                    verdict: (entry.verdict as ReviewBattleEntry['verdict']) ?? undefined,
+                    feedback: entry.feedback ?? undefined,
+                    reason: entry.reason ?? undefined,
+                    obstacles: entry.obstacles ?? undefined,
+                    action: entry.action ?? undefined,
+                  })),
+                }
+              }
+              return {
+                kind: 'behavior' as const,
+                turn: block.turn ?? undefined,
+                thinking: block.thinking,
+                toolCalls: (block.toolCalls ?? []).map((tool) => ({
+                  id: tool.id,
+                  toolName: tool.tool_name,
+                  args: tool.args ?? undefined,
+                  result: tool.result,
+                  status: (tool.status === 'error' ? 'error' : 'completed') as ToolCall['status'],
+                })),
+              }
+            }),
           }))
         const lastTask = getLatestTask(detail.tasks)
         const runs: SessionRun[] = detail.tasks

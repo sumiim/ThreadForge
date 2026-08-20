@@ -2325,6 +2325,12 @@ def _append_run_index(task, event: dict, data: dict):
         text = str(data.get("text", ""))[:4000]
         if text:
             item["text"] = text
+    elif event_type == "assistant.commentary":
+        # §7.8.9 修正（2026-08-19）：过程更新持久化——否则 run 结束历史重载后
+        # 中途话（"我现在去查查XX"）会消失。
+        text = str(data.get("text", ""))[:1000]
+        if text:
+            item["text"] = text
     elif event_type == "review.started":
         item["trigger"] = str(data.get("trigger", ""))[:32]
     elif event_type == "review.completed":
