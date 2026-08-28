@@ -781,9 +781,18 @@ export function useSessions(): UseSessions {
             updateProgress(sessionId, parseAgentProgress(data))
             return
           }
-          case 'model.started':
+          case 'model.started': {
+            // §7.8.9 修正（2026-08-19）：每个 turn 独立收纳抽屉——模型每轮开始
+            // 时新开一个行为块占位,后续 thinking/工具归入当前 turn,不复用上一 turn。
+            liveTurn += 1
+            updateSessionMessages(sessionId, (messages) => messages.map((message) =>
+              message.id === assistantId
+                ? { ...message, blocks: [...(message.blocks ?? []), { kind: 'behavior', turn: liveTurn }] }
+                : message,
+            ))
+            return
+          }
           case 'model.completed': {
-            if (envelope.type === 'model.started') liveTurn += 1
             return
           }
           case 'model.heartbeat': {

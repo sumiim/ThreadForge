@@ -717,26 +717,36 @@ class AgentLoop:
         agent.emit_progress(f"step {attempts}: running tool {name}")
         # P4 重复动作执行前拦截：read_file 部分重叠且无未读新行（纯子集/微调）
         # 是同一区域空转,直接拦截;扩展读（含未读新行）放行执行;完全相同区间
-        # 仍在执行后比较结果,避免文件在两次读取之间变化时误伤。
+        # 仍会误伤。
         if name == "read_file":
             current_fp = _tool_fingerprint(name, args)
-            pre_repeat = any(
-                previous_fp[0] == "read_file"
-                and _tool_fingerprints_match(current_fp, previous_fp)
-                and current_fp[2] != previous_fp[2]
-                for previous_fp, _ in tuple(recent_tool_fps)
-            )
-            if pre_repeat:
+            recent_list = tuple(recent_tool_fps)
+            pre_repeat = False
+            for index, (previous_fp, _) in enumerate(recent_list):
+                if previous_fp[0] != "read_file" or previous_fp[1] != current_fp[1]:
+                    continue
+                if not _tool_fingerprints_match(current_fp, previous_fp):
+                    continue
+                # 匹配到同路径 read_file 历史。若该历史之后有写工具(文件可能被改),
+                # 重读/重列是合理的 → 放行;否则视为空转 → 预拦。
+                tail = [entry[0][0] for entry in recent_list[index + 1:]]
+                if any(tool not in _READ_ONLY_TOOL_NAMES for tool in tail):
+                    continue
+                if current_fp[2] == previous_fp[2]:
+                    pre_repeat = True  # 完全同区间 → 预拦(防空转)
+                    break
+                # 部分重叠:扩展读(含未读新行)放行,子集/微调判重
                 merged_intervals = _merge_read_intervals(
                     [
                         fp[2]
-                        for fp, _ in tuple(recent_tool_fps)
+                        for fp, _ in recent_list
                         if fp[0] == "read_file" and fp[1] == current_fp[1]
                     ]
                 )
                 start, end = current_fp[2]
-                if _uncovered_read_lines(start, end, merged_intervals) > 0:
-                    pre_repeat = False  # 扩展读：有增量信息,放行
+                if _uncovered_read_lines(start, end, merged_intervals) == 0:
+                    pre_repeat = True
+                    break
         else:
             pre_repeat = _tool_call_repeats(
                 name,

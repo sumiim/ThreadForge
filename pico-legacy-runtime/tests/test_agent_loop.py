@@ -775,6 +775,33 @@ def test_agent_loop_partial_overlap_read_counts_once(tmp_path):
     assert state.read_files == 1  # 只有第一次读取计数；重叠读取判重复不计
 
 
+def test_identical_read_file_call_is_preblocked(tmp_path):
+    """§7.8.9 修正（2026-08-19）：完全相同的 read_file 调用第二次执行前拦截。
+
+    两次 read_file(a.txt, 1-400) 完全相同 → 第二次应被判重复拦截（不执行）,
+    而不是再次读文件。此前 pre_repeat 只匹配「部分重叠区间」,完全同区间绕过
+    了执行前拦截,导致相同调用重复执行。
+    """
+    (tmp_path / "a.txt").write_text("\n".join(f"line {index}" for index in range(1, 500)), encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"read_file","args":{"path":"a.txt","start":1,"end":400}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"a.txt","start":1,"end":400}}</tool>',
+            "<final>done</final>",
+        ],
+        max_steps=6,
+    )
+
+    answer = AgentLoop(agent).run("Inspect a.txt")
+
+    assert answer == "done"
+    state = agent.current_task_state
+    assert state.read_files == 1  # 第一次读取计数；第二次完全相同被预拦
+    trace = agent.run_store.trace_path(state).read_text(encoding="utf-8")
+    assert '"event": "tool_rejected_repeat"' in trace
+
+
 def test_partition_batch_tools(tmp_path):
     """§7.8.9 P5：批内分区纯函数——并发组 vs 串行组判定。
 
