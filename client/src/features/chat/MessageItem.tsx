@@ -1,13 +1,113 @@
 import { useEffect, useState } from 'react'
 import { DownOutlined, RightOutlined, ToolOutlined } from '@ant-design/icons'
 import Markdown from '../../components/Markdown'
-import type { Message, ReviewBattleEntry, ToolCall } from '../../api/types'
+import type { Message, MessageBlock, ReviewBattleEntry, ToolCall } from '../../api/types'
 import ToolList from './ToolList'
 
 interface MessageItemProps {
   message: Message
   onApprove: (messageId: string, toolCallId: string) => void
   onReject: (messageId: string, toolCallId: string) => void
+}
+
+/** 按 turn 聚合的块：一个 turn 一个收纳抽屉（思考/工具/review）。 */
+type TurnGroup = {
+  turn?: number
+  thinking?: string
+  toolCalls?: ToolCall[]
+  reviewEntries?: ReviewBattleEntry[]
+}
+
+function extractEntries(block: { entries?: ReviewBattleEntry[] }): ReviewBattleEntry[] {
+  return block.entries ?? []
+}
+
+/** 把交替 blocks 按 turn 分组：同 turn 的 behavior + review 合并成一个 TurnGroup;
+ *  comment 单独成条目（保持顺序）。 */
+function groupBlocksByTurn(blocks: MessageBlock[]): Array<TurnGroup | { commentary: string }> {
+  const output: Array<TurnGroup | { commentary: string }> = []
+  for (const block of blocks) {
+    if (block.kind === 'commentary') {
+      output.push({ commentary: block.text })
+      continue
+    }
+    const turn = block.turn
+    const last = output[output.length - 1]
+    const sameTurn = last && 'turn' in last && last.turn === turn ? last : undefined
+    if (block.kind === 'review') {
+      const entries = extractEntries(block)
+      if (sameTurn) {
+        sameTurn.reviewEntries = [...(sameTurn.reviewEntries ?? []), ...entries]
+      } else {
+        output.push({ turn, reviewEntries: [...entries] })
+      }
+      continue
+    }
+    // behavior
+    const tools = block.toolCalls ?? []
+    const thinking = block.thinking
+    if (sameTurn) {
+      if (thinking) sameTurn.thinking = (sameTurn.thinking ?? '') + (sameTurn.thinking ? '\n' : '') + thinking
+      if (tools.length) sameTurn.toolCalls = [...(sameTurn.toolCalls ?? []), ...tools]
+    } else {
+      output.push({ turn, thinking, toolCalls: tools.length ? tools : undefined })
+    }
+  }
+  return output
+}
+
+/** Turn N 收纳抽屉：行为 → 思考 / 工具 / 审查(review)。 */
+function TurnFold({ turn, thinking, toolCalls, reviewEntries, streaming, onApprove, onReject }: {
+  turn?: number
+  thinking?: string
+  toolCalls?: ToolCall[]
+  reviewEntries?: ReviewBattleEntry[]
+  streaming: boolean
+  onApprove: (toolCallId: string) => void
+  onReject: (toolCallId: string) => void
+}) {
+  const [open, setOpen] = useState<boolean | null>(null)
+  const hasThinking = Boolean(thinking)
+  const hasTools = (toolCalls ?? []).length > 0
+  const hasReview = (reviewEntries ?? []).length > 0
+  const hasContent = hasThinking || hasTools || hasReview
+  // 流式时若首个 turn 有内容默认展开；历史默认折叠。
+  const expanded = open ?? (streaming && hasContent)
+  if (!hasContent) return null
+  const summary = [
+    hasThinking ? `${thinking!.length} chars` : null,
+    hasTools ? `${toolCalls!.length} tool${toolCalls!.length > 1 ? 's' : ''}` : null,
+    hasReview ? `${reviewEntries!.length} review` : null,
+  ].filter(Boolean).join(' · ')
+  const title = turn != null ? `Turn ${turn}` : '行为'
+  return (
+    <div className="mb-2 max-w-full overflow-hidden rounded-lg border border-stone-200/80 bg-stone-50/60 dark:border-stone-700/50 dark:bg-stone-800/40">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !(value ?? (streaming && hasContent)))}
+        className="flex w-full cursor-pointer select-none items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-stone-600 transition-colors hover:bg-stone-100/80 dark:text-stone-300 dark:hover:bg-stone-700/40"
+        aria-expanded={expanded}
+      >
+        <span className="text-stone-400" aria-hidden>{expanded ? <DownOutlined className="text-[9px]" /> : <RightOutlined className="text-[9px]" />}</span>
+        <span className="font-medium">{title}</span>
+        {summary && <span className="ml-auto truncate font-mono text-stone-400 dark:text-stone-500">{summary}</span>}
+      </button>
+      {expanded && (
+        <div className="space-y-1 border-t border-stone-200/70 py-1.5 dark:border-stone-700/50">
+          {hasThinking && <ThinkingFold text={thinking!} streaming={streaming} />}
+          {hasTools && (
+            <ToolFold
+              toolCalls={toolCalls!}
+              streaming={streaming}
+              onApprove={onApprove}
+              onReject={onReject}
+            />
+          )}
+          {hasReview && <ReviewBattle entries={reviewEntries!} />}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function formatTime(iso: string): string {
@@ -201,59 +301,6 @@ function ReviewBattle({ entries, thinking }: { entries: ReviewBattleEntry[]; thi
   )
 }
 
-/**
- * 每轮行为折叠面板（仿左侧 RunTimeline：折叠窄条 ↔ 展开面板，默认折叠）。
- * 内容按三级组织：思考 → 工具（工具内并行最小行动）→ 中途对话。
- */
-function BehaviorFold({ thinking, toolCalls, streaming, onApprove, onReject, turn }: {
-  thinking?: string
-  toolCalls: ToolCall[]
-  streaming: boolean
-  onApprove: (toolCallId: string) => void
-  onReject: (toolCallId: string) => void
-  turn?: number
-}) {
-  const [open, setOpen] = useState(false)
-  const hasThinking = Boolean(thinking)
-  const hasTools = toolCalls.length > 0
-  // 中途对话（commentary）不进面板——与 final 同级直接展示。
-  if (!hasThinking && !hasTools) return null
-
-  const summary = [
-    hasThinking ? `${thinking!.length} chars` : null,
-    hasTools ? `${toolCalls.length} tool${toolCalls.length > 1 ? 's' : ''}` : null,
-  ].filter(Boolean).join(' · ')
-  const title = turn != null ? `Turn ${turn}` : '行为'
-
-  return (
-    <div className="mb-2 max-w-full overflow-hidden rounded-lg border border-stone-200/80 bg-stone-50/60 dark:border-stone-700/50 dark:bg-stone-800/40">
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className="flex w-full cursor-pointer select-none items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-stone-600 transition-colors hover:bg-stone-100/80 dark:text-stone-300 dark:hover:bg-stone-700/40"
-        aria-expanded={open}
-      >
-        <span className="text-stone-400" aria-hidden>{open ? <DownOutlined className="text-[9px]" /> : <RightOutlined className="text-[9px]" />}</span>
-        <span className="font-medium">{title}</span>
-        {summary && <span className="ml-auto truncate font-mono text-stone-400 dark:text-stone-500">{summary}</span>}
-      </button>
-      {open && (
-        <div className="space-y-1 border-t border-stone-200/70 py-1.5 dark:border-stone-700/50">
-          {hasThinking && <ThinkingFold text={thinking!} streaming={streaming} />}
-          {hasTools && (
-            <ToolFold
-              toolCalls={toolCalls}
-              streaming={streaming}
-              onApprove={onApprove}
-              onReject={onReject}
-            />
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
 // 无头像设计：靠对齐与底色区分角色，时间戳为 mono 元信息
 export default function MessageItem({ message, onApprove, onReject }: MessageItemProps) {
   if (message.role === 'user') {
@@ -287,38 +334,38 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
           </div>
         ) : null}
         {blocks && blocks.length > 0 ? (
-          // 交替块：commentary 与行为按事件到达顺序出现，而非行为全堆顶部。
-          blocks.map((block, index) =>
-            block.kind === 'commentary' ? (
+          // 每个 turn 一个收纳抽屉（思想/工具/review），commentary 保持顺序独立。
+          groupBlocksByTurn(blocks).map((group, index) => (
+            'commentary' in group ? (
               <div
                 key={index}
                 className="whitespace-pre-wrap py-1 text-sm leading-relaxed text-stone-800 dark:text-stone-100"
               >
-                {block.text}
+                {group.commentary}
               </div>
-            ) : block.kind === 'review' ? (
-              <ReviewBattle key={index} entries={block.entries} thinking={block.thinking} />
             ) : (
-              <BehaviorFold
+              <TurnFold
                 key={index}
-                thinking={block.thinking}
-                toolCalls={block.toolCalls ?? []}
+                turn={group.turn}
+                thinking={group.thinking}
+                toolCalls={group.toolCalls ?? []}
+                reviewEntries={group.reviewEntries ?? []}
                 streaming={streaming}
-                turn={block.turn}
                 onApprove={(toolCallId) => onApprove(message.id, toolCallId)}
                 onReject={(toolCallId) => onReject(message.id, toolCallId)}
               />
-            ),
-          )
+            )
+          ))
         ) : (
           // 历史消息（无 blocks）回退：行为 + 审查对抗 + 顶层 commentary。
           <>
             {message.reviewEntries && message.reviewEntries.length > 0 ? (
               <ReviewBattle entries={message.reviewEntries} />
             ) : null}
-            <BehaviorFold
+            <TurnFold
               thinking={message.thinking}
               toolCalls={message.toolCalls ?? []}
+              reviewEntries={message.reviewEntries ?? []}
               streaming={streaming}
               onApprove={(toolCallId) => onApprove(message.id, toolCallId)}
               onReject={(toolCallId) => onReject(message.id, toolCallId)}

@@ -70,6 +70,7 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
         # 内联实现（不用闭包）：避免 ruff B023（嵌套函数引用循环中修改的绑定）。
         blocks: list[dict] = []
         current_turn = 0
+        last_review_turn = 0
         pending_behavior: dict | None = None
 
         for item in run:
@@ -119,11 +120,13 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
                 if pending_behavior is not None:
                     blocks.append(pending_behavior)
                     pending_behavior = None
+                last_review_turn = current_turn
                 review_entries.append({"side": "review", "action": str(item.get("trigger", ""))})
             elif event_type == "review.completed":
                 if pending_behavior is not None:
                     blocks.append(pending_behavior)
                     pending_behavior = None
+                last_review_turn = current_turn
                 review_entries.append(
                     {
                         "side": "review",
@@ -137,6 +140,7 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
                 if pending_behavior is not None:
                     blocks.append(pending_behavior)
                     pending_behavior = None
+                last_review_turn = current_turn
                 review_entries.append(
                     {
                         "side": "main_loop",
@@ -149,6 +153,7 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
                 if pending_behavior is not None:
                     blocks.append(pending_behavior)
                     pending_behavior = None
+                last_review_turn = current_turn
                 review_skipped = True
         if pending_behavior is not None:
             blocks.append(pending_behavior)
@@ -162,7 +167,7 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
                 }
             )
         if review_entries:
-            blocks.append({"kind": "review", "entries": review_entries, "turn": None})
+            blocks.append({"kind": "review", "entries": review_entries, "turn": last_review_turn or None})
         message = dict(messages[message_index])
         if tool_calls:
             message["tool_calls"] = tool_calls
