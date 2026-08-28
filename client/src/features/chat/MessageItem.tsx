@@ -10,25 +10,34 @@ interface MessageItemProps {
   onReject: (messageId: string, toolCallId: string) => void
 }
 
-/** 按 turn 聚合的块：一个 turn 一个收纳抽屉（思考/工具/review）。 */
+/** 按 turn 聚合的块：一个 turn 一个收纳抽屉（思考/工具/review/中途话）。 */
 type TurnGroup = {
   turn?: number
   thinking?: string
   toolCalls?: ToolCall[]
   reviewEntries?: ReviewBattleEntry[]
+  commentary?: string
 }
 
 function extractEntries(block: { entries?: ReviewBattleEntry[] }): ReviewBattleEntry[] {
   return block.entries ?? []
 }
 
-/** 把交替 blocks 按 turn 分组：同 turn 的 behavior + review 合并成一个 TurnGroup;
- *  comment 单独成条目（保持顺序）。 */
+/** 把交替 blocks 按 turn 分组：同 turn 的 behavior + review + commentary 合并成一个
+ *  TurnGroup（commentary 归入所属 turn,在思考/工具/review 之下、下一 turn 之上）;
+ *  无 turn 标注的 comment 单独成条目（保持顺序）。 */
 function groupBlocksByTurn(blocks: MessageBlock[]): Array<TurnGroup | { commentary: string }> {
   const output: Array<TurnGroup | { commentary: string }> = []
   for (const block of blocks) {
     if (block.kind === 'commentary') {
-      output.push({ commentary: block.text })
+      const turn = block.turn
+      const last = output[output.length - 1]
+      const sameTurn = turn != null && last && 'turn' in last && last.turn === turn ? last : undefined
+      if (sameTurn) {
+        sameTurn.commentary = (sameTurn.commentary ?? '') + (sameTurn.commentary ? '\n' : '') + block.text
+      } else {
+        output.push({ commentary: block.text })
+      }
       continue
     }
     const turn = block.turn
@@ -56,23 +65,25 @@ function groupBlocksByTurn(blocks: MessageBlock[]): Array<TurnGroup | { commenta
   return output
 }
 
-/** Turn N 收纳抽屉：行为 → 思考 / 工具 / 审查(review)。 */
-function TurnFold({ turn, thinking, toolCalls, reviewEntries, streaming, onApprove, onReject }: {
+/** Turn N 收纳抽屉：行为 → 思考 / 工具 / 中途话 / 审查(review)。默认折叠。 */
+function TurnFold({ turn, thinking, toolCalls, reviewEntries, commentary, streaming, onApprove, onReject }: {
   turn?: number
   thinking?: string
   toolCalls?: ToolCall[]
   reviewEntries?: ReviewBattleEntry[]
+  commentary?: string
   streaming: boolean
   onApprove: (toolCallId: string) => void
   onReject: (toolCallId: string) => void
 }) {
-  const [open, setOpen] = useState<boolean | null>(null)
+  const [open, setOpen] = useState(false)
   const hasThinking = Boolean(thinking)
   const hasTools = (toolCalls ?? []).length > 0
   const hasReview = (reviewEntries ?? []).length > 0
-  const hasContent = hasThinking || hasTools || hasReview
-  // 流式时若首个 turn 有内容默认展开；历史默认折叠。
-  const expanded = open ?? (streaming && hasContent)
+  const hasCommentary = Boolean(commentary)
+  const hasContent = hasThinking || hasTools || hasReview || hasCommentary
+  // 默认折叠（§7.8.9 修正 2026-08-19：此前流式时自动展开,用户要求改为折叠）。
+  const expanded = open
   if (!hasContent) return null
   const summary = [
     hasThinking ? `${thinking!.length} chars` : null,
@@ -84,7 +95,7 @@ function TurnFold({ turn, thinking, toolCalls, reviewEntries, streaming, onAppro
     <div className="mb-2 max-w-full overflow-hidden rounded-lg border border-stone-200/80 bg-stone-50/60 dark:border-stone-700/50 dark:bg-stone-800/40">
       <button
         type="button"
-        onClick={() => setOpen((value) => !(value ?? (streaming && hasContent)))}
+        onClick={() => setOpen((value) => !value)}
         className="flex w-full cursor-pointer select-none items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-stone-600 transition-colors hover:bg-stone-100/80 dark:text-stone-300 dark:hover:bg-stone-700/40"
         aria-expanded={expanded}
       >
@@ -102,6 +113,11 @@ function TurnFold({ turn, thinking, toolCalls, reviewEntries, streaming, onAppro
               onApprove={onApprove}
               onReject={onReject}
             />
+          )}
+          {hasCommentary && (
+            <div className="whitespace-pre-wrap px-1 py-0.5 text-sm leading-relaxed text-stone-800 dark:text-stone-100">
+              {commentary!}
+            </div>
           )}
           {hasReview && <ReviewBattle entries={reviewEntries!} />}
         </div>
@@ -350,6 +366,7 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
                 thinking={group.thinking}
                 toolCalls={group.toolCalls ?? []}
                 reviewEntries={group.reviewEntries ?? []}
+                commentary={group.commentary}
                 streaming={streaming}
                 onApprove={(toolCallId) => onApprove(message.id, toolCallId)}
                 onReject={(toolCallId) => onReject(message.id, toolCallId)}
