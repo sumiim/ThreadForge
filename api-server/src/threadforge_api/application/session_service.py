@@ -324,16 +324,8 @@ class SessionService:
                     "task_id": task.task_id,
                     "run_id": task.run_id,
                     "status": task.status.value,
-                    "input": (
-                        ""
-                        if session.get("execution_environment") == "local_worker"
-                        else _clip(redact_artifact(task.input), MESSAGE_CONTENT_MAX)
-                    ),
-                    "final_answer": (
-                        None
-                        if session.get("execution_environment") == "local_worker"
-                        else _clip(redact_artifact(task.final_answer), MESSAGE_CONTENT_MAX)
-                    ),
+                    "input": _clip(redact_artifact(task.input), MESSAGE_CONTENT_MAX),
+                    "final_answer": _clip(redact_artifact(task.final_answer), MESSAGE_CONTENT_MAX),
                     "stop_reason": task.stop_reason,
                     "error_stage": task.error_stage,
                     "error_code": task.error_code,
