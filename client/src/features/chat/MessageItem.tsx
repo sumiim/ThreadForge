@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { DownOutlined, RightOutlined, ToolOutlined } from '@ant-design/icons'
 import Markdown from '../../components/Markdown'
-import type { Message, ReviewBattleEntry, ToolCall } from '../../api/types'
+import type { Message, MessageBlock, ReviewBattleEntry, ToolCall } from '../../api/types'
 import ToolList from './ToolList'
 
 interface MessageItemProps {
