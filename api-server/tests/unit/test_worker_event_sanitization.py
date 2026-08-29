@@ -357,6 +357,26 @@ def test_run_index_keeps_review_battle_and_thinking_details():
     assert items[4]["reason"] == "read_only_task"
 
 
+def test_review_completed_sanitizer_keeps_auditable_decision_fields():
+    safe = _sanitize_event_data(
+        "review.completed",
+        {
+            "trigger": "final_before",
+            "verdict": "redirect",
+            "feedback": "Need a verified result",
+            "reason": "verification_gate_unpassed",
+            "obstacles": ["missing test result"],
+            "tool_rounds": 2,
+        },
+    )
+
+    assert safe["verdict"] == "redirect"
+    assert safe["feedback"] == "Need a verified result"
+    assert safe["reason"] == "verification_gate_unpassed"
+    assert safe["obstacles"] == ["missing test result"]
+    assert safe["tool_rounds"] == 2
+
+
 def test_review_skipped_event_is_sanitized():
     safe = _sanitize_event_data(
         "review.skipped",

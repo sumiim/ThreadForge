@@ -16,62 +16,52 @@ type TurnGroup = {
   thinking?: string
   toolCalls?: ToolCall[]
   reviewEntries?: ReviewBattleEntry[]
-  commentary?: string
 }
 
 function extractEntries(block: { entries?: ReviewBattleEntry[] }): ReviewBattleEntry[] {
   return block.entries ?? []
 }
 
-/** 把交替 blocks 按 turn 分组：同 turn 的 behavior + review + commentary 合并成一个
- *  TurnGroup（commentary 归入所属 turn,在思考/工具/review 之下、下一 turn 之上）;
- *  无 turn 标注的 comment 单独成条目（保持顺序）。 */
+/** 把行为块按 turn 聚合成唯一抽屉；commentary 永远保留为独立条目并维持事件顺序。 */
 function groupBlocksByTurn(blocks: MessageBlock[]): Array<TurnGroup | { commentary: string }> {
   const output: Array<TurnGroup | { commentary: string }> = []
+  const groups = new Map<number | undefined, TurnGroup>()
+
+  const getGroup = (turn: number | undefined): TurnGroup => {
+    const existing = groups.get(turn)
+    if (existing) return existing
+    const created: TurnGroup = { turn }
+    groups.set(turn, created)
+    output.push(created)
+    return created
+  }
+
   for (const block of blocks) {
     if (block.kind === 'commentary') {
-      const turn = block.turn
-      const last = output[output.length - 1]
-      const sameTurn = turn != null && last && 'turn' in last && last.turn === turn ? last : undefined
-      if (sameTurn) {
-        sameTurn.commentary = (sameTurn.commentary ?? '') + (sameTurn.commentary ? '\n' : '') + block.text
-      } else {
-        output.push({ commentary: block.text })
-      }
+      output.push({ commentary: block.text })
       continue
     }
-    const turn = block.turn
-    const last = output[output.length - 1]
-    const sameTurn = last && 'turn' in last && last.turn === turn ? last : undefined
+    const group = getGroup(block.turn)
     if (block.kind === 'review') {
       const entries = extractEntries(block)
-      if (sameTurn) {
-        sameTurn.reviewEntries = [...(sameTurn.reviewEntries ?? []), ...entries]
-      } else {
-        output.push({ turn, reviewEntries: [...entries] })
-      }
+      group.reviewEntries = [...(group.reviewEntries ?? []), ...entries]
       continue
     }
     // behavior
     const tools = block.toolCalls ?? []
     const thinking = block.thinking
-    if (sameTurn) {
-      if (thinking) sameTurn.thinking = (sameTurn.thinking ?? '') + (sameTurn.thinking ? '\n' : '') + thinking
-      if (tools.length) sameTurn.toolCalls = [...(sameTurn.toolCalls ?? []), ...tools]
-    } else {
-      output.push({ turn, thinking, toolCalls: tools.length ? tools : undefined })
-    }
+    if (thinking) group.thinking = (group.thinking ?? '') + (group.thinking ? '\n' : '') + thinking
+    if (tools.length) group.toolCalls = [...(group.toolCalls ?? []), ...tools]
   }
   return output
 }
 
 /** Turn N 收纳抽屉：行为 → 思考 / 工具 / 中途话 / 审查(review)。默认折叠。 */
-function TurnFold({ turn, thinking, toolCalls, reviewEntries, commentary, streaming, onApprove, onReject }: {
+function TurnFold({ turn, thinking, toolCalls, reviewEntries, streaming, onApprove, onReject }: {
   turn?: number
   thinking?: string
   toolCalls?: ToolCall[]
   reviewEntries?: ReviewBattleEntry[]
-  commentary?: string
   streaming: boolean
   onApprove: (toolCallId: string) => void
   onReject: (toolCallId: string) => void
@@ -80,8 +70,7 @@ function TurnFold({ turn, thinking, toolCalls, reviewEntries, commentary, stream
   const hasThinking = Boolean(thinking)
   const hasTools = (toolCalls ?? []).length > 0
   const hasReview = (reviewEntries ?? []).length > 0
-  const hasCommentary = Boolean(commentary)
-  const hasContent = hasThinking || hasTools || hasReview || hasCommentary
+  const hasContent = hasThinking || hasTools || hasReview
   // 默认折叠（§7.8.9 修正 2026-08-19：此前流式时自动展开,用户要求改为折叠）。
   const expanded = open
   if (!hasContent) return null
@@ -113,11 +102,6 @@ function TurnFold({ turn, thinking, toolCalls, reviewEntries, commentary, stream
               onApprove={onApprove}
               onReject={onReject}
             />
-          )}
-          {hasCommentary && (
-            <div className="whitespace-pre-wrap px-1 py-0.5 text-sm leading-relaxed text-stone-800 dark:text-stone-100">
-              {commentary!}
-            </div>
           )}
           {hasReview && <ReviewBattle entries={reviewEntries!} />}
         </div>
@@ -350,7 +334,7 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
           </div>
         ) : null}
         {blocks && blocks.length > 0 ? (
-          // 每个 turn 一个收纳抽屉（思想/工具/review），commentary 保持顺序独立。
+          // 同一 turn 始终只有一个抽屉；commentary 保持其事件顺序独立显示。
           groupBlocksByTurn(blocks).map((group, index) => (
             'commentary' in group ? (
               <div
@@ -366,7 +350,6 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
                 thinking={group.thinking}
                 toolCalls={group.toolCalls ?? []}
                 reviewEntries={group.reviewEntries ?? []}
-                commentary={group.commentary}
                 streaming={streaming}
                 onApprove={(toolCallId) => onApprove(message.id, toolCallId)}
                 onReject={(toolCallId) => onReject(message.id, toolCallId)}

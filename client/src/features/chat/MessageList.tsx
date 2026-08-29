@@ -15,6 +15,7 @@ export default function MessageList({ messages, onApprove, onReject }: MessageLi
   const bottomRef = useRef<HTMLDivElement>(null)
   const [atBottom, setAtBottom] = useState(true)
   const userScrolledRef = useRef(false)
+  const previousMessageCountRef = useRef(messages.length)
 
   // 滚动侦听
   const handleScroll = useCallback(() => {
@@ -24,6 +25,11 @@ export default function MessageList({ messages, onApprove, onReject }: MessageLi
     const isAtBottom = distance <= FOLLOW_THRESHOLD
     if (isAtBottom) userScrolledRef.current = false
     setAtBottom(isAtBottom)
+  }, [])
+
+  const markUserScroll = useCallback(() => {
+    userScrolledRef.current = true
+    setAtBottom(false)
   }, [])
 
   // 到底部
@@ -37,8 +43,10 @@ export default function MessageList({ messages, onApprove, onReject }: MessageLi
 
   // 自动跟随：仅当用户已在底部时
   useEffect(() => {
-    if (atBottom && messages.length > 0) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const isNewMessage = messages.length > previousMessageCountRef.current
+    previousMessageCountRef.current = messages.length
+    if (atBottom && !userScrolledRef.current && isNewMessage && messages.length > 0) {
+      bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
     }
   }, [messages, atBottom])
 
@@ -47,6 +55,8 @@ export default function MessageList({ messages, onApprove, onReject }: MessageLi
       id="run-scroll-container"
       ref={scrollRef}
       onScroll={handleScroll}
+      onWheel={markUserScroll}
+      onTouchMove={markUserScroll}
       className="relative min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6 sm:py-6 lg:px-10"
     >
       <div className="mx-auto max-w-4xl space-y-6">

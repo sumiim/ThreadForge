@@ -80,6 +80,19 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
                 if pending_behavior is not None:
                     blocks.append(pending_behavior)
                     pending_behavior = None
+            elif event_type == "model.completed":
+                # A tool-protocol reply often has no user-visible text.  When
+                # the model did publish a natural-language progress update,
+                # retain it as a separate block at its original position so a
+                # page reload does not collapse the history to the terminal
+                # answer alone.
+                text = str(item.get("text", "")).strip()
+                if text and not text.startswith(("<tool", "<retry", "<final", "<talk", "{\"tools\"")):
+                    commentary_parts.append(text)
+                    if pending_behavior is not None:
+                        blocks.append(pending_behavior)
+                        pending_behavior = None
+                    blocks.append({"kind": "commentary", "text": text, "turn": current_turn or None})
             elif event_type == "assistant.commentary":
                 text = str(item.get("text", "")).strip()
                 if text:
