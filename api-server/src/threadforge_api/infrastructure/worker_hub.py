@@ -1657,12 +1657,23 @@ class WorkerHub:
         )
         if event_type in {
             "plan.created",
+            "plan.skipped",
             "assistant.commentary",
+            # Keep the complete, bounded conversation projection.  The live
+            # client already receives these frames, but history reload used to
+            # discard them because they were never appended to run_index.
+            "assistant.thinking",
+            "model.started",
+            "model.completed",
             "review.started",
             "review.completed",
+            "review.skipped",
+            "main_loop_rebuttal",
+            "tool.requested",
             "tool.started",
             "tool.completed",
             "tool.failed",
+            "message.completed",
         }:
             self._task_repo.update(
                 task_id,

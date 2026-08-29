@@ -94,10 +94,20 @@ export function eventTimeOf(item: Pick<RunIndexItem, 'timestamp' | 'started_at' 
   return Number.NaN
 }
 
+/** Event occurrence time for chronological lists. Intervals still use eventTimeOf(). */
+export function eventOrderTimeOf(item: Pick<RunIndexItem, 'timestamp' | 'started_at' | 'ended_at'> & { createdAt?: string }): number {
+  for (const value of [item.timestamp, item.started_at, item.createdAt, item.ended_at]) {
+    if (!value) continue
+    const time = new Date(value).getTime()
+    if (!Number.isNaN(time)) return time
+  }
+  return Number.NaN
+}
+
 /** Stable chronological ordering shared by the chat navigator and audit view. */
 export function sortTimelineItems<T extends Pick<RunIndexItem, 'timestamp' | 'started_at' | 'ended_at'>>(items: T[]): T[] {
   return items
-    .map((item, index) => ({ item, index, time: eventTimeOf(item) }))
+    .map((item, index) => ({ item, index, time: eventOrderTimeOf(item) }))
     .sort((a, b) => {
       if (!Number.isNaN(a.time) && !Number.isNaN(b.time) && a.time !== b.time) return a.time - b.time
       if (!Number.isNaN(a.time)) return -1

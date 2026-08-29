@@ -2,7 +2,7 @@ import { useMemo, useState, type MouseEvent } from 'react'
 import { Button, Empty, Input, Select, Tag } from 'antd'
 import { CloseOutlined, DownloadOutlined, SearchOutlined } from '@ant-design/icons'
 import type { RunIndexItem, Session, SessionRun } from '../../api/types'
-import { eventLabel, eventTimeOf, isFailed, LANE_ORDER, LANE_TITLE, laneOf, sortTimelineItems, timelineBounds, timelineRange, type Lane } from './traceModel'
+import { eventLabel, eventOrderTimeOf, eventTimeOf, isFailed, LANE_ORDER, LANE_TITLE, laneOf, sortTimelineItems, timelineBounds, timelineRange, type Lane } from './traceModel'
 
 interface RunTracePanelProps {
   open: boolean
@@ -285,7 +285,7 @@ export default function RunTracePanel({ open, session, activeRunId, provider, on
                     onClick={() => setSelectedEventId(row.event_id)}
                     className={`grid w-full grid-cols-[64px_72px_minmax(0,1fr)] items-center gap-2 border-b border-stone-100 px-3 py-2 text-left text-xs sm:grid-cols-[72px_88px_minmax(0,1fr)_80px] ${row.event_id === effectiveSelectedEventId ? 'bg-blue-50' : 'hover:bg-stone-50'}`}
                   >
-                    <span className="font-mono text-[10px] text-stone-400">{new Date(row.timestamp).toLocaleTimeString()}</span>
+                    <span className="font-mono text-[10px] text-stone-400">{Number.isNaN(eventOrderTimeOf(row)) ? '—' : new Date(eventOrderTimeOf(row)).toLocaleTimeString()}</span>
                     <Tag color={LANE_COLOR[row.lane]} className="!m-0 w-fit">{LANE_TITLE[row.lane]}</Tag>
                     <span className="min-w-0 truncate text-stone-700">{eventLabel(row.type)}{row.tool_name ? ` · ${row.tool_name}` : ''}</span>
                     <span className={`hidden truncate text-right font-mono text-[10px] sm:block ${row.failed ? 'text-red-600' : 'text-stone-400'}`}>

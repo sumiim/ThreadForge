@@ -98,6 +98,22 @@ def test_attach_run_detail_groups_blocks_by_turn_and_keeps_commentary():
     assert blocks[1]["toolCalls"][0]["tool_name"] == "list_files"
 
 
+def test_attach_run_detail_replays_visible_model_progress_in_order():
+    run = [
+        {"type": "model.started"},
+        {"type": "assistant.thinking", "text": "先定位配置"},
+        {"type": "model.completed", "text": "我先检查项目配置。"},
+        {"type": "tool.requested", "tool_call_id": "c1", "tool_name": "list_files", "args_preview": {"path": "."}},
+        {"type": "model.completed", "text": "<tool>{\"name\":\"list_files\"}</tool>"},
+    ]
+
+    message = _attach_run_detail(_messages(), [_task(run)])[1]
+
+    assert [block["kind"] for block in message["blocks"]] == ["behavior", "commentary", "behavior"]
+    assert message["blocks"][1] == {"kind": "commentary", "text": "我先检查项目配置。", "turn": 1}
+    assert message["commentary"] == "我先检查项目配置。"
+
+
 def test_attach_run_detail_marks_truncated_result():
     run = [
         {"type": "tool.requested", "tool_call_id": "c1", "tool_name": "run_shell", "args_preview": {"command": "pytest"}},
