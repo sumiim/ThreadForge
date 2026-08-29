@@ -10,7 +10,7 @@ import time
 from unittest.mock import patch
 
 import pytest
-from pico.approval import ApprovalOutcome, ApprovalRequest
+from pico.approval import ApprovalOutcome, ApprovalRequest, AutoApprovalStrategy
 from pico.execution_hooks import RunCancelled
 from pico.features.memory import default_memory_state
 from pico.providers.clients import FakeModelClient
@@ -951,6 +951,15 @@ def test_blocking_model_call_is_interrupted_by_worker_cancellation():
     assert not thread.is_alive()
     assert len(errors) == 1
     assert isinstance(errors[0], RunCancelled)
+
+
+def test_active_run_cancel_supports_non_remote_approval_strategy():
+    token = CancellationToken()
+    active = ActiveRun("task_cancel", token, AutoApprovalStrategy())
+
+    active.cancel(0)
+
+    assert token.is_cancelled()
 
 
 def test_remote_execution_hooks_publish_read_only_and_shell_result_previews():
