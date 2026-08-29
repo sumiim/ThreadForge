@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from fastapi import WebSocket
+from starlette.websockets import WebSocketDisconnect
 from pico.features.memory import default_memory_state
 from pico.security import (
     public_tool_args_preview,
@@ -203,7 +204,13 @@ class WorkerHub:
         for replaced_task_id in replaced_task_ids:
             self._fail_task(replaced_task_id, "worker_reconnected")
         if previous is not None:
-            await previous.websocket.close(code=4001, reason="device reconnected")
+            # A stale connection is frequently already gone when a Worker
+            # reconnects after a tunnel/proxy timeout.  Closing it must never
+            # abort the new connection handshake or leave the device offline.
+            try:
+                await previous.websocket.close(code=4001, reason="device reconnected")
+            except (WebSocketDisconnect, ConnectionError, RuntimeError, TimeoutError):
+                LOGGER.debug("stale Worker connection already closed", exc_info=True)
         return connection
 
     async def sender(self, connection: WorkerConnection) -> None:
