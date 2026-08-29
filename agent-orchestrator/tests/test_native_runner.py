@@ -51,7 +51,8 @@ def _build_runtime(tmp_path, outputs, *, allowed_tools=None):
 
 
 def test_native_conversation_answers_without_tools(tmp_path):
-    agent, _, fixture_root = _build_runtime(tmp_path, ["<final>hello back</final>"])
+    agent, model, fixture_root = _build_runtime(tmp_path, ["<final>hello back</final>"])
+    agent.memory.set_task_summary("prior coding task")
     result = run_native(
         agent,
         "hello",
@@ -61,6 +62,9 @@ def test_native_conversation_answers_without_tools(tmp_path):
     assert result.task_state.stop_reason == STOP_REASON_FINAL_ANSWER_RETURNED
     assert result.task_state.intent == INTENT_CONVERSATION
     assert result.run_metadata["resolved_intent"] == INTENT_CONVERSATION
+    assert agent.memory.to_dict()["working"]["task_summary"] == "prior coding task"
+    assert "prior coding task" not in model.prompts[0]
+    assert "README.md" not in model.prompts[0]
     shutil.rmtree(fixture_root, ignore_errors=True)
 
 

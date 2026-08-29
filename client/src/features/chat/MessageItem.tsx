@@ -75,7 +75,7 @@ function TurnFold({ turn, thinking, toolCalls, reviewEntries, streaming, onAppro
   const expanded = open
   if (!hasContent) return null
   const summary = [
-    hasThinking ? `${thinking!.length} chars` : null,
+    hasThinking ? `思考 ${thinking!.length} 字` : null,
     hasTools ? `${toolCalls!.length} tool${toolCalls!.length > 1 ? 's' : ''}` : null,
     hasReview ? `${reviewEntries!.length} review` : null,
   ].filter(Boolean).join(' · ')
@@ -171,7 +171,7 @@ function ThinkingFold({ text, streaming, label = 'Thinking' }: { text: string; s
       >
         <span aria-hidden>🧠</span>
         <span className="font-medium">{label}</span>
-        <span className="ml-auto font-mono text-stone-400">{text.length} chars</span>
+        <span className="ml-auto font-mono text-stone-400">{text.length} 字</span>
         <span className="text-stone-400" aria-hidden>{open ? '▾' : '▸'}</span>
       </button>
       {open && (
@@ -261,7 +261,7 @@ function ReviewBattle({ entries, thinking }: { entries: ReviewBattleEntry[]; thi
               >
                 <span aria-hidden>🧠</span>
                 <span className="font-medium">Review thinking</span>
-                <span className="ml-auto font-mono text-orange-400">{thinking.length} chars</span>
+                <span className="ml-auto font-mono text-orange-400">{thinking.length} 字</span>
                 <span aria-hidden>{thinkOpen ? '▾' : '▸'}</span>
               </button>
               {thinkOpen && (

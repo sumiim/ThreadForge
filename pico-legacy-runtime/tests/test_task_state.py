@@ -1,4 +1,5 @@
 from pico.task_state import (
+    STOP_REASON_CONVERGENCE_GUARD_TRIGGERED,
     STOP_REASON_FINAL_ANSWER_RETURNED,
     STOP_REASON_RETRY_LIMIT_REACHED,
     STOP_REASON_STEP_LIMIT_REACHED,
@@ -45,6 +46,16 @@ def test_task_state_records_step_limit_stop_reason():
 
     assert state.status == "stopped"
     assert state.stop_reason == STOP_REASON_STEP_LIMIT_REACHED
+
+
+def test_task_state_records_convergence_guard_separately_from_step_limit():
+    state = TaskState.create(run_id="run_guard", task_id="task_guard", user_request="Inspect.")
+
+    state.stop_convergence_guard("Best effort.")
+
+    assert state.status == "stopped"
+    assert state.stop_reason == STOP_REASON_CONVERGENCE_GUARD_TRIGGERED
+    assert state.final_answer == "Best effort."
 
 
 def test_task_state_records_retry_limit_stop_reason():

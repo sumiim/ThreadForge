@@ -137,5 +137,9 @@ describe('session task recovery', () => {
       terminalFailureMessage({ status: 'blocked', stop_reason: 'completion_gate_failed' }),
       '运行结果未满足计划中的全部完成条件，请根据当前进度重试。',
     )
+    assert.equal(
+      terminalFailureMessage({ status: 'blocked', stop_reason: 'convergence_guard_triggered' }),
+      '模型未能通过审查或持续产生有效进展，本次运行已停止空转。',
+    )
   })
 })

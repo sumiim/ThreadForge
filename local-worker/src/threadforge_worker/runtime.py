@@ -860,6 +860,7 @@ def run_task(
     elif stop_reason in {
         "approval_denied",
         "budget_exhausted",
+        "convergence_guard_triggered",
         "no_changes_to_review",
         "retry_limit_reached",
         "review_retry_limit_reached",

@@ -105,6 +105,7 @@ def test_agent_loop_rejects_tool_during_stagnation_finalization(tmp_path):
 
     state = agent.current_task_state
     assert state.status in {"stopped", "blocked"}
+    assert state.stop_reason == "convergence_guard_triggered"
     trace = agent.run_store.trace_path(state).read_text(encoding="utf-8")
     assert '"event": "stagnation_detected"' in trace
     assert '"event": "finalization_protocol_rejected"' in trace
@@ -116,6 +117,27 @@ def test_pico_ask_delegates_to_agent_loop(tmp_path):
     agent = build_agent(tmp_path, ["<final>Facade works.</final>"])
 
     assert agent.ask("Use facade") == "Facade works."
+
+
+def test_plain_conversation_uses_minimal_prompt_without_tools_or_history(tmp_path):
+    class CapturingModel(FakeModelClient):
+        def complete(self, prompt, max_new_tokens, **kwargs):
+            self.completion_kwargs = kwargs
+            return super().complete(prompt, max_new_tokens, **kwargs)
+
+    agent = build_agent(tmp_path, ["<final>Earlier task complete.</final>"])
+    assert agent.ask("Inspect the workspace") == "Earlier task complete."
+    agent.session["memory"]["working"]["task_summary"] = "读取整个项目"
+    model = CapturingModel(["<final>你好！有什么我可以帮你的？</final>"])
+    agent.model_client = model
+
+    assert agent.ask("你好") == "你好！有什么我可以帮你的？"
+    assert model.completion_kwargs["tool_definitions"] == ()
+    assert "读取整个项目" not in model.prompts[0]
+    assert "README.md" not in model.prompts[0]
+    assert agent.current_task_state.intent == "conversation"
+    assert agent.current_task_state.tool_steps == 0
+    assert agent.current_task_state.status == "completed"
 
 
 def test_agent_loop_passes_current_allowed_tools_to_model(tmp_path):
