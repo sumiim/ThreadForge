@@ -11,8 +11,14 @@ def _messages():
     ]
 
 
-def _task(run_index):
-    return {"task_id": "task_1", "created_at": "2026-08-19T00:00:01Z", "run_index": run_index}
+def _task(run_index, *, status="completed", stop_reason="final_answer_returned"):
+    return {
+        "task_id": "task_1",
+        "created_at": "2026-08-19T00:00:01Z",
+        "run_index": run_index,
+        "status": status,
+        "stop_reason": stop_reason,
+    }
 
 
 def test_attach_run_detail_rebuilds_tools_thinking_and_review():
@@ -98,7 +104,7 @@ def test_attach_run_detail_groups_blocks_by_turn_and_keeps_commentary():
     assert blocks[1]["toolCalls"][0]["tool_name"] == "list_files"
 
 
-def test_attach_run_detail_replays_visible_model_progress_in_order():
+def test_attach_run_detail_keeps_model_completed_text_out_of_chat_history():
     run = [
         {"type": "model.started"},
         {"type": "assistant.thinking", "text": "先定位配置"},
@@ -109,9 +115,10 @@ def test_attach_run_detail_replays_visible_model_progress_in_order():
 
     message = _attach_run_detail(_messages(), [_task(run)])[1]
 
-    assert [block["kind"] for block in message["blocks"]] == ["behavior", "commentary", "behavior"]
-    assert message["blocks"][1] == {"kind": "commentary", "text": "我先检查项目配置。", "turn": 1}
-    assert message["commentary"] == "我先检查项目配置。"
+    assert [block["kind"] for block in message["blocks"]] == ["behavior"]
+    assert "commentary" not in message
+    assert message["blocks"][0]["thinking"] == "先定位配置"
+    assert message["blocks"][0]["toolCalls"][0]["tool_name"] == "list_files"
 
 
 def test_attach_run_detail_marks_truncated_result():
@@ -122,6 +129,18 @@ def test_attach_run_detail_marks_truncated_result():
     messages = _attach_run_detail(_messages(), [_task(run)])
 
     assert messages[1]["tool_calls"][0]["result"] == "big\n\n[预览已截断]"
+
+
+def test_attach_run_detail_replaces_blocked_convergence_summary_with_stable_message():
+    messages = _messages()
+    messages[1]["content"] = "运行未能完整完成——过时且很长的候选总结"
+
+    result = _attach_run_detail(
+        messages,
+        [_task([], status="blocked", stop_reason="convergence_guard_triggered")],
+    )
+
+    assert result[1]["content"] == "模型未能通过审查或持续产生有效进展，本次运行已停止空转。"
 
 
 def test_attach_run_detail_read_only_skips_review():

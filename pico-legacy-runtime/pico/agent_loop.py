@@ -3,6 +3,7 @@
 import concurrent.futures
 import hashlib
 import json
+import re
 import threading
 import time
 import uuid
@@ -24,8 +25,8 @@ from .task_state import (
     STATUS_FAILED,
     STATUS_STOPPED,
     STOP_REASON_BUDGET_EXHAUSTED,
+    STOP_REASON_CONVERGENCE_GUARD_TRIGGERED,
     STOP_REASON_PROCESS_CLEANUP_FAILED,
-    STOP_REASON_STEP_LIMIT_REACHED,
     TaskState,
 )
 from .tool_executor import ToolExecutionResult
@@ -648,6 +649,87 @@ class AgentLoop:
         )
         return True
 
+    def _run_plain_conversation(self, task_state, user_message, *, run_started_at, token, hooks):
+        """Answer an unambiguous social message without workspace context or tools.
+
+        This path deliberately avoids ``_build_prompt_and_metadata``: a greeting
+        must not inherit an earlier coding task, workspace summary, memory, or
+        tool surface. Transport retries still happen inside the provider client.
+        """
+        agent = self.agent
+        prompt = (
+            "You are ThreadForge, a coding assistant. Reply naturally and briefly "
+            "to the social message below. Do not mention a workspace, project, "
+            "tools, plans, or prior tasks. Return exactly <final>your reply</final>.\n\n"
+            f"User message: {json.dumps(str(user_message), ensure_ascii=False)}"
+        )
+        task_state.intent = "conversation"
+        task_state.checklist = []
+        task_state.done_when = []
+        task_state.set_phase(PHASE_ACT_OR_ANSWER, next_step="Reply to the conversation")
+        task_state.record_attempt()
+        agent.run_store.write_task_state(task_state)
+        agent.emit_agent_state(task_state, "plain_conversation")
+        agent.emit_trace(
+            task_state,
+            "plain_conversation_routed",
+            {"history_included": False, "workspace_included": False, "tool_count": 0},
+        )
+
+        token.raise_if_cancelled()
+        hooks.before_model(task_state)
+        raw = agent.model_client.complete(
+            prompt,
+            min(agent.max_new_tokens, 256),
+            on_retry=lambda details: getattr(
+                hooks, "model_retrying", lambda *_args: None
+            )(task_state, "conversation", details),
+            on_text_delta=lambda delta: getattr(
+                hooks, "model_text_delta", lambda *_args: None
+            )(task_state, "execute", delta),
+            on_thinking_delta=lambda delta: getattr(
+                hooks, "model_thinking_delta", lambda *_args: None
+            )(task_state, "conversation", delta),
+            tool_definitions=(),
+            finalization_only=True,
+        )
+        completion_metadata = dict(
+            getattr(agent.model_client, "last_completion_metadata", {}) or {}
+        )
+        task_state.record_model_usage(completion_metadata)
+        agent.last_completion_metadata = completion_metadata
+        token.raise_if_cancelled()
+        hooks.after_model(task_state, completion_metadata)
+
+        kind, payload = agent.parse(raw)
+        final = str(payload or "").strip() if kind == "final" else ""
+        if not final and isinstance(raw, str):
+            plain = raw.strip()
+            if plain and not plain.startswith("<"):
+                final = plain
+        if not final:
+            final = "你好！有什么我可以帮你的？" if re.search(r"[\u4e00-\u9fff]", user_message) else "Hello! How can I help?"
+
+        agent.record({"role": "assistant", "content": final, "created_at": now()})
+        task_state.finish_success(final)
+        agent.run_store.write_task_state(task_state)
+        agent.emit_agent_state(task_state, "final")
+        agent.emit_trace(
+            task_state,
+            "run_finished",
+            {
+                "status": task_state.status,
+                "stop_reason": task_state.stop_reason,
+                "final_answer": final,
+                "run_duration_ms": int((time.monotonic() - run_started_at) * 1000),
+            },
+        )
+        agent.run_store.write_report(
+            task_state, agent.redact_artifact(agent.build_report(task_state))
+        )
+        agent.emit_progress(f"run {task_state.run_id} finished")
+        return final
+
     def _replan(self, task_state, user_message, feedback):
         """§7.8.9 阶段 3.5：review redirect 时 replan，更新 checklist。
 
@@ -979,7 +1061,11 @@ class AgentLoop:
         hooks = agent.execution_hooks
         agent.child_task_states = []
         run_started_at = time.monotonic()
-        agent.memory.set_task_summary(user_message)
+        from .planning import is_plain_conversation
+
+        plain_conversation = is_plain_conversation(user_message)
+        if not plain_conversation:
+            agent.memory.set_task_summary(user_message)
         agent.record({"role": "user", "content": user_message, "created_at": now()})
 
         task_state = TaskState.create(
@@ -1009,11 +1095,21 @@ class AgentLoop:
         )
         agent.run_store.write_task_state(task_state)
         agent.emit_agent_state(task_state, "run_started")
-        task_state.set_phase(PHASE_GATHER_CONTEXT, next_step="Inspect the workspace only when evidence is needed")
-        agent.run_store.write_task_state(task_state)
-        agent.emit_agent_state(task_state, "context_requested")
-
         try:
+            if plain_conversation:
+                return self._run_plain_conversation(
+                    task_state,
+                    user_message,
+                    run_started_at=run_started_at,
+                    token=token,
+                    hooks=hooks,
+                )
+            task_state.set_phase(
+                PHASE_GATHER_CONTEXT,
+                next_step="Inspect the workspace only when evidence is needed",
+            )
+            agent.run_store.write_task_state(task_state)
+            agent.emit_agent_state(task_state, "context_requested")
             # §7.8.9 阶段 3.5：初始 planning（run 开始一次）——生成真实 checklist，
             # 修复「无 planning = checklist 退化」。失败/未开启 → 默认阶段模板。
             self._initial_plan(task_state, user_message)
@@ -1281,7 +1377,7 @@ class AgentLoop:
                     "模型连续两次提交 final 均被审查驳回（无工具动作），停止空转",
                 )
                 task_state.stop(
-                    STOP_REASON_STEP_LIMIT_REACHED,
+                    STOP_REASON_CONVERGENCE_GUARD_TRIGGERED,
                     status=STATUS_STOPPED,
                     final_answer=final,
                 )
@@ -1979,7 +2075,7 @@ class AgentLoop:
         else:
             # finalization 轮（证据截停触发）模型未给出有效 final → best-effort。
             final = _convergence_summary(self.agent, task_state, "停滞收敛：连续坏轮后未能产出最终结论")
-            task_state.stop_step_limit(final)
+            task_state.stop_convergence_guard(final)
         task_state.set_phase(PHASE_FINAL, next_step="Explain the budget or execution blocker")
         agent.run_store.write_task_state(task_state)
         agent.emit_agent_state(task_state, "run_stopped")

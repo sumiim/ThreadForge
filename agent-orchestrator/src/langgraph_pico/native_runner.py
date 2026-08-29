@@ -202,7 +202,8 @@ def run_native(
     }
     try:
         started_at = time.monotonic()
-        if record_session:
+        plain_conversation = is_plain_conversation_request(task_input)
+        if record_session and not plain_conversation:
             agent.memory.set_task_summary(task_input)
             agent.session["memory"] = agent.memory.to_dict()
 
@@ -219,10 +220,9 @@ def run_native(
             max_total_steps=agent.max_total_steps,
         )
         agent.current_task_state = task_state
-        # §7.8.9 阶段 4：取消 intent 路由——不再分类（conversation/read_only/code_change）。
-        # 行为由权限档 + 工具行为 + R1 验证决定（objective，非模型自报意图）。
-        # intent 保留为审计字段（恒取 normalized_mode，供向后兼容 trace/report）。
-        intent = normalized_mode
+        # 明确的社交短句走无工作区、无工具的轻量路径。其余任务仍不做主观
+        # intent 分类，由权限档、工具行为与证据决定执行方式。
+        intent = INTENT_CONVERSATION if plain_conversation else normalized_mode
         run_metadata_collector.update(
             {
                 "resolved_intent": intent,
@@ -255,7 +255,12 @@ def run_native(
         # max_steps 当预算（否则 remaining_budget 恒 0 直接 pass，门禁失效），
         # 改传大值让 gate 走正常判定（停滞检测 + evidence/checklist 检查）。
         # 墙钟/token 硬顶已在循环内兜底。
-        if task_state is not None and task_state.status == "completed" and task_state.final_answer:
+        if (
+            intent != INTENT_CONVERSATION
+            and task_state is not None
+            and task_state.status == "completed"
+            and task_state.final_answer
+        ):
             decision = run_review_gate(
                 task_state,
                 intent=intent,

@@ -15,6 +15,7 @@ STATUS_FAILED = "failed"
 
 STOP_REASON_FINAL_ANSWER_RETURNED = "final_answer_returned"
 STOP_REASON_STEP_LIMIT_REACHED = "step_limit_reached"
+STOP_REASON_CONVERGENCE_GUARD_TRIGGERED = "convergence_guard_triggered"
 STOP_REASON_RETRY_LIMIT_REACHED = "retry_limit_reached"
 STOP_REASON_MODEL_ERROR = "model_error"
 STOP_REASON_TOOL_TIMEOUT = "tool_timeout"
@@ -307,6 +308,9 @@ class TaskState:
 
     def stop_step_limit(self, final_answer=""):
         return self.stop(STOP_REASON_STEP_LIMIT_REACHED, final_answer=final_answer)
+
+    def stop_convergence_guard(self, final_answer=""):
+        return self.stop(STOP_REASON_CONVERGENCE_GUARD_TRIGGERED, final_answer=final_answer)
 
     def stop_retry_limit(self, final_answer=""):
         return self.stop(STOP_REASON_RETRY_LIMIT_REACHED, final_answer=final_answer)

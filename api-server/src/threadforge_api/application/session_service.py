@@ -34,6 +34,16 @@ from ..infrastructure.workspace_catalog import WorkspaceCatalog, WorkspaceNotFou
 DEFAULT_SESSION_TITLE_PREFIX = "Session"
 MESSAGE_CONTENT_MAX = 4000
 
+_HISTORY_TERMINAL_MESSAGES = {
+    "approval_denied": "所需工具操作未获批准，运行已停止。",
+    "budget_exhausted": "本次运行已达到时间或令牌预算，请缩小任务范围后重试。",
+    "convergence_guard_triggered": "模型未能通过审查或持续产生有效进展，本次运行已停止空转。",
+    "retry_limit_reached": "模型输出未通过执行协议校验，达到重试上限后停止。",
+    "review_retry_limit_reached": "审查阶段未能确认任务已经完成，达到重试上限后停止。",
+    "step_limit_reached": "本次运行触发了旧版步骤保护，请缩小任务范围后重试。",
+    "user_cancelled": "已停止当前任务。",
+}
+
 
 def _clip(text: str, limit: int) -> str:
     text = str(text or "")
@@ -58,8 +68,6 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
     pairs = list(zip(reversed(assistant_indices), reversed(tasks)))
     for message_index, task in pairs:
         run = task.get("run_index") or []
-        if not run:
-            continue
         tool_by_id: dict[str, dict] = {}
         tool_calls: list[dict] = []
         thinking_parts: list[str] = []
@@ -80,19 +88,6 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
                 if pending_behavior is not None:
                     blocks.append(pending_behavior)
                     pending_behavior = None
-            elif event_type == "model.completed":
-                # A tool-protocol reply often has no user-visible text.  When
-                # the model did publish a natural-language progress update,
-                # retain it as a separate block at its original position so a
-                # page reload does not collapse the history to the terminal
-                # answer alone.
-                text = str(item.get("text", "")).strip()
-                if text and not text.startswith(("<tool", "<retry", "<final", "<talk", "{\"tools\"")):
-                    commentary_parts.append(text)
-                    if pending_behavior is not None:
-                        blocks.append(pending_behavior)
-                        pending_behavior = None
-                    blocks.append({"kind": "commentary", "text": text, "turn": current_turn or None})
             elif event_type == "assistant.commentary":
                 text = str(item.get("text", "")).strip()
                 if text:
@@ -182,6 +177,12 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
         if review_entries:
             blocks.append({"kind": "review", "entries": review_entries, "turn": last_review_turn or None})
         message = dict(messages[message_index])
+        if str(task.get("status", "")) != "completed":
+            stop_reason = str(task.get("stop_reason", ""))
+            message["content"] = _HISTORY_TERMINAL_MESSAGES.get(
+                stop_reason,
+                "运行未能正常完成，请在审计中查看具体原因后重试。",
+            )
         if tool_calls:
             message["tool_calls"] = tool_calls
         if thinking_parts:
