@@ -179,6 +179,14 @@ class WorkerClient:
             # transport failure and must not terminate the Worker service.
             except (InvalidMessage, OSError, TimeoutError) as exc:
                 reason = str(exc) or type(exc).__name__
+            except Exception as exc:
+                # A websocket implementation/proxy may raise a transport
+                # exception outside the standard websockets hierarchy (most
+                # notably while closing a timed-out connection).  The Worker
+                # is a background service: keep the pairing and retry rather
+                # than exiting and leaving the device permanently offline.
+                LOGGER.exception("Worker connection failed; retrying")
+                reason = str(exc) or type(exc).__name__
             if self._stop_event.is_set():
                 break
             self._set_status("retrying")
@@ -197,6 +205,7 @@ class WorkerClient:
             open_timeout=15,
             ping_interval=20,
             ping_timeout=20,
+            close_timeout=5,
         ) as websocket:
             self._socket = websocket
             self._ready_event.clear()

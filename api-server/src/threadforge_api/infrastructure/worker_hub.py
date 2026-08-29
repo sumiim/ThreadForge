@@ -22,6 +22,7 @@ from pico.security import (
     public_tool_result_preview,
     redact_artifact,
 )
+from starlette.websockets import WebSocketDisconnect
 
 from ..domain.entities import Approval, canonical_json, utc_now
 from ..domain.enums import ApprovalStatus, TaskStatus
@@ -203,7 +204,13 @@ class WorkerHub:
         for replaced_task_id in replaced_task_ids:
             self._fail_task(replaced_task_id, "worker_reconnected")
         if previous is not None:
-            await previous.websocket.close(code=4001, reason="device reconnected")
+            # A stale connection is frequently already gone when a Worker
+            # reconnects after a tunnel/proxy timeout.  Closing it must never
+            # abort the new connection handshake or leave the device offline.
+            try:
+                await previous.websocket.close(code=4001, reason="device reconnected")
+            except (WebSocketDisconnect, ConnectionError, RuntimeError, TimeoutError):
+                LOGGER.debug("stale Worker connection already closed", exc_info=True)
         return connection
 
     async def sender(self, connection: WorkerConnection) -> None:
