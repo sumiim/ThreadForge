@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import queue
 import secrets
@@ -48,6 +49,8 @@ from pico.task_state import (
 from pico.workspace import WorkspaceContext
 
 from .config import ConfigStore
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _utc_now():
@@ -593,9 +596,21 @@ class ActiveRun:
 
     def cancel(self, cleanup_grace: float) -> None:
         self.token.cancel()
-        self.approval.wake()
+        # RemoteApprovalStrategy exposes wake() to release a pending approval,
+        # while auto/never and acceptEdits strategies do not.  Cancellation
+        # must remain best-effort so a disconnected socket cannot crash the
+        # Worker while it is cleaning up and preparing to reconnect.
+        wake = getattr(self.approval, "wake", None)
+        if callable(wake):
+            try:
+                wake()
+            except Exception:
+                LOGGER.exception("Failed to wake approval strategy during cancellation")
         if self.pico is not None:
-            self.pico.tool_context().terminate_active_shell(cleanup_grace)
+            try:
+                self.pico.tool_context().terminate_active_shell(cleanup_grace)
+            except Exception:
+                LOGGER.exception("Failed to terminate active shell during cancellation")
 
 
 class ModelProviderFactory:
