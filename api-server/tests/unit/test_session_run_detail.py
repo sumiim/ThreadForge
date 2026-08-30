@@ -143,6 +143,42 @@ def test_attach_run_detail_replaces_blocked_convergence_summary_with_stable_mess
     assert result[1]["content"] == "模型未能通过审查或持续产生有效进展，本次运行已停止空转。"
 
 
+def test_attach_run_detail_keeps_readable_runtime_summary_for_failed_run():
+    # 失败运行带引擎产出的可读托底总结：刷新后应保留，而不是被固定文案吞掉。
+    def task_failed(final_answer, stop_reason="runtime_error"):
+        return {
+            "task_id": "task_1",
+            "created_at": "2026-08-19T00:00:01Z",
+            "run_index": [],
+            "status": "failed",
+            "stop_reason": stop_reason,
+            "final_answer": final_answer,
+        }
+
+    summary = "⚠️ 运行中断：运行时出现未预期错误（runtime_error）。\n\n已收集到部分证据：\n- read_file：README.md"
+    messages = _attach_run_detail(_messages(), [task_failed(summary)])
+    assert messages[1]["content"] == summary
+
+
+def test_attach_run_detail_keeps_stable_message_when_final_answer_is_internal():
+    # 失败运行的 final_answer 仍是内部诊断（如 "status: needs_fix"）→ 落到固定文案。
+    def task_failed(final_answer, stop_reason="runtime_error"):
+        return {
+            "task_id": "task_1",
+            "created_at": "2026-08-19T00:00:01Z",
+            "run_index": [],
+            "status": "failed",
+            "stop_reason": stop_reason,
+            "final_answer": final_answer,
+        }
+
+    messages = _attach_run_detail(
+        _messages(),
+        [task_failed("status: needs_fix\nretry")],
+    )
+    assert messages[1]["content"] == "运行未能正常完成，请在审计中查看具体原因后重试。"
+
+
 def test_attach_run_detail_read_only_skips_review():
     run = [
         {"type": "tool.requested", "tool_call_id": "c1", "tool_name": "read_file", "args_preview": {"path": "a.txt", "start": 1, "end": 8}},

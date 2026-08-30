@@ -50,6 +50,13 @@ describe('session task recovery', () => {
     assert.equal(getFinalAnswer({ status: 'failed' }), null)
     assert.equal(getFinalAnswer({ status: 'failed', final_answer: 'status: needs_fix' }), null)
     assert.equal(getFinalAnswer({ status: 'completed', final_answer: 'status: needs_fix\nretry' }), null)
+    // A best-effort / convergence summary on a failed or stopped run is real
+    // user-facing text and must surface, not be replaced by a generic error.
+    assert.equal(
+      getFinalAnswer({ status: 'failed', final_answer: '⚠️ 运行中断：rruntime_error。\n\ncollect evidence' }),
+      '⚠️ 运行中断：rruntime_error。\n\ncollect evidence',
+    )
+    assert.equal(getFinalAnswer({ status: 'stopped', final_answer: 'best effort answer' }), 'best effort answer')
   })
 
   it('recognizes leaked review diagnostics without hiding normal answers', () => {
