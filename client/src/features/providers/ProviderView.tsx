@@ -292,11 +292,9 @@ export default function ProviderView({ deviceId }: { deviceId?: string }) {
               <InputNumber min={1} max={16} className="w-full" />
             </Form.Item>
           </div>
-          {true ? (
-            <Form.Item name="api_key" label={editing ? 'API Key（留空保留 Worker 本地密钥）' : 'API Key'}>
-              <Input.Password placeholder="只存本地 Worker，不回显" />
-            </Form.Item>
-          ) : null}
+          <Form.Item name="api_key" label={editing ? 'API Key（留空保留 Worker 本地密钥）' : 'API Key'}>
+            <Input.Password placeholder="只存本地 Worker，不回显" />
+          </Form.Item>
         </Form>
       </Drawer>
     </div>
