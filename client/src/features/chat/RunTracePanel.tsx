@@ -250,6 +250,12 @@ export default function RunTracePanel({ open, session, activeRunId, provider, on
         <div className="flex flex-1 items-center justify-center"><Empty description="该运行没有可审计的事件" /></div>
       ) : (
         <>
+          {activeRun?.input ? (
+            <div className="shrink-0 border-b border-blue-100 bg-blue-50/50 px-5 py-3 dark:border-blue-900/40 dark:bg-blue-950/20">
+              <div className="text-[10px] font-medium uppercase tracking-wide text-blue-700 dark:text-blue-300">用户请求</div>
+              <div className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-stone-800 dark:text-stone-100">{activeRun.input}</div>
+            </div>
+          ) : null}
           {finalAnswer ? (
             <div className="shrink-0 border-b border-emerald-100 bg-emerald-50/50 px-5 py-3 dark:border-emerald-900/40 dark:bg-emerald-950/20">
               <div className="text-[10px] font-medium uppercase tracking-wide text-emerald-700 dark:text-emerald-300">最终回答</div>
