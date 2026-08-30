@@ -68,6 +68,16 @@ function appendThinkingBlock(blocks: MessageBlock[] | undefined, text: string, t
   return [...list, { kind: 'behavior', thinking: text, turn }]
 }
 
+/** 流式叙述(delta)按 turn 归入 commentary 块:避免堆进 content 底部一大坨。 */
+function appendDeltaCommentary(blocks: MessageBlock[] | undefined, text: string, turn?: number): MessageBlock[] {
+  const list = blocks ?? []
+  const last = list[list.length - 1]
+  if (last && last.kind === 'commentary' && (last.turn ?? undefined) === turn) {
+    return [...list.slice(0, -1), { ...last, text: `${last.text ?? ''}${text}` }]
+  }
+  return [...list, { kind: 'commentary', text, turn }]
+}
+
 function appendToolCallBlock(blocks: MessageBlock[] | undefined, toolCall: ToolCall, turn?: number): MessageBlock[] {
   const list = blocks ?? []
   const last = list[list.length - 1]
@@ -847,8 +857,12 @@ export function useSessions(): UseSessions {
           case 'assistant.delta': {
             const text = String(data.text ?? '')
             if (!text) return
+            // §7.8.9 修正（2026-08-19）：流式叙述按 turn 归入 commentary 块,不再堆进
+            // content 底部。content 只保留最终答案(message.completed / task.* 终答)。
             updateSessionMessages(sessionId, (messages) => messages.map((message) =>
-              message.id === assistantId ? { ...message, content: `${message.content}${text}` } : message,
+              message.id === assistantId
+                ? { ...message, blocks: appendDeltaCommentary(message.blocks, text, liveTurn) }
+                : message,
             ))
             return
           }
