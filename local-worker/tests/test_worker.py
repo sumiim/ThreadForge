@@ -28,6 +28,7 @@ from threadforge_worker.cli import main as worker_main
 from threadforge_worker.client import (
     WorkerClient,
     WorkerProtocolRejectedError,
+    _list_provider_models,
     _stable_failure_reason,
     _timestamp_expired,
     _validated_server_url,
@@ -1550,3 +1551,37 @@ def test_large_unicode_history_stays_within_worker_message_limit(tmp_path):
         time.sleep(0.01)
     assert len(raw_messages[0].encode("utf-8")) <= 2 * 1024 * 1024
     assert len(json.loads(raw_messages[0])["messages"]) == 500
+
+def test_list_provider_models_normalizes_base_url_for_v1(monkeypatch):
+    """OpenAI/deepseek 用户可填带或不带 /v1 的 Base URL；Anthropic 避免 /v1/v1。"""
+    captured_urls = []
+
+    class FakeResponse:
+        def __init__(self, body):
+            self._body = body
+        def read(self):
+            return self._body
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        captured_urls.append(request.full_url)
+        return FakeResponse(b'{"data":[{"id":"gpt-5.6-sol"}]}')
+
+    monkeypatch.setattr("threadforge_worker.client.urllib.request.urlopen", fake_urlopen)
+
+    models, error = _list_provider_models("https://codex.ximuai.com/v1", "sk-test", "openai_compatible")
+    assert error == ""
+    assert models == ["gpt-5.6-sol"]
+    assert captured_urls[-1] == "https://codex.ximuai.com/v1/models"
+
+    models, error = _list_provider_models("https://api.anthropic.com", "k", "anthropic")
+    assert error == ""
+    assert captured_urls[-1] == "https://api.anthropic.com/v1/models"
+
+    models, error = _list_provider_models("https://api.anthropic.com/v1", "k", "anthropic")
+    assert error == ""
+    assert captured_urls[-1] == "https://api.anthropic.com/v1/models"
+

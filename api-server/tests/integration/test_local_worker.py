@@ -654,6 +654,7 @@ def test_pair_connect_task_approval_and_terminal_flow(client, app):
             )
             detail = detail_future.result(timeout=2).json()
         assert [message["content"] for message in detail["messages"]] == ["update README", "done"]
+        assert detail["tasks"][0]["input"] == "update README"
 
         second = client.post(
             "/api/v1/tasks",

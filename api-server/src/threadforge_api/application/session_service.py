@@ -88,6 +88,17 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
     tasks = sorted(task_items, key=lambda task: str(task.get("created_at", "")))
     pairs = list(zip(reversed(assistant_indices), reversed(tasks)))
     for message_index, task in pairs:
+        # 本地 Worker 任务中央不落明文 input；从同一轮对话的用户消息补回，
+        # 让刷新/审计/导出的“用户请求”不再为空。
+        if not str(task.get("input") or "").strip():
+            for lookback in range(message_index - 1, -1, -1):
+                if messages[lookback].get("role") == "user":
+                    task["input"] = _clip(
+                        redact_artifact(str(messages[lookback].get("content", ""))),
+                        MESSAGE_CONTENT_MAX,
+                    )
+                    break
+
         run = task.get("run_index") or []
         tool_by_id: dict[str, dict] = {}
         tool_calls: list[dict] = []

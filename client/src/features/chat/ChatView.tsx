@@ -145,6 +145,7 @@ export default function ChatView({ session, historyStatus, running, isMobile = f
 
       <Composer
         key={session.id}
+          deviceId={session.deviceId}
         model={session.model}
         modelOptions={session.modelOptions}
         running={running}

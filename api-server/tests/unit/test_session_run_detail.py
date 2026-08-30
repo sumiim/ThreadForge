@@ -229,3 +229,14 @@ def test_attach_run_detail_routes_planning_thinking_separately():
     assert blocks[0]["kind"] == "behavior"
     assert blocks[0]["thinking"] == "再执行"
     assert blocks[0]["toolCalls"][0]["tool_name"] == "list_files"
+
+
+def test_attach_run_detail_backfills_local_worker_task_input_from_user_message():
+    # 本地 Worker 任务中央不落明文 input；应从同一轮对话的用户消息回填给
+    # session.tasks / 审计导出使用。
+    task = _task([], status="interrupted", stop_reason="worker_disconnected")
+    task["input"] = ""
+
+    _attach_run_detail(_messages(), [task])
+
+    assert task["input"] == "第一问"

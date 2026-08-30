@@ -52,7 +52,7 @@ export default function ProviderView({ deviceId }: { deviceId?: string }) {
     setLoading(true)
     try {
       const result = await listProviders()
-      setProviders(result.providers)
+      setProviders(deviceId ? result.providers.filter((item) => item.device_id === deviceId) : result.providers)
     } catch {
       message.error('加载供应商列表失败')
     } finally {
@@ -64,7 +64,7 @@ export default function ProviderView({ deviceId }: { deviceId?: string }) {
     let cancelled = false
     listProviders()
       .then((result) => {
-        if (!cancelled) setProviders(result.providers)
+        if (!cancelled) setProviders(deviceId ? result.providers.filter((item) => item.device_id === deviceId) : result.providers)
       })
       .catch(() => {
         if (!cancelled) message.error('加载供应商列表失败')
@@ -75,7 +75,7 @@ export default function ProviderView({ deviceId }: { deviceId?: string }) {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [deviceId])
 
   const openCreate = () => {
     setEditing(null)
@@ -117,13 +117,13 @@ export default function ProviderView({ deviceId }: { deviceId?: string }) {
         providerId = created.provider_id
         message.success('已创建')
       }
-      // api_key 只推送到 Worker 本地（中央不落）；device 未定或未填 key 时跳过。
-      if (deviceId && values.api_key?.trim()) {
+      // 供应商配置推送到 Worker 本地（中央不落）。编辑时 api_key 留空表示保留 Worker 已保存的 Key。
+      if (deviceId) {
         try {
           await configureProvider(providerId, {
             device_id: deviceId,
             base_url: values.base_url,
-            api_key: values.api_key,
+            api_key: values.api_key?.trim() ?? '',
             model: values.model ?? '',
             protocol: values.protocol,
             reasoning_efforts: values.reasoning_efforts ?? ['none'],
@@ -213,7 +213,7 @@ export default function ProviderView({ deviceId }: { deviceId?: string }) {
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex min-w-0 items-center gap-2">
                       <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-xs font-medium text-blue-600">
-                        {(PROTOCOL_LABELS[p.protocol] ?? 'P').slice(0, 1)}
+                        { (PROTOCOL_LABELS[p.protocol] ?? 'P').slice(0, 1)}
                       </span>
                       <span className="truncate font-medium text-stone-800">{p.name}</span>
                       {p.is_default ? <Tag color="blue">默认</Tag> : null}
@@ -292,11 +292,9 @@ export default function ProviderView({ deviceId }: { deviceId?: string }) {
               <InputNumber min={1} max={16} className="w-full" />
             </Form.Item>
           </div>
-          {!editing ? (
-            <Form.Item name="api_key" label="API Key">
-              <Input.Password placeholder="只存本地 Worker，不回显" />
-            </Form.Item>
-          ) : null}
+          <Form.Item name="api_key" label={editing ? 'API Key（留空保留 Worker 本地密钥）' : 'API Key'}>
+            <Input.Password placeholder="只存本地 Worker，不回显" />
+          </Form.Item>
         </Form>
       </Drawer>
     </div>
