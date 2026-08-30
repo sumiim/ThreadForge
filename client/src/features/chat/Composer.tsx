@@ -11,6 +11,8 @@ interface ComposerProps {
   running: boolean
   stopping?: boolean
   disabled?: boolean
+  /** 当前会话绑定的本地 Worker；用于把供应商列表和“设为默认”限定到这台设备。 */
+  deviceId?: string
   onSend: (content: string, modelId?: string, reasoningEffort?: ReasoningEffort, permissionMode?: PermissionMode) => void
   onStop: () => void
 }
@@ -89,14 +91,14 @@ function writePersistedPermissionMode(mode: PermissionMode): void {
   }
 }
 
-export default function Composer({ model, modelOptions, running, stopping = false, disabled = false, onSend, onStop }: ComposerProps) {
+export default function Composer({ model, modelOptions, running, stopping = false, disabled = false, deviceId, onSend, onStop }: ComposerProps) {
   const [value, setValue] = useState('')
   const [providers, setProviders] = useState<Provider[]>([])
   useEffect(() => {
     listProviders()
-      .then(({ providers: list }) => setProviders(list))
+      .then(({ providers: list }) => setProviders(deviceId ? list.filter((item) => item.device_id === deviceId) : list))
       .catch(() => {})
-  }, [])
+  }, [deviceId])
   const [modelId, setModelId] = useState(modelOptions[0]?.id ?? model)
   // 默认 provider 已「测试连接」发现模型时，用其模型列表 + 推理档位替代 env 单模型。
   const defaultProvider = providers.find((item) => item.is_default) ?? providers[0]
@@ -126,9 +128,9 @@ export default function Composer({ model, modelOptions, running, stopping = fals
 
   const handleProviderChange = async (nextProviderId: string) => {
     try {
-      await activateProvider(nextProviderId)
+      await activateProvider(nextProviderId, deviceId)
       const { providers: list } = await listProviders()
-      setProviders(list)
+      setProviders(deviceId ? list.filter((item) => item.device_id === deviceId) : list)
       setModelId('')
     } catch {
       message.warning('切换供应商失败')

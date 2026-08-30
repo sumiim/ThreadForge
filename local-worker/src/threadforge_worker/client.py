@@ -498,6 +498,14 @@ class WorkerClient:
             incoming = [str(item).strip() for item in message.get("reasoning_efforts", []) if str(item).strip()]
             local = list(_runtime_reasoning_efforts())
             efforts = tuple(dict.fromkeys([*incoming, *local]))
+            # 部分更新：api_key / model / base_url 留空时保留 Worker 本地已保存值，
+            # 这样编辑供应商 Base URL / 默认模型时不必重新输入密钥。
+            existing = self.store.load_provider(provider_id) or {}
+            incoming_base_url = str(message.get("base_url", "")).strip() or str(existing.get("base_url", ""))
+            incoming_api_key = str(message.get("api_key", "")).strip() or str(existing.get("api_key", ""))
+            incoming_model = str(message.get("model", "")).strip() or str(existing.get("model", ""))
+            incoming_protocol = str(message.get("protocol", "")).strip() or str(existing.get("protocol", ""))
+
             self.store.save_provider(
                 provider_id,
                 base_url=str(message.get("base_url", "")),
@@ -554,6 +562,49 @@ class WorkerClient:
             "status": "completed",
             "models": models,
         })
+
+    def _configure_provider(self, message: dict) -> None:
+        """Configure a provider locally, preserving existing key/model on partial edits."""
+        request_id = str(message.get("request_id", ""))
+        provider_id = str(message.get("provider_id", ""))
+        try:
+            # 与本地完整档位求并集：旧版本推送的 providers.json 可能缺新档位
+            # （如 max），下次更新 provider 时顺带补齐，避免能力上报不完整。
+            incoming = [str(item).strip() for item in message.get("reasoning_efforts", []) if str(item).strip()]
+            local = list(_runtime_reasoning_efforts())
+            efforts = tuple(dict.fromkeys([*incoming, *local]))
+            # 部分更新：api_key / model / base_url 留空时保留 Worker 本地已保存值，
+            # 这样编辑供应商 Base URL / 默认模型时不必重新输入密钥。
+            existing = self.store.load_provider(provider_id) or {}
+            incoming_base_url = str(message.get("base_url", "")).strip() or str(existing.get("base_url", ""))
+            incoming_api_key = str(message.get("api_key", "")).strip() or str(existing.get("api_key", ""))
+            incoming_model = str(message.get("model", "")).strip() or str(existing.get("model", ""))
+            incoming_protocol = str(message.get("protocol", "")).strip() or str(existing.get("protocol", ""))
+            self.store.save_provider(
+                provider_id,
+                base_url=incoming_base_url,
+                api_key=incoming_api_key,
+                model=incoming_model,
+                protocol=incoming_protocol,
+                reasoning_efforts=efforts,
+            )
+            response = {
+                "type": "provider.configuration.completed",
+                "request_id": request_id,
+                "status": "completed",
+                "provider_id": provider_id,
+                "model": incoming_model,
+                "model_capabilities": _model_capabilities(self.store),
+            }
+        except Exception:
+            response = {
+                "type": "provider.configuration.completed",
+                "request_id": request_id,
+                "status": "failed",
+                "error": "provider_configuration_invalid",
+            }
+        self._send(response)
+
 
     def _rename_entity(self, message: dict) -> None:
         request_id = str(message.get("request_id", ""))
@@ -1062,6 +1113,47 @@ def _list_provider_models(base_url: str, api_key: str, protocol: str) -> tuple[l
         raw_models = data.get("data", []) if isinstance(data, dict) else []
         model_ids = [str(item.get("id", "")) for item in raw_models if isinstance(item, dict)]
     return [model_id for model_id in model_ids if model_id], ""
+
+def _list_provider_models(base_url: str, api_key: str, protocol: str) -> tuple[list[str], str]:
+    """按协议调用 list-models 端点，返回 (模型列表, 错误码)。
+
+    错误码为空字符串表示成功；key 不落日志，响应正文只取模型 id。
+    Base URL 允许用户带或不带 ``/v1``：这里统一归一化，避免 Anthropic
+    的 ``/v1/v1/models`` 或 OpenAI 兼容端点的 ``/models`` 漏版本前缀。
+    """
+    import json
+    import urllib.error
+
+    base = base_url.rstrip("/")
+    if protocol == "ollama":
+        url = base + "/api/tags"
+    elif protocol == "anthropic":
+        url = (base if base.endswith("/v1") else base + "/v1") + "/models"
+    else:
+        url = (base if base.endswith("/v1") else base + "/v1") + "/models"
+
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return [], f"model_http_{exc.code}"
+    except (urllib.error.URLError, ConnectionError, TimeoutError):
+        return [], "model_connection_error"
+    except json.JSONDecodeError:
+        return [], "model_response_invalid"
+
+    if protocol == "ollama":
+        raw_models = data.get("models", []) if isinstance(data, dict) else []
+        model_ids = [str(item.get("name", "")) for item in raw_models if isinstance(item, dict)]
+    else:
+        raw_models = data.get("data", []) if isinstance(data, dict) else []
+        model_ids = [str(item.get("id", "")) for item in raw_models if isinstance(item, dict)]
+    return [model_id for model_id in model_ids if model_id], ""
+
 
 
 def _model_capabilities(store: ConfigStore | None = None) -> dict:

@@ -152,6 +152,10 @@ class ConfigureProviderRequest(BaseModel):
     api_key: str = Field(min_length=1, max_length=8192)
     model: str = Field(min_length=1, max_length=200)
     protocol: _PROVIDER_PROTOCOLS
+    # 编辑供应商时允许 api_key 留空：Worker 会保留本地已保存的 Key。
+    api_key: str = Field(default="", max_length=8192)
+    model: str = Field(min_length=1, max_length=200)
+    protocol: _PROVIDER_PROTOCOLS
     reasoning_efforts: list[str] = []
 
 
