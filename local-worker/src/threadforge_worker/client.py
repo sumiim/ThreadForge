@@ -203,8 +203,12 @@ class WorkerClient:
             additional_headers={"Authorization": f"Bearer {self.config.device_token}"},
             max_size=2 * 1024 * 1024,
             open_timeout=15,
-            ping_interval=20,
-            ping_timeout=20,
+            # §7.8.9 修正（2026-08-30）：worker WS 经 tailscale serve 转发时 ping 控制帧
+            # 中转不可靠,20s/20s 会让 worker 因 pong 没回来频繁断连 → 运行中 run 被
+            # interrupted。调大 ping_timeout 容忍 pong 延迟 + 降低 ping 频率;
+            # 空闲保活由 web nginx 的 proxy_read_timeout 600s 承担。
+            ping_interval=60,
+            ping_timeout=180,
             close_timeout=5,
         ) as websocket:
             self._socket = websocket
