@@ -357,6 +357,55 @@ def test_run_index_keeps_review_battle_and_thinking_details():
     assert items[4]["reason"] == "read_only_task"
 
 
+def test_run_index_coalesces_consecutive_thinking_chunks():
+    task = SimpleNamespace(run_index=[], updated_at="")
+    for index, text in enumerate(("first ", "second ", "third")):
+        _append_run_index(
+            task,
+            {
+                "event_id": f"evt_think_{index}",
+                "run_id": "run_1",
+                "type": "assistant.thinking",
+                "timestamp": f"t{index}",
+                "phase": "talk",
+            },
+            {"text": text},
+        )
+
+    assert len(task.run_index) == 1
+    assert task.run_index[0]["event_id"] == "evt_think_0"
+    assert task.run_index[0]["timestamp"] == "t2"
+    assert task.run_index[0]["text"] == "first second third"
+
+
+def test_run_index_starts_new_thinking_item_at_text_limit():
+    task = SimpleNamespace(run_index=[], updated_at="")
+    _append_run_index(
+        task,
+        {
+            "event_id": "evt_think_1",
+            "run_id": "run_1",
+            "type": "assistant.thinking",
+            "timestamp": "t1",
+            "phase": "talk",
+        },
+        {"text": "a" * 3999},
+    )
+    _append_run_index(
+        task,
+        {
+            "event_id": "evt_think_2",
+            "run_id": "run_1",
+            "type": "assistant.thinking",
+            "timestamp": "t2",
+            "phase": "talk",
+        },
+        {"text": "bc"},
+    )
+
+    assert [len(item["text"]) for item in task.run_index] == [3999, 2]
+
+
 def test_review_completed_sanitizer_keeps_auditable_decision_fields():
     safe = _sanitize_event_data(
         "review.completed",

@@ -988,7 +988,7 @@ class WorkerHub:
         if message_type == "hello":
             await self._handle_hello(connection, message)
         elif message_type == "event":
-            self._handle_event(connection, message)
+            await self._handle_event(connection, message)
         elif message_type == "approval.requested":
             self._handle_approval(connection, message)
         elif message_type == "terminal":
@@ -1634,7 +1634,7 @@ class WorkerHub:
             raise WorkerProtocolError("task owner does not match Worker owner")
         return task
 
-    def _handle_event(self, connection: WorkerConnection, message: dict) -> None:
+    async def _handle_event(self, connection: WorkerConnection, message: dict) -> None:
         task_id = str(message.get("task_id", ""))
         event_type = str(message.get("event_type", ""))
         task = self._assigned_task(connection, task_id)
@@ -1682,7 +1682,12 @@ class WorkerHub:
             "tool.failed",
             "message.completed",
         }:
-            self._task_repo.update(
+            # Worker thinking can arrive dozens of times per second. Repository
+            # updates write SQLite plus the compatibility JSON mirror, so doing
+            # them on the ASGI loop starves WebSocket ping/pong, SSE delivery,
+            # and ordinary REST requests under a dense stream.
+            await asyncio.to_thread(
+                self._task_repo.update,
                 task_id,
                 lambda item: _append_run_index(item, event.to_dict(), safe_data),
             )
@@ -2375,6 +2380,28 @@ def _append_run_index(task, event: dict, data: dict):
             item["feedback"] = feedback
     elif event_type.startswith("task."):
         item["status"] = event_type.removeprefix("task.")[:32]
+
+    if event_type == "assistant.thinking" and task.run_index:
+        previous = task.run_index[-1]
+        previous_text = str(previous.get("text", ""))
+        next_text = str(item.get("text", ""))
+        if (
+            previous.get("type") == event_type
+            and previous.get("run_id") == item["run_id"]
+            and previous.get("phase") == item["phase"]
+            and previous_text
+            and next_text
+            and len(previous_text) + len(next_text) <= 4000
+        ):
+            merged = {
+                **previous,
+                "timestamp": item["timestamp"],
+                "text": previous_text + next_text,
+            }
+            task.run_index = [*task.run_index[:-1], merged]
+            task.updated_at = utc_now()
+            return task
+
     task.run_index = [*task.run_index[-499:], item]
     task.updated_at = utc_now()
     return task
