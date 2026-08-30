@@ -92,6 +92,7 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
         tool_by_id: dict[str, dict] = {}
         tool_calls: list[dict] = []
         thinking_parts: list[str] = []
+        planning_parts: list[str] = []
         review_entries: list[dict] = []
         commentary_parts: list[str] = []
         review_skipped = False
@@ -120,11 +121,17 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
             elif event_type == "assistant.thinking":
                 text = str(item.get("text", "")).strip()
                 if text:
-                    thinking_parts.append(text)
-                    if pending_behavior is None:
-                        pending_behavior = {"kind": "behavior", "turn": current_turn or None}
-                    previous = pending_behavior.get("thinking") or ""
-                    pending_behavior["thinking"] = previous + ("\n" if previous else "") + text
+                    # §7.8.9 修正（2026-08-19）：按 stage 分流——planning 思考进
+                    # planningThinking(独立面板),review 思考进审查块,其余进 turn 块。
+                    stage = str(item.get("stage", "") or "execute")
+                    if stage == "planning":
+                        planning_parts.append(text)
+                    else:
+                        thinking_parts.append(text)
+                        if pending_behavior is None:
+                            pending_behavior = {"kind": "behavior", "turn": current_turn or None}
+                        previous = pending_behavior.get("thinking") or ""
+                        pending_behavior["thinking"] = previous + ("\n" if previous else "") + text
             elif event_type == "tool.requested":
                 call = {
                     "id": str(item.get("tool_call_id", "")),
@@ -198,6 +205,8 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
         if review_entries:
             blocks.append({"kind": "review", "entries": review_entries, "turn": last_review_turn or None})
         message = dict(messages[message_index])
+        if planning_parts:
+            message["planning_thinking"] = "\n".join(planning_parts)
         if str(task.get("status", "")) != "completed":
             stop_reason = str(task.get("stop_reason", ""))
             # 保留引擎产出的可读托底总结（收敛/best-effort），而不是一律用
