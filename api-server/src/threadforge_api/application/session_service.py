@@ -64,13 +64,13 @@ def _is_internal_failure_diagnostic(text: str) -> bool:
         return True
     if value.startswith(("agent run failed:", "agent run finalization failed:")):
         return True
-    if re.match(
-        r"^(?:status\s*:\s*(?:pass|needs_fix)\b|\{\s*[\"']?status[\"']?\s*:\s*[\"']?(?:pass|needs_fix)\b)",
-        value,
-        re.IGNORECASE,
-    ):
-        return True
-    return False
+    return bool(
+        re.match(
+            r"^(?:status\s*:\s*(?:pass|needs_fix)\b|\{\s*[\"']?status[\"']?\s*:\s*[\"']?(?:pass|needs_fix)\b)",
+            value,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dict]:
