@@ -1801,7 +1801,13 @@ class WorkerHub:
         self._cancel_pending_approvals(task, stop_reason)
         self._task_repo.update(
             task_id,
-            lambda item: _set_terminal(item, status, stop_reason, "", error=error),
+            lambda item: _set_terminal(
+                item,
+                status,
+                stop_reason,
+                _terminal_persisted_final_answer(status, final_answer),
+                error=error,
+            ),
         )
         terminal_event = {
             TaskStatus.COMPLETED: "task.completed",
@@ -2236,6 +2242,15 @@ def _set_terminal(task, status: TaskStatus, stop_reason: str, final_answer: str,
     task.error_attempts = _nonnegative_int(error.get("error_attempts", 0))
     task.updated_at = utc_now()
     return task
+
+
+def _terminal_persisted_final_answer(status: TaskStatus, final_answer: str) -> str:
+    """未完成任务持久化 final_answer,已完成任务的答案由会话消息 + message.completed 承载。
+
+    让历史回放/刷新后与实时流一致地显示收尾总结(failed/blocked),同时保持
+    completed 的 final_answer 不落 task repo 的旧设计(见 test_local_worker 断言)。
+    """
+    return "" if status is TaskStatus.COMPLETED else final_answer
 
 
 def _clear_local_task_content(task):
