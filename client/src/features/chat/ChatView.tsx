@@ -112,8 +112,6 @@ export default function ChatView({ session, historyStatus, running, isMobile = f
                 key={s}
                 shape="round"
                 disabled={historyStatus !== 'loaded'}
-          deviceId={session.deviceId}
-          deviceId={session.deviceId}
                 onClick={() => onSend(s)}
                 className="border-stone-200 text-stone-500 hover:!border-blue-500 hover:!text-blue-700"
               >

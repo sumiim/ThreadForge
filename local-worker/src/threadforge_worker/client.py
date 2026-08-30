@@ -498,14 +498,6 @@ class WorkerClient:
             incoming = [str(item).strip() for item in message.get("reasoning_efforts", []) if str(item).strip()]
             local = list(_runtime_reasoning_efforts())
             efforts = tuple(dict.fromkeys([*incoming, *local]))
-            # 部分更新：api_key / model / base_url 留空时保留 Worker 本地已保存值，
-            # 这样编辑供应商 Base URL / 默认模型时不必重新输入密钥。
-            existing = self.store.load_provider(provider_id) or {}
-            incoming_base_url = str(message.get("base_url", "")).strip() or str(existing.get("base_url", ""))
-            incoming_api_key = str(message.get("api_key", "")).strip() or str(existing.get("api_key", ""))
-            incoming_model = str(message.get("model", "")).strip() or str(existing.get("model", ""))
-            incoming_protocol = str(message.get("protocol", "")).strip() or str(existing.get("protocol", ""))
-
             self.store.save_provider(
                 provider_id,
                 base_url=str(message.get("base_url", "")),

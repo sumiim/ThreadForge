@@ -147,12 +147,9 @@ class AppendMessageRequest(BaseModel):
 
 class ConfigureProviderRequest(BaseModel):
     # api_key 只经 Worker socket 转发到 device 本地，中央不落。
+    # 编辑供应商时允许 api_key 留空：Worker 会保留本地已保存的 Key。
     device_id: str = Field(min_length=1, max_length=200)
     base_url: str = Field(min_length=1, max_length=2048)
-    api_key: str = Field(min_length=1, max_length=8192)
-    model: str = Field(min_length=1, max_length=200)
-    protocol: _PROVIDER_PROTOCOLS
-    # 编辑供应商时允许 api_key 留空：Worker 会保留本地已保存的 Key。
     api_key: str = Field(default="", max_length=8192)
     model: str = Field(min_length=1, max_length=200)
     protocol: _PROVIDER_PROTOCOLS

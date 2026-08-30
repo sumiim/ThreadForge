@@ -28,8 +28,8 @@ from threadforge_worker.cli import main as worker_main
 from threadforge_worker.client import (
     WorkerClient,
     WorkerProtocolRejectedError,
-    _stable_failure_reason,
     _list_provider_models,
+    _stable_failure_reason,
     _timestamp_expired,
     _validated_server_url,
     _websocket_url,

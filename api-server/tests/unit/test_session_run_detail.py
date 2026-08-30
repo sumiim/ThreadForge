@@ -237,6 +237,6 @@ def test_attach_run_detail_backfills_local_worker_task_input_from_user_message()
     task = _task([], status="interrupted", stop_reason="worker_disconnected")
     task["input"] = ""
 
-    messages = _attach_run_detail(_messages(), [task])
+    _attach_run_detail(_messages(), [task])
 
     assert task["input"] == "第一问"
