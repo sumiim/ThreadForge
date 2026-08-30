@@ -1240,6 +1240,7 @@ export function useSessions(): UseSessions {
             createdAt: m.created_at,
             status: 'done' as const,
             thinking: m.thinking,
+            planningThinking: m.planning_thinking ?? undefined,
             toolCalls: m.tool_calls?.map((tool) => ({
               id: tool.id,
               toolName: tool.tool_name,

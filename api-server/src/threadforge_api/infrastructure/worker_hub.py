@@ -2363,6 +2363,10 @@ def _append_run_index(task, event: dict, data: dict):
         text = str(data.get("text", ""))[:4000]
         if text:
             item["text"] = text
+        # 保留 stage（planning/execute/review）——历史回放据此区分 planning 与普通思考。
+        stage = str(data.get("stage", "") or "")[:32]
+        if stage:
+            item["stage"] = stage
     elif event_type == "assistant.commentary":
         # §7.8.9 修正（2026-08-19）：过程更新持久化——否则 run 结束历史重载后
         # 中途话（"我现在去查查XX"）会消失。

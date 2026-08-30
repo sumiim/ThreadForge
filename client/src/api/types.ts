@@ -197,6 +197,8 @@ export interface SessionMessage {
   created_at: string
   /** §7.8.9 决策（2026-08-19）：历史回放——该消息对应运行累积的思考文本。 */
   thinking?: string
+  /** §7.8.9 修正（2026-08-19）：历史回放——planning 阶段思考,与每轮 turn thinking 分区。 */
+  planning_thinking?: string
   /** §7.8.9 决策（2026-08-19）：历史回放——该消息对应运行的工具卡（参数/结果）。 */
   tool_calls?: Array<{
     id: string

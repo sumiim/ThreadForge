@@ -211,3 +211,21 @@ def test_attach_run_detail_pairs_from_tail_when_head_clipped():
     )
 
     assert messages[1]["tool_calls"][0]["tool_name"] == "search"
+
+
+def test_attach_run_detail_routes_planning_thinking_separately():
+    # planning-stage thinking 进 planning_thinking;execute thinking + 工具进 turn 块。
+    run = [
+        {"type": "assistant.thinking", "text": "先规划一下", "stage": "planning"},
+        {"type": "assistant.thinking", "text": "再执行", "stage": "execute"},
+        {"type": "tool.requested", "tool_call_id": "c1", "tool_name": "list_files", "args_preview": {"path": "."}},
+        {"type": "tool.completed", "tool_call_id": "c1", "tool_name": "list_files", "result_preview": "a.txt"},
+    ]
+    messages = _attach_run_detail(_messages(), [_task(run)])
+
+    message = messages[1]
+    assert message["planning_thinking"] == "先规划一下"
+    blocks = message["blocks"]
+    assert blocks[0]["kind"] == "behavior"
+    assert blocks[0]["thinking"] == "再执行"
+    assert blocks[0]["toolCalls"][0]["tool_name"] == "list_files"
