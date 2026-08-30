@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -50,6 +51,26 @@ def _clip(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1] + "…"
+
+
+def _is_internal_failure_diagnostic(text: str) -> bool:
+    """失败运行的 final_answer 若仍是内部诊断/占位，则不作为用户可读收尾展示。
+
+    与前端 isInternalReviewDiagnostic 对齐：拦截 "status: needs_fix"、JSON 状态、
+    "agent run failed:" 等内部产物，保留真正面向用户的托底总结。
+    """
+    value = str(text or "").strip()
+    if not value:
+        return True
+    if value.startswith(("agent run failed:", "agent run finalization failed:")):
+        return True
+    if re.match(
+        r"^(?:status\s*:\s*(?:pass|needs_fix)\b|\{\s*[\"']?status[\"']?\s*:\s*[\"']?(?:pass|needs_fix)\b)",
+        value,
+        re.IGNORECASE,
+    ):
+        return True
+    return False
 
 
 def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dict]:
@@ -179,10 +200,17 @@ def _attach_run_detail(messages: list[dict], task_items: list[dict]) -> list[dic
         message = dict(messages[message_index])
         if str(task.get("status", "")) != "completed":
             stop_reason = str(task.get("stop_reason", ""))
-            message["content"] = _HISTORY_TERMINAL_MESSAGES.get(
-                stop_reason,
-                "运行未能正常完成，请在审计中查看具体原因后重试。",
-            )
+            # 保留引擎产出的可读托底总结（收敛/best-effort），而不是一律用
+            # 固定 terminal 文案替换——否则刷新后失败运行的证据总结会被吞掉。
+            # 仅当 final_answer 为空或仍是内部诊断时才落到固定文案。
+            candidate = str(task.get("final_answer", "") or "").strip()
+            if candidate and not _is_internal_failure_diagnostic(candidate):
+                message["content"] = candidate
+            else:
+                message["content"] = _HISTORY_TERMINAL_MESSAGES.get(
+                    stop_reason,
+                    "运行未能正常完成，请在审计中查看具体原因后重试。",
+                )
         if tool_calls:
             message["tool_calls"] = tool_calls
         if thinking_parts:

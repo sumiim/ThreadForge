@@ -18,7 +18,7 @@ import sys
 import time
 from pathlib import Path, PureWindowsPath
 
-from pico.agent_loop import AgentLoop
+from pico.agent_loop import AgentLoop, _convergence_summary
 from pico.evaluation.backends import (
     BackendRunResult,
     HarnessModelClientAdapter,
@@ -40,6 +40,7 @@ from pico.task_state import (
     STOP_REASON_USER_CANCELLED,
     TaskState,
 )
+from pico.workspace import now
 
 from .intent import (
     INTENT_CODE_CHANGE,
@@ -326,9 +327,25 @@ def run_native(
                     error_code, MODEL_ERROR_MESSAGES["model_call_failed"]
                 )
             elif not final_answer:
-                final_answer = "Agent 运行失败，请稍后重试。"
+                # 运行时/内部错误兜底：若已收集证据或被 review 驳回过候选回答，
+                # 先走收敛总结（LLM 整合证据），失败再回退 best-effort 证据列表，
+                # 而不是只给裸的「Agent 运行失败，请稍后重试。」浪费中间产出。
+                if task_state.evidence or task_state.rejected_finals:
+                    final_answer = _convergence_summary(
+                        agent,
+                        task_state,
+                        "运行时出现未预期错误（runtime_error）",
+                    )
+                else:
+                    final_answer = "Agent 运行失败，请稍后重试。"
             task_state.stop(stop_reason, status=STATUS_FAILED, final_answer=final_answer)
             final_answer = task_state.final_answer
+            # 持久化助手最终消息：与 AgentLoop 预算/收敛路径一致，让失败的 run
+            # 在刷新后的历史里也保留可读的收尾（托底总结），而不是只剩 user 提问。
+            if final_answer:
+                agent.record(
+                    {"role": "assistant", "content": final_answer, "created_at": now()}
+                )
     finally:
         task_state = agent.current_task_state or task_state
         if task_state is not None and task_state.status == "running":

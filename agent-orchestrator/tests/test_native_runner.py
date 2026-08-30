@@ -227,3 +227,55 @@ def test_native_model_error_in_loop_classifies_correctly(tmp_path):
     assert state.stop_reason == "model_error"
     assert state.error_code == "model_call_failed"
     shutil.rmtree(fixture_root, ignore_errors=True)
+
+
+def test_native_runtime_error_in_loop_uses_convergence_summary(tmp_path):
+    # 循环内抛出的运行时错误（非模型错误）→ run_native 应给收敛/托底总结
+    # （best-effort 证据列表），而不是裸「Agent 运行失败，请稍后重试。」。
+    import pico
+    from pico.evaluation.backends import ModelBoundaryError
+    from pico.task_state import STOP_REASON_RUNTIME_ERROR
+    from pathlib import Path as _Path
+
+    class CrashAfterEvidenceClient:
+        supports_prompt_cache = False
+
+        def __init__(self):
+            self.calls = 0
+            self.last_completion_metadata = {}
+
+        def complete(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return '<tool>{"name": "read_file", "args": {"path": "README.md"}}</tool>'
+            # 模拟循环内非模型代码抛出的裸运行时错误（无用户语义的 internal crash）。
+            raise ModelBoundaryError(
+                "runtime_error",
+                stop_reason=STOP_REASON_RUNTIME_ERROR,
+                stage="runtime",
+            )
+
+    pico_root = _Path(pico.__file__).resolve().parent.parent
+    source = pico_root / "tests" / "fixtures" / "bench_repo_readme"
+    fixture_root = tmp_path / "runtime-error-workspace"
+    shutil.copytree(source, fixture_root)
+    agent = Pico(
+        model_client=CrashAfterEvidenceClient(),
+        workspace=WorkspaceContext.build(fixture_root, repo_root_override=fixture_root),
+        session_store=SessionStore(fixture_root / ".pico" / "sessions"),
+        run_store=RunStore(fixture_root / ".pico" / "runs"),
+        approval_policy="auto",
+        max_steps=6,
+        allowed_tools=["read_file", "list_files", "search"],
+        event_sink=NullSink(),
+    )
+    result = run_native(agent, "what does README contain", task_mode=INTENT_READ_ONLY)
+    state = result.task_state
+    assert state.status == "failed"
+    assert state.stop_reason == "runtime_error"
+    assert state.error_code == "runtime_error"
+    # 托底：不再是裸错误，而是带着已收集证据的收尾总结。
+    assert state.final_answer != "Agent 运行失败，请稍后重试。"
+    assert "运行中断" in state.final_answer
+    assert "read_file" in state.final_answer
+    shutil.rmtree(fixture_root, ignore_errors=True)
