@@ -4,6 +4,7 @@ import { ApiOutlined, PlusOutlined } from '@ant-design/icons'
 import type { Provider, ProviderProtocol } from '../../api/types'
 import {
   activateProvider,
+  ApiError,
   configureProvider,
   createProvider,
   deleteProvider,
@@ -28,6 +29,16 @@ const REASONING_EFFORT_OPTIONS = [
   { value: 'xhigh', label: 'Extra High' },
   { value: 'max', label: 'Max' },
 ]
+
+/** 把 ApiError / worker 稳定错误码映射成可读原因，供提示展示。 */
+function providerErrorCode(err: unknown): string {
+  if (err instanceof ApiError) {
+    const detail = (err.details?.reason as string | undefined) ?? err.details?.error ?? ''
+    const code = err.code
+    if (code) return [code, detail].filter(Boolean).join(' · ')
+  }
+  return (err as { message?: string })?.message ?? ''
+}
 
 interface FormValues {
   name: string
@@ -128,8 +139,9 @@ export default function ProviderView({ deviceId }: { deviceId?: string }) {
             protocol: values.protocol,
             reasoning_efforts: values.reasoning_efforts ?? ['none'],
           })
-        } catch {
-          message.warning('供应商已保存，但 API Key 未能推送到 Worker，请稍后重试')
+        } catch (err) {
+          const reason = providerErrorCode(err)
+          message.warning(reason ? `供应商已保存，但 API Key 未能推送到 Worker：${reason}` : '供应商已保存，但 API Key 未能推送到 Worker，请稍后重试')
         }
       }
       setModalOpen(false)
@@ -178,8 +190,9 @@ export default function ProviderView({ deviceId }: { deviceId?: string }) {
       const result = await testProvider(p.provider_id, deviceId)
       message.success(`连接成功，发现 ${result.models.length} 个模型`)
       void load()
-    } catch {
-      message.error('连接测试失败，请检查 Base URL / API Key')
+    } catch (err) {
+      const reason = providerErrorCode(err)
+      message.error(reason ? `连接测试失败：${reason}` : '连接测试失败，请检查 Base URL / API Key')
     }
   }
 
