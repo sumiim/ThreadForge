@@ -737,6 +737,15 @@ def test_worker_progress_events_are_forward_compatible(client, app, monkeypatch,
                 },
             }
         )
+        for text in ("deep ", "reasoning ", "continues"):
+            socket.send_json(
+                {
+                    "type": "event",
+                    "task_id": task["task_id"],
+                    "event_type": "assistant.thinking",
+                    "data": {"stage": "execute", "text": text},
+                }
+            )
         socket.send_json(
             {
                 "type": "event",
@@ -766,6 +775,11 @@ def test_worker_progress_events_are_forward_compatible(client, app, monkeypatch,
 
         terminal = _wait_status(client, task["task_id"], "completed")
         assert terminal["final_answer"] == "Hello"
+        thinking = [
+            item for item in terminal["run_index"] if item["type"] == "assistant.thinking"
+        ]
+        assert len(thinking) == 1
+        assert thinking[0]["text"] == "deep reasoning continues"
 
     skipped = next(item for item in published if item["type"] == "plan.skipped")
     assert skipped["data"] == {
