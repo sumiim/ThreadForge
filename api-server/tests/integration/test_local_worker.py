@@ -311,6 +311,67 @@ def test_workspace_selection_requires_online_companion(client):
         assert unsupported.json()["error"]["code"] == "worker_capability_unavailable"
 
 
+def test_local_task_uses_the_only_device_provider_without_default_marker(client):
+    paired = _pair(client)
+    headers = {"Authorization": f"Bearer {paired['device_token']}"}
+    with client.websocket_connect("/api/v1/workers/connect", headers=headers) as socket:
+        workspace_id = _hello(socket)
+        provider = client.post(
+            "/api/v1/providers",
+            json={
+                "device_id": paired["device_id"],
+                "name": "Local provider",
+                "protocol": "openai_compatible",
+                "base_url": "https://provider.example/v1",
+                "model": "fake-local-model",
+            },
+        )
+        assert provider.status_code == 201
+        assert provider.json()["is_default"] is False
+
+        session = client.post(
+            "/api/v1/sessions", json={"workspace_id": workspace_id}
+        ).json()
+        task = client.post(
+            "/api/v1/tasks",
+            json={"session_id": session["session_id"], "input": "hello"},
+        )
+        assert task.status_code == 202
+        start = socket.receive_json()
+        assert start["type"] == "task.start"
+        assert start["task"]["settings"]["provider_id"] == provider.json()["provider_id"]
+
+
+def test_local_task_rejects_multiple_device_providers_without_default(client):
+    paired = _pair(client)
+    headers = {"Authorization": f"Bearer {paired['device_token']}"}
+    with client.websocket_connect("/api/v1/workers/connect", headers=headers) as socket:
+        workspace_id = _hello(socket)
+        provider_payload = {
+            "device_id": paired["device_id"],
+            "protocol": "openai_compatible",
+            "base_url": "https://provider.example/v1",
+            "model": "fake-local-model",
+        }
+        first = client.post(
+            "/api/v1/providers", json={**provider_payload, "name": "Provider A"}
+        )
+        second = client.post(
+            "/api/v1/providers", json={**provider_payload, "name": "Provider B"}
+        )
+        assert first.status_code == second.status_code == 201
+
+        session = client.post(
+            "/api/v1/sessions", json={"workspace_id": workspace_id}
+        ).json()
+        task = client.post(
+            "/api/v1/tasks",
+            json={"session_id": session["session_id"], "input": "hello"},
+        )
+        assert task.status_code == 409
+        assert task.json()["error"]["code"] == "provider_not_configured"
+
+
 def test_local_session_index_can_be_recovered_without_uploading_history(client, app):
     paired = _pair(client)
     headers = {"Authorization": f"Bearer {paired['device_token']}"}

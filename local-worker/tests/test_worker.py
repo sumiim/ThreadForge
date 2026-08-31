@@ -48,6 +48,7 @@ from threadforge_worker.runtime import (
     CancellableModelClient,
     CancellationToken,
     ModelProviderFactory,
+    ProviderNotConfiguredError,
     RemoteApprovalStrategy,
     RemoteExecutionHooks,
     _supported_reasoning_efforts,
@@ -359,15 +360,20 @@ def test_provider_factory_refuses_silent_env_fallback_when_provider_configured(t
     ):
         # 任务没带 provider_id
         factory = ModelProviderFactory(data_dir=tmp_path / "state", settings={})
-        with pytest.raises(RuntimeError, match="refusing silent .env fallback"):
+        with pytest.raises(ProviderNotConfiguredError, match="configure it for this device") as missing:
             factory.resolve()
+        assert missing.value.code == "provider_not_configured"
         # 任务带了本机不存在的 provider_id
         factory = ModelProviderFactory(
             data_dir=tmp_path / "state",
             settings={"provider_id": "prv_unknown"},
         )
-        with pytest.raises(RuntimeError, match="refusing silent .env fallback"):
+        with pytest.raises(ProviderNotConfiguredError, match="prv_unknown"):
             factory.resolve()
+
+        assert _stable_failure_reason(ProviderNotConfiguredError("prv_unknown")) == (
+            "provider_not_configured"
+        )
 
 
 def test_provider_factory_still_allows_env_fallback_without_local_providers(tmp_path):

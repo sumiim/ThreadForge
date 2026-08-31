@@ -53,6 +53,20 @@ from .config import ConfigStore
 LOGGER = logging.getLogger(__name__)
 
 
+class ProviderNotConfiguredError(RuntimeError):
+    """The task-selected Provider ID is absent from local Worker storage."""
+
+    code = "provider_not_configured"
+
+    def __init__(self, provider_id: str):
+        self.provider_id = str(provider_id).strip()
+        selected = self.provider_id or "(none)"
+        super().__init__(
+            f"the selected Provider {selected} is not configured on this local Worker; "
+            "open Provider settings and configure it for this device"
+        )
+
+
 def _utc_now():
     """Wall-clock ISO-8601 UTC timestamp for event contract fields."""
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -666,10 +680,7 @@ class ModelProviderFactory:
         # 或错误的推理档位继续跑。只有本机从未配置任何 Provider 的纯 env 旧模式
         # 才允许回退。
         if ConfigStore(self.data_dir).list_providers():
-            raise RuntimeError(
-                "the local Worker has configured providers but none matches this task; "
-                "refusing silent .env fallback"
-            )
+            raise ProviderNotConfiguredError(provider_id)
         configured_model = os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4").strip() or "gpt-5.4"
         requested_model = (
             str(self.settings.get("model_id", configured_model)).strip() or configured_model

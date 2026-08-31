@@ -144,6 +144,7 @@ const errorText: Record<string, string> = {
   update_backoff: 'Worker 更新刚失败过，正处于冷却期，请稍后重试',
   uninstall_unavailable: 'Worker 暂时无法卸载：可能已离线或协议不支持，请稍后重试',
   worker_concurrency_limit: '该 Worker 已达并发任务上限，请等待其他任务完成后再试',
+  provider_not_configured: '所选供应商未同步到本机 Worker，请在供应商页面重新配置并测试连接',
   worker_protocol_error: '本地 Worker 协议错误，请检查版本',
   worker_release_unavailable: 'Worker 安装包暂时不可用，请稍后重试',
   rename_conflict: '名称已在其他页面被修改，已保留对方的版本，请刷新后重试',

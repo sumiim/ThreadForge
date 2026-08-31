@@ -167,6 +167,13 @@ class ModelCapabilityUnavailableError(AppError):
     code = "model_capability_unavailable"
 
 
+class ProviderNotConfiguredError(AppError):
+    """所选本地 Worker 没有一个明确可用的 Provider。"""
+
+    http_status = 409
+    code = "provider_not_configured"
+
+
 class WorkerCommandPendingError(AppError):
     http_status = 409
     code = "worker_command_pending"
