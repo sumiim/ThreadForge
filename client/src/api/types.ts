@@ -31,6 +31,11 @@ export interface ModelCapability {
   id: string
   display_name: string
   reasoning_efforts: ReasoningEffort[]
+  /** §2.2 模型×档位矩阵：可选能力字段（向后兼容，缺失时前端用默认）。 */
+  max_output_tokens?: number
+  context_window?: number
+  usage_fields?: string[]
+  supports_temperature?: boolean
 }
 
 export interface ModelCapabilities {

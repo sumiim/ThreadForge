@@ -2086,13 +2086,22 @@ def _parse_model_capabilities(raw, fallback_model: str) -> dict:
         normalized_efforts = list(dict.fromkeys(str(item).lower() for item in efforts))
         if not normalized_efforts or any(item not in allowed_efforts for item in normalized_efforts):
             raise WorkerProtocolError("invalid reasoning effort capability")
-        models.append(
-            {
-                "id": model_id,
-                "display_name": display_name,
-                "reasoning_efforts": normalized_efforts,
-            }
-        )
+        # §2.2 模型×档位矩阵：透传可选能力字段（max_output_tokens / context_window /
+        # usage_fields / supports_temperature），缺失时向后兼容为默认值。
+        entry = {
+            "id": model_id,
+            "display_name": display_name,
+            "reasoning_efforts": normalized_efforts,
+        }
+        if raw_model.get("max_output_tokens"):
+            entry["max_output_tokens"] = int(raw_model["max_output_tokens"])
+        if raw_model.get("context_window"):
+            entry["context_window"] = int(raw_model["context_window"])
+        if isinstance(raw_model.get("usage_fields"), list) and raw_model["usage_fields"]:
+            entry["usage_fields"] = [str(item) for item in raw_model["usage_fields"]]
+        if "supports_temperature" in raw_model and isinstance(raw_model["supports_temperature"], bool):
+            entry["supports_temperature"] = raw_model["supports_temperature"]
+        models.append(entry)
     if not models and fallback_model:
         models = [{"id": fallback_model[:200], "display_name": fallback_model[:200], "reasoning_efforts": ["none"]}]
     return {"provider": provider, "models": models}
