@@ -568,7 +568,15 @@ class WorkerClient:
                 "model": incoming_model,
                 "model_capabilities": _model_capabilities(self.store),
             }
-        except Exception:
+        except Exception as exc:
+            # 记录真实失败原因（不落 api_key / 完整 base_url 凭据），便于定位
+            # 供应商配置推送为何失败，而不是只回一个 provider_configuration_invalid。
+            LOGGER.warning(
+                "provider configuration failed provider_id=%s error=%s",
+                provider_id or "(none)",
+                type(exc).__name__,
+                exc_info=True,
+            )
             response = {
                 "type": "provider.configuration.completed",
                 "request_id": request_id,
