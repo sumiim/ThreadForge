@@ -243,18 +243,30 @@ class ConfigStore:
         model: str,
         protocol: str,
         reasoning_efforts: tuple[str, ...] = (),
+        model_efforts: dict[str, list[str]] | None = None,
+        max_output_tokens: int = 0,
+        context_window: int = 0,
     ) -> None:
         base_url = _validate_model_value("base_url", base_url, 2048)
         api_key = _validate_model_value("api_key", api_key, 8192)
         model = _validate_model_value("model", model, 200)
         protocol = _validate_provider_protocol(protocol)
         providers = self._read_providers()
+        # §2.2 模型×档位矩阵：可选，按模型记各自支持的 reasoning_efforts，
+        # 缺省回退到 provider 级 reasoning_efforts（向后兼容）。
+        effort_map = model_efforts if isinstance(model_efforts, dict) else {}
         providers[str(provider_id)] = {
             "base_url": base_url,
             "api_key": api_key,
             "model": model,
             "protocol": protocol,
             "reasoning_efforts": [str(item).strip() for item in reasoning_efforts if str(item).strip()],
+            "model_efforts": {
+                str(k): [str(item).strip() for item in (v or []) if str(item).strip()]
+                for k, v in effort_map.items()
+            },
+            "max_output_tokens": int(max_output_tokens or 0),
+            "context_window": int(context_window or 0),
         }
         self._write_providers(providers)
 

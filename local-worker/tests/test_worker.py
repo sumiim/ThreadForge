@@ -28,6 +28,8 @@ from threadforge_worker.cli import main as worker_main
 from threadforge_worker.client import (
     WorkerClient,
     WorkerProtocolRejectedError,
+    _capability_models_from_provider,
+    _extract_model_ids,
     _list_provider_models,
     _stable_failure_reason,
     _timestamp_expired,
@@ -1584,4 +1586,61 @@ def test_list_provider_models_normalizes_base_url_for_v1(monkeypatch):
     models, error = _list_provider_models("https://api.anthropic.com/v1", "k", "anthropic")
     assert error == ""
     assert captured_urls[-1] == "https://api.anthropic.com/v1/models"
+
+
+def test_extract_model_ids_accepts_standard_data_shape():
+    """§2.2：OpenAI 兼容标准返回 data[].id。"""
+    models, error = _extract_model_ids({"data": [{"id": "gpt-5.6-sol"}, {"id": "deepseek-v4-flash"}]}, "openai_compatible")
+    assert error == ""
+    assert models == ["gpt-5.6-sol", "deepseek-v4-flash"]
+
+
+def test_extract_model_ids_accepts_flat_models_and_string_list():
+    """§2.2：兼容 models[] 与裸字符串数组，避免「连上但 0 模型」假阳性。"""
+    models, error = _extract_model_ids({"models": [{"name": "a"}, {"name": "b"}]}, "openai_compatible")
+    assert error == ""
+    assert models == ["a", "b"]
+    models, error = _extract_model_ids(["gpt-5.5", "gpt-5.6-sol"], "openai_compatible")
+    assert error == ""
+    assert models == ["gpt-5.5", "gpt-5.6-sol"]
+
+
+def test_extract_model_ids_reports_invalid_on_garbage():
+    """§2.2：无法解析的响应应报 model_response_invalid，而不是 0 模型。"""
+    models, error = _extract_model_ids({"foo": []}, "openai_compatible")
+    assert models == []
+    assert error == "model_response_invalid"
+    models, error = _extract_model_ids(None, "openai_compatible")
+    assert error == "model_response_invalid"
+
+
+def test_capability_models_from_provider_per_model_efforts():
+    """§2.2 模型×档位矩阵：每个模型各自的 reasoning_efforts，缺省回退 provider 级。"""
+    provider = {
+        "model": "default",
+        "models": ["deepseek-v4-flash", "deepseek-v4-pro"],
+        "reasoning_efforts": ["none", "high"],
+        "model_efforts": {"deepseek-v4-pro": ["none", "low", "medium", "high", "xhigh", "max"]},
+        "max_output_tokens": 8192,
+        "context_window": 128000,
+    }
+    out = _capability_models_from_provider(provider, "fallback")
+    assert len(out) == 2
+    # 无 model_efforts 的模型回退到 provider 级
+    assert out[0]["id"] == "deepseek-v4-flash"
+    assert out[0]["reasoning_efforts"] == ["none", "high"]
+    # 有 model_efforts 的模型用各自档位
+    assert out[1]["id"] == "deepseek-v4-pro"
+    assert out[1]["reasoning_efforts"] == ["none", "low", "medium", "high", "xhigh", "max"]
+    assert out[1]["max_output_tokens"] == 8192
+    assert out[1]["context_window"] == 128000
+
+
+def test_capability_models_from_provider_empty_models_forces_default():
+    """§2.2：无 models 时回退单条默认模型（向后兼容）。"""
+    provider = {"model": "gpt-5.6-sol", "reasoning_efforts": ["none", "high"]}
+    out = _capability_models_from_provider(provider, "fallback")
+    assert len(out) == 1
+    assert out[0]["id"] == "gpt-5.6-sol"
+    assert out[0]["reasoning_efforts"] == ["none", "high"]
 

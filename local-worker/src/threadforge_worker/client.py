@@ -489,40 +489,6 @@ class WorkerClient:
             }
         self._send(response)
 
-    def _configure_provider(self, message: dict) -> None:
-        request_id = str(message.get("request_id", ""))
-        provider_id = str(message.get("provider_id", ""))
-        try:
-            # 与本地完整档位求并集：旧版本推送的 providers.json 可能缺新档位
-            # （如 max），下次更新 provider 时顺带补齐，避免能力上报不完整。
-            incoming = [str(item).strip() for item in message.get("reasoning_efforts", []) if str(item).strip()]
-            local = list(_runtime_reasoning_efforts())
-            efforts = tuple(dict.fromkeys([*incoming, *local]))
-            self.store.save_provider(
-                provider_id,
-                base_url=str(message.get("base_url", "")),
-                api_key=str(message.get("api_key", "")),
-                model=str(message.get("model", "")),
-                protocol=str(message.get("protocol", "")),
-                reasoning_efforts=efforts,
-            )
-            response = {
-                "type": "provider.configuration.completed",
-                "request_id": request_id,
-                "status": "completed",
-                "provider_id": provider_id,
-                "model": str(message.get("model", "")),
-                "model_capabilities": _model_capabilities(self.store),
-            }
-        except Exception:
-            response = {
-                "type": "provider.configuration.completed",
-                "request_id": request_id,
-                "status": "failed",
-                "error": "provider_configuration_invalid",
-            }
-        self._send(response)
-
     def _handle_provider_list_models(self, message: dict) -> None:
         request_id = str(message.get("request_id", ""))
         provider_id = str(message.get("provider_id", ""))
@@ -572,6 +538,17 @@ class WorkerClient:
             incoming_api_key = str(message.get("api_key", "")).strip() or str(existing.get("api_key", ""))
             incoming_model = str(message.get("model", "")).strip() or str(existing.get("model", ""))
             incoming_protocol = str(message.get("protocol", "")).strip() or str(existing.get("protocol", ""))
+            # §2.2 模型×档位矩阵：可选，按模型覆盖各自 reasoning_efforts；
+            # 缺省沿用 existing（或空）→ save_provider 里回退 provider 级。
+            incoming_model_efforts = message.get("model_efforts") or None
+            if incoming_model_efforts is None and isinstance(existing.get("model_efforts"), dict):
+                incoming_model_efforts = existing["model_efforts"]
+            incoming_max_output_tokens = int(
+                message.get("max_output_tokens") or existing.get("max_output_tokens") or 0
+            )
+            incoming_context_window = int(
+                message.get("context_window") or existing.get("context_window") or 0
+            )
             self.store.save_provider(
                 provider_id,
                 base_url=incoming_base_url,
@@ -579,6 +556,9 @@ class WorkerClient:
                 model=incoming_model,
                 protocol=incoming_protocol,
                 reasoning_efforts=efforts,
+                model_efforts=incoming_model_efforts,
+                max_output_tokens=incoming_max_output_tokens,
+                context_window=incoming_context_window,
             )
             response = {
                 "type": "provider.configuration.completed",
@@ -1072,46 +1052,13 @@ def _list_provider_models(base_url: str, api_key: str, protocol: str) -> tuple[l
     """按协议调用 list-models 端点，返回 (模型列表, 错误码)。
 
     错误码为空字符串表示成功；key 不落日志，响应正文只取模型 id。
-    """
-    import json
-    import urllib.error
-
-    base_url = base_url.rstrip("/")
-    if protocol == "ollama":
-        url = base_url + "/api/tags"
-    elif protocol == "anthropic":
-        url = base_url + "/v1/models"
-    else:
-        url = base_url + "/models"
-
-    headers = {"Accept": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    request = urllib.request.Request(url, headers=headers, method="GET")
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        return [], f"model_http_{exc.code}"
-    except (urllib.error.URLError, ConnectionError, TimeoutError):
-        return [], "model_connection_error"
-    except json.JSONDecodeError:
-        return [], "model_response_invalid"
-
-    if protocol == "ollama":
-        raw_models = data.get("models", []) if isinstance(data, dict) else []
-        model_ids = [str(item.get("name", "")) for item in raw_models if isinstance(item, dict)]
-    else:
-        raw_models = data.get("data", []) if isinstance(data, dict) else []
-        model_ids = [str(item.get("id", "")) for item in raw_models if isinstance(item, dict)]
-    return [model_id for model_id in model_ids if model_id], ""
-
-def _list_provider_models(base_url: str, api_key: str, protocol: str) -> tuple[list[str], str]:
-    """按协议调用 list-models 端点，返回 (模型列表, 错误码)。
-
-    错误码为空字符串表示成功；key 不落日志，响应正文只取模型 id。
     Base URL 允许用户带或不带 ``/v1``：这里统一归一化，避免 Anthropic
     的 ``/v1/v1/models`` 或 OpenAI 兼容端点的 ``/models`` 漏版本前缀。
+
+    解析健壮性（§2.2）：OpenAI 兼容 / Anthropic 端点既可能返回标准的
+    ``{"data":[{"id": ...}]}``，也可能返回扁平 ``{"models":[...]}`` 或
+    裸字符串数组；这里全部兼容，避免「能连上但解析出空列表」导致的
+    ``0 个模型`` 假阳性。
     """
     import json
     import urllib.error
@@ -1138,13 +1085,51 @@ def _list_provider_models(base_url: str, api_key: str, protocol: str) -> tuple[l
     except json.JSONDecodeError:
         return [], "model_response_invalid"
 
+    return _extract_model_ids(data, protocol)
+
+
+def _extract_model_ids(data, protocol: str) -> tuple[list[str], str]:
+    """从响应 JSON 中按协议提取模型 id，兼容多种返回结构。"""
     if protocol == "ollama":
-        raw_models = data.get("models", []) if isinstance(data, dict) else []
-        model_ids = [str(item.get("name", "")) for item in raw_models if isinstance(item, dict)]
-    else:
-        raw_models = data.get("data", []) if isinstance(data, dict) else []
-        model_ids = [str(item.get("id", "")) for item in raw_models if isinstance(item, dict)]
-    return [model_id for model_id in model_ids if model_id], ""
+        if isinstance(data, dict):
+            raw = data.get("models", [])
+            if isinstance(raw, list):
+                return [str(item.get("name", "")) for item in raw if isinstance(item, dict) and item.get("name")], ""
+        return [], "model_response_invalid"
+
+    # OpenAI 兼容 / Anthropic：优先标准 data[].id，回退 models[] / 扁平列表。
+    if isinstance(data, dict):
+        for key in ("data", "models"):
+            raw = data.get(key)
+            if isinstance(raw, list):
+                ids = _ids_from_list(raw)
+                if ids:
+                    return ids, ""
+        # 某些端点用 object/items 包装或顶层即是 id 集合。
+        if isinstance(data, dict) and data.get("object") and isinstance(data.get("data"), list):
+            raw = data["data"]
+            ids = _ids_from_list(raw)
+            if ids:
+                return ids, ""
+    elif isinstance(data, list):
+        ids = _ids_from_list(data)
+        if ids:
+            return ids, ""
+    return [], "model_response_invalid"
+
+
+def _ids_from_list(raw: list) -> list[str]:
+    """从模型条目列表中提取 id（支持 dict 带 id/name，或纯字符串）。"""
+    ids: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            ids.append(item.strip())
+        elif isinstance(item, dict):
+            value = item.get("id") or item.get("name") or item.get("model") or ""
+            value = str(value).strip()
+            if value:
+                ids.append(value)
+    return ids
 
 
 
@@ -1155,6 +1140,10 @@ def _model_capabilities(store: ConfigStore | None = None) -> dict:
     (``runtime.py`` ``max_new_tokens`` default 4096) rather than a probed
     provider limit — provider-limit probing is a V1.2 (2.2) concern.
     ``usage_fields`` are the completion-metadata fields the client reports.
+
+    §2.2 模型×档位矩阵：本地 provider 配置了 ``models[]`` 时，逐个上报
+    每个模型及其各自的 ``reasoning_efforts``（来自可选 ``model_efforts``，
+    缺省回退到 provider 级），供前端 Composer 按模型维度展示推理档位。
     """
     model = os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4")
     model_provider = os.environ.get("PICO_MODEL_PROVIDER", "").strip().lower()
@@ -1166,15 +1155,9 @@ def _model_capabilities(store: ConfigStore | None = None) -> dict:
         model = str(first.get("model") or model)
         efforts = [str(item) for item in (first.get("reasoning_efforts") or ["none"])]
         model_provider = str(first.get("protocol") or model_provider)
-    if model_provider == "chat_completions":
-        provider_label = "chat-completions"
-    elif model_provider == "anthropic":
-        provider_label = "anthropic"
+        models_output = _capability_models_from_provider(first, model)
     else:
-        provider_label = "openai-compatible"
-    return {
-        "provider": provider_label,
-        "models": [
+        models_output = [
             {
                 "id": model,
                 "display_name": model,
@@ -1189,5 +1172,80 @@ def _model_capabilities(store: ConfigStore | None = None) -> dict:
                 ],
                 "supports_temperature": "none" in efforts,
             }
-        ],
+        ]
+    if model_provider == "chat_completions":
+        provider_label = "chat-completions"
+    elif model_provider == "anthropic":
+        provider_label = "anthropic"
+    else:
+        provider_label = "openai-compatible"
+    return {
+        "provider": provider_label,
+        "models": models_output,
     }
+
+
+def _capability_models_from_provider(provider: dict, fallback_model: str) -> list[dict]:
+    """按 provider 生成模型×档位矩阵（§2.2）。
+
+    对 provider 自报的 ``models[]`` 逐个生成 capability entry；每个模型用
+    可选 ``model_efforts[model_id]`` 作为其 reasoning_efforts（缺省回退到
+    provider 级），并带上 provider 级 size/token 能力。无 models 时单条
+    默认模型回退。
+    """
+    provider_efforts = [str(item) for item in (provider.get("reasoning_efforts") or ["none"])]
+    model_efforts = provider.get("model_efforts") or {}
+    max_output_tokens = int(provider.get("max_output_tokens") or 4096)
+    context_window = int(provider.get("context_window") or 0)
+    usage_fields = [
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cached_tokens",
+        "cache_hit",
+    ]
+    raw_models = provider.get("models") or []
+    if not raw_models:
+        default = str(provider.get("model") or fallback_model)
+        return [
+            {
+                "id": default,
+                "display_name": default,
+                "reasoning_efforts": provider_efforts,
+                "max_output_tokens": max_output_tokens,
+                "context_window": context_window or None,
+                "usage_fields": usage_fields,
+                "supports_temperature": "none" in provider_efforts,
+            }
+        ]
+    out: list[dict] = []
+    for model_id in raw_models:
+        model_id = str(model_id).strip()
+        if not model_id:
+            continue
+        model_efforts_list = None
+        if isinstance(model_efforts, dict):
+            model_efforts_list = model_efforts.get(model_id) or model_efforts.get(str(model_id))
+        efforts = [str(item) for item in (model_efforts_list or provider_efforts)]
+        out.append(
+            {
+                "id": model_id,
+                "display_name": model_id,
+                "reasoning_efforts": efforts,
+                "max_output_tokens": max_output_tokens,
+                "context_window": context_window or None,
+                "usage_fields": usage_fields,
+                "supports_temperature": "none" in efforts,
+            }
+        )
+    return out or [
+        {
+            "id": str(provider.get("model") or fallback_model),
+            "display_name": str(provider.get("model") or fallback_model),
+            "reasoning_efforts": provider_efforts,
+            "max_output_tokens": max_output_tokens,
+            "context_window": context_window or None,
+            "usage_fields": usage_fields,
+            "supports_temperature": "none" in provider_efforts,
+        }
+    ]
