@@ -407,6 +407,25 @@ def test_save_provider_rejects_newline_in_model(tmp_path):
         )
 
 
+def test_save_provider_allows_empty_api_key_and_base_url(tmp_path):
+    """§2.2/供应商管理：编辑时 api_key/base_url 留空 = 沿用本地 saved 值；
+    新建未填 key 也是合法状态。save_provider 不应因空 api_key/base_url 抛错。"""
+    store = ConfigStore(tmp_path / "state")
+    store.save_provider(
+        "prv_nokey",
+        base_url="",
+        api_key="",
+        model="",
+        protocol="openai_compatible",
+        reasoning_efforts=("none", "high"),
+    )
+    loaded = store.load_provider("prv_nokey")
+    assert loaded is not None
+    assert loaded["api_key"] == ""
+    assert loaded["base_url"] == ""
+    assert loaded["model"] == ""
+
+
 def test_provider_factory_still_allows_env_fallback_without_local_providers(tmp_path):
     """本机从未配置 Provider 的纯 env 旧模式仍然允许回退。"""
     with patch.dict(
