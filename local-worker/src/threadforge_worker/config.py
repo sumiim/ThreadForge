@@ -249,7 +249,8 @@ class ConfigStore:
     ) -> None:
         base_url = _validate_model_value("base_url", base_url, 2048)
         api_key = _validate_model_value("api_key", api_key, 8192)
-        model = _validate_model_value("model", model, 200)
+        # 供应商可为「尚未发现模型」的合法状态：model 允许为空，仅拒超长/换行。
+        model = _validate_model_value("model", model, 200, allow_empty=True)
         protocol = _validate_provider_protocol(protocol)
         providers = self._read_providers()
         # §2.2 模型×档位矩阵：可选，按模型记各自支持的 reasoning_efforts，
@@ -340,9 +341,9 @@ class ConfigStore:
         return load_project_env(self.root, override=True)
 
 
-def _validate_model_value(name: str, value: str, max_length: int) -> str:
+def _validate_model_value(name: str, value: str, max_length: int, *, allow_empty: bool = False) -> str:
     value = str(value).strip()
-    if not value or len(value) > max_length or "\n" in value or "\r" in value:
+    if (not allow_empty and not value) or len(value) > max_length or "\n" in value or "\r" in value:
         raise ValueError(f"invalid model {name}")
     return value
 

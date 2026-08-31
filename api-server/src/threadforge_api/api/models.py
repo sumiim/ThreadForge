@@ -151,7 +151,7 @@ class ConfigureProviderRequest(BaseModel):
     device_id: str = Field(min_length=1, max_length=200)
     base_url: str = Field(min_length=1, max_length=2048)
     api_key: str = Field(default="", max_length=8192)
-    model: str = Field(min_length=1, max_length=200)
+    model: str = Field(default="", max_length=200)
     protocol: _PROVIDER_PROTOCOLS
     reasoning_efforts: list[str] = []
 

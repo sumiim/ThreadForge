@@ -3,6 +3,7 @@ from dataclasses import replace
 
 import pytest
 
+from threadforge_api.api.models import ConfigureProviderRequest
 from threadforge_api.application.provider_service import ProviderService
 from threadforge_api.domain.errors import ProviderNotFoundError
 from threadforge_api.domain.providers import (
@@ -12,6 +13,32 @@ from threadforge_api.domain.providers import (
 )
 from threadforge_api.infrastructure.sqlite_repositories import SqliteProviderRepository
 from threadforge_api.infrastructure.sqlite_store import SqliteStore
+
+
+def test_configure_provider_request_allows_empty_model():
+    """§2.2/供应商管理：模型尚未发现时 configure 推送应允许空 model。"""
+    req = ConfigureProviderRequest(
+        device_id="dev_" + "b" * 32,
+        base_url="https://codex.ximuai.com/v1",
+        api_key="sk-local",
+        model="",
+        protocol="openai_compatible",
+        reasoning_efforts=["none", "high"],
+    )
+    assert req.model == ""
+    assert req.base_url == "https://codex.ximuai.com/v1"
+
+
+def test_configure_provider_request_rejects_blank_base_url():
+    """base_url 仍必须非空。"""
+    with pytest.raises(Exception):
+        ConfigureProviderRequest(
+            device_id="dev_" + "b" * 32,
+            base_url="",
+            api_key="sk",
+            model="",
+            protocol="openai_compatible",
+        )
 
 
 def test_provider_round_trips_through_dict():

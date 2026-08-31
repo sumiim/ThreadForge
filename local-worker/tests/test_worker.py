@@ -376,6 +376,37 @@ def test_provider_factory_refuses_silent_env_fallback_when_provider_configured(t
         )
 
 
+def test_save_provider_allows_empty_model(tmp_path):
+    """§2.2/供应商管理：模型尚未发现时 save_provider 应允许空 model，仅拒超长/换行。"""
+    store = ConfigStore(tmp_path / "state")
+    store.save_provider(
+        "prv_empty",
+        base_url="https://codex.ximuai.com/v1",
+        api_key="sk-local",
+        model="",
+        protocol="openai_compatible",
+        reasoning_efforts=("none", "high"),
+    )
+    loaded = store.load_provider("prv_empty")
+    assert loaded is not None
+    assert loaded["model"] == ""
+    assert loaded["base_url"] == "https://codex.ximuai.com/v1"
+
+
+def test_save_provider_rejects_newline_in_model(tmp_path):
+    """模型仍不允许换行/超长（即使允许空）。"""
+    store = ConfigStore(tmp_path / "state")
+    with pytest.raises(ValueError, match="invalid model"):
+        store.save_provider(
+            "prv_bad",
+            base_url="https://api.deepseek.com",
+            api_key="sk-local",
+            model="a\nb",
+            protocol="deepseek",
+            reasoning_efforts=("none",),
+        )
+
+
 def test_provider_factory_still_allows_env_fallback_without_local_providers(tmp_path):
     """本机从未配置 Provider 的纯 env 旧模式仍然允许回退。"""
     with patch.dict(
