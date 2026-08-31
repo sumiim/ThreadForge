@@ -149,4 +149,11 @@ describe('session task recovery', () => {
       '模型未能通过审查或持续产生有效进展，本次运行已停止空转。',
     )
   })
+
+  it('explains when the selected provider is missing from the local Worker', () => {
+    assert.equal(
+      terminalFailureMessage({ status: 'failed', error_code: 'provider_not_configured' }),
+      '所选供应商未同步到本机 Worker，请在供应商页面重新配置并测试连接。',
+    )
+  })
 })

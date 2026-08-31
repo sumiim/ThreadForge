@@ -16,6 +16,7 @@ from ..domain.errors import (
     InputTooLongError,
     ModelCapabilityUnavailableError,
     ModelNotConfiguredError,
+    ProviderNotConfiguredError,
     TaskRunnerUnavailableError,
     TaskTerminalError,
     WorkerCapabilityUnavailableError,
@@ -85,7 +86,19 @@ class TaskService:
         selected_effort = str(reasoning_effort or "none").strip().lower()
         active_provider_id = ""
         if execution_environment == "local_worker" and self._provider_service is not None:
+            # Composer 展示逻辑在没有 default 标记时会使用设备上的第一个
+            # Provider。控制面也必须采用同一规则，否则新建的唯一 Provider
+            # 会以空 provider_id 派发，Worker 随后只能安全地拒绝 .env 回退。
+            device_providers = self._provider_service.list_providers(owner_id, device_id)
             active_provider = self._provider_service.get_active_provider(owner_id, device_id)
+            if active_provider is None:
+                if len(device_providers) == 1:
+                    active_provider = device_providers[0]
+                elif len(device_providers) > 1:
+                    raise ProviderNotConfiguredError(
+                        "multiple Providers are configured for this Worker; select a default Provider",
+                        {"device_id": device_id},
+                    )
             if active_provider is not None:
                 active_provider_id = str(active_provider.get("provider_id", ""))
                 selected_model = selected_model or str(active_provider.get("model", ""))

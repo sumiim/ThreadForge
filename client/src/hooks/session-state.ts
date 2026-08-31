@@ -39,6 +39,7 @@ export function getFinalAnswer(data: Record<string, unknown>): string | null {
 }
 
 const modelFailureMessages: Record<string, string> = {
+  provider_not_configured: '所选供应商未同步到本机 Worker，请在供应商页面重新配置并测试连接。',
   model_rate_limited: '模型服务当前请求过多，已自动重试，请稍后再试。',
   model_timeout: '模型服务响应超时，已自动重试，请稍后再试。',
   model_connection_error: '无法稳定连接模型服务，已自动重试，请检查网络后再试。',

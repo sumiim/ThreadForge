@@ -1016,6 +1016,9 @@ def _validated_server_url(server_url: str) -> str:
 
 
 def _stable_failure_reason(exc: Exception) -> str:
+    code = str(getattr(exc, "code", "") or "").strip()
+    if re.fullmatch(r"[a-z][a-z0-9_]{1,99}", code):
+        return code
     if isinstance(exc, (KeyError, TypeError, ValueError)):
         return "invalid_task_payload"
     if isinstance(exc, RuntimeError) and "not configured" in str(exc):
