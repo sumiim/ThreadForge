@@ -714,6 +714,7 @@ class AgentLoop:
         task_state.finish_success(final)
         agent.run_store.write_task_state(task_state)
         agent.emit_agent_state(task_state, "final")
+        task_state.run_finished_emitted = True
         agent.emit_trace(
             task_state,
             "run_finished",
@@ -1127,6 +1128,7 @@ class AgentLoop:
                 final_answer="agent run failed: shell process cleanup could not be confirmed",
             )
             agent.run_store.write_task_state(task_state)
+            task_state.run_finished_emitted = True
             agent.emit_trace(
                 task_state,
                 "run_finished",
@@ -1143,6 +1145,7 @@ class AgentLoop:
             # 取消收敛：不向调用方抛出，最终回答一律以 TaskState.final_answer 为准。
             task_state.stop_user_cancelled()
             agent.run_store.write_task_state(task_state)
+            task_state.run_finished_emitted = True
             agent.emit_trace(
                 task_state,
                 "run_finished",
@@ -2055,6 +2058,7 @@ class AgentLoop:
                         "trigger": "run_finished",
                     },
                 )
+            task_state.run_finished_emitted = True
             agent.emit_trace(
                 task_state,
                 "run_finished",
@@ -2093,6 +2097,7 @@ class AgentLoop:
                     "trigger": task_state.stop_reason or "run_stopped",
                 },
             )
+        task_state.run_finished_emitted = True
         agent.emit_trace(
             task_state,
             "run_finished",

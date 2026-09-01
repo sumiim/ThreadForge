@@ -38,19 +38,24 @@ def finalize_run(agent, task_state, *, duration_ms, error_type=""):
         agent.run_store.write_task_state(task_state)
     except Exception:
         persistence_error = True
-    try:
-        agent.emit_trace(
-            task_state,
-            "run_finished",
-            {
-                "status": task_state.status,
-                "stop_reason": task_state.stop_reason,
-                "run_duration_ms": int(duration_ms),
-                **({"error_type": str(error_type)} if error_type else {}),
-            },
-        )
-    except Exception:
-        persistence_error = True
+    # AgentLoop finalization (plain_conversation / normal-final / cancel / failure)
+    # already emitted run_finished. finalize_run only backfills if not yet emitted,
+    # so the same final answer is not rendered twice by the frontend.
+    if not getattr(task_state, "run_finished_emitted", False):
+        try:
+            agent.emit_trace(
+                task_state,
+                "run_finished",
+                {
+                    "status": task_state.status,
+                    "stop_reason": task_state.stop_reason,
+                    "run_duration_ms": int(duration_ms),
+                    **({"error_type": str(error_type)} if error_type else {}),
+                },
+            )
+            task_state.run_finished_emitted = True
+        except Exception:
+            persistence_error = True
     if persistence_error:
         task_state.stop(
             STOP_REASON_PERSISTENCE_ERROR,
