@@ -28,7 +28,7 @@ def list_workspaces(
                     "available": entry.available,
                     "is_git": entry.is_git,
                     "execution_environment": ExecutionEnvironment.BACKEND_PROCESS.value,
-                    "container_sandbox_enabled": False,
+                    "container_sandbox_enabled": bool(container.settings.sandbox_enabled),
                 }
             )
     online = container.worker_hub.online_ids(actor.owner_id)
@@ -54,7 +54,7 @@ def list_workspaces(
                     "model": device.model,
                     "model_configured": device.model_configured,
                     "model_capabilities": device.model_capabilities,
-                    "container_sandbox_enabled": False,
+                    "container_sandbox_enabled": bool(container.settings.sandbox_enabled),
                 }
             )
 

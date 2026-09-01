@@ -918,38 +918,57 @@ def run_task(
 
 
 def _sandbox_shell_factory(settings: dict, send_runtime_event) -> Callable | None:
-    """Fail-closed Docker sandbox shell factory for the Worker.
+    """Fail-closed sandbox shell factory for the Worker.
 
-    Returns None when the sandbox is disabled (legacy host shell remains in use
-    for the CLI-compat path). Raises ``SandboxError`` when the sandbox is
-    enabled but the configuration is unsafe or Docker is unavailable, so the
-    task fails closed before any command runs.
+    ``sandbox_enabled`` gates isolation; ``sandbox_backend`` selects the backend:
+    - ``"os"`` (default): OS-native containment via ``ShellProcess`` Job Object /
+      ``setrlimit`` resource limits (no Docker needed, cross-platform).
+    - ``"docker"``: ``DockerSandboxBackend`` per-command container.
+    Returns ``None`` when sandbox is disabled (legacy host ``ShellProcess`` stays).
+    Raises ``SandboxError`` when enabled but the config is unsafe or the backend
+    is unavailable, so the task fails closed before any command runs.
     """
     if not bool(settings.get("sandbox_enabled", False)):
         return None
-    from threadforge_sandbox import (
-        DockerSandboxBackend,
-        SandboxConfig,
-        SandboxLifecycle,
-    )
+    backend = str(settings.get("sandbox_backend", "os")).strip().lower()
+    if backend == "docker":
+        from threadforge_sandbox import (
+            DockerSandboxBackend,
+            SandboxConfig,
+            SandboxLifecycle,
+        )
 
-    config = SandboxConfig(
-        image=str(settings.get("sandbox_image", "threadforge-sandbox:latest")),
-        user=str(settings.get("sandbox_user", "65534:65534")),
-        network=str(settings.get("sandbox_network", "none")),
-        cpu_limit=float(settings.get("sandbox_cpu_limit", 1.0)),
-        memory_limit=str(settings.get("sandbox_memory_limit", "512m")),
-        pids_limit=int(settings.get("sandbox_pids_limit", 64)),
-    )
+        config = SandboxConfig(
+            image=str(settings.get("sandbox_image", "threadforge-sandbox:latest")),
+            user=str(settings.get("sandbox_user", "65534:65534")),
+            network=str(settings.get("sandbox_network", "none")),
+            cpu_limit=float(settings.get("sandbox_cpu_limit", 1.0)),
+            memory_limit=str(settings.get("sandbox_memory_limit", "512m")),
+            pids_limit=int(settings.get("sandbox_pids_limit", 64)),
+        )
 
-    def on_sandbox_event(kind: str, payload: dict) -> None:
-        send_runtime_event(kind, dict(payload or {}))
+        def on_sandbox_event(kind: str, payload: dict) -> None:
+            send_runtime_event(kind, dict(payload or {}))
 
-    backend = DockerSandboxBackend(
-        config,
-        lifecycle=SandboxLifecycle(on_event=on_sandbox_event),
+        backend_obj = DockerSandboxBackend(
+            config,
+            lifecycle=SandboxLifecycle(on_event=on_sandbox_event),
+        )
+        return backend_obj.make_shell
+
+    # OS-native backend: resource caps from the sandbox config, applied via
+    # Job Object / setrlimit. No Docker required.
+    from pico.shell_process import build_native_shell_factory, parse_memory_to_bytes
+
+    return build_native_shell_factory(
+        {
+            "memory_bytes": parse_memory_to_bytes(
+                str(settings.get("sandbox_memory_limit", "512m"))
+            ),
+            "max_processes": int(settings.get("sandbox_pids_limit", 64)),
+            "cpu_seconds": int(settings.get("sandbox_cpu_seconds", 0)),
+        }
     )
-    return backend.make_shell
 
 
 def _required_env(name: str, default: str = "") -> str:
