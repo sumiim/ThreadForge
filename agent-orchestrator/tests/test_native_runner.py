@@ -12,12 +12,10 @@ from __future__ import annotations
 
 import json
 import shutil
-from pathlib import Path
 
 import pytest
-
 from pico import Pico
-from pico.event_sink import NullSink
+from pico.event_sink import JsonlSink, NullSink
 from pico.providers.clients import FakeModelClient
 from pico.run_store import RunStore
 from pico.session_store import SessionStore
@@ -25,12 +23,17 @@ from pico.task_state import STOP_REASON_FINAL_ANSWER_RETURNED
 from pico.workspace import WorkspaceContext
 
 from langgraph_pico import run_native
-from langgraph_pico.intent import INTENT_CODE_CHANGE, INTENT_CONVERSATION, INTENT_READ_ONLY
+from langgraph_pico.intent import (
+    INTENT_CODE_CHANGE,
+    INTENT_CONVERSATION,
+    INTENT_READ_ONLY,
+)
 
 
 def _build_runtime(tmp_path, outputs, *, allowed_tools=None):
-    import pico
     from pathlib import Path as _Path
+
+    import pico
 
     pico_root = _Path(pico.__file__).resolve().parent.parent
     source = pico_root / "tests" / "fixtures" / "bench_repo_readme"
@@ -190,10 +193,9 @@ def test_native_model_error_in_loop_classifies_correctly(tmp_path):
     # AgentLoop 内模型调用抛带 stop_reason=model_error 的异常时，
     # run_native 应正确分类（此前误用临时 TaskState 导致 runtime_error）。
     import urllib.error
+    from pathlib import Path as _Path
 
     import pico
-    from pico.evaluation.backends import ModelBoundaryError
-    from pathlib import Path as _Path
 
     class FailingClient:
         supports_prompt_cache = False
@@ -232,10 +234,11 @@ def test_native_model_error_in_loop_classifies_correctly(tmp_path):
 def test_native_runtime_error_in_loop_uses_convergence_summary(tmp_path):
     # 循环内抛出的运行时错误（非模型错误）→ run_native 应给收敛/托底总结
     # （best-effort 证据列表），而不是裸「Agent 运行失败，请稍后重试。」。
+    from pathlib import Path as _Path
+
     import pico
     from pico.evaluation.backends import ModelBoundaryError
     from pico.task_state import STOP_REASON_RUNTIME_ERROR
-    from pathlib import Path as _Path
 
     class CrashAfterEvidenceClient:
         supports_prompt_cache = False
@@ -278,4 +281,29 @@ def test_native_runtime_error_in_loop_uses_convergence_summary(tmp_path):
     assert state.final_answer != "Agent 运行失败，请稍后重试。"
     assert "运行中断" in state.final_answer
     assert "read_file" in state.final_answer
+    shutil.rmtree(fixture_root, ignore_errors=True)
+
+
+def test_native_run_finished_emitted_once(tmp_path):
+    """同一 run 的 run_finished 只能 emit 一次（§7.8.9 收尾去重）。
+
+    AgentLoop 收尾（plain_conversation / normal-final）已 emit 一次 run_finished，
+    run_native 的 finally 再走 finalize_run 兜底时不得重复 emit，否则前端把同一
+    条 final 渲染两遍。这里用 JsonlSink 落盘 trace，断言 trace 里 run_finished==1。
+    """
+    agent, _, fixture_root = _build_runtime(
+        tmp_path, ["<final>hello back</final>"]
+    )
+    # 让 run 工件真实落盘：替换 NullSink 为 JsonlSink 写 run_store。
+    agent.event_sink = JsonlSink(agent.run_store)
+    result = run_native(agent, "hello", task_mode=INTENT_CONVERSATION)
+    assert result.task_state.status == "completed"
+    trace_path = agent.run_store.trace_path(result.task_state)
+    assert trace_path.is_file()
+    events = [
+        json.loads(line).get("event")
+        for line in trace_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert events.count("run_finished") == 1, f"run_finished emitted {events.count('run_finished')} times"
     shutil.rmtree(fixture_root, ignore_errors=True)
