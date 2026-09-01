@@ -328,13 +328,21 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
       className="message-enter flex justify-start"
     >
       <div className="min-w-0 max-w-[90%]">
+        {/* planning 思考独立显示，无论有无 blocks 都展示 */}
         {message.planningThinking ? (
           <div className="mb-2">
             <ThinkingFold text={message.planningThinking} streaming={streaming} label="Planning thinking" />
           </div>
         ) : null}
+        {/* 普通 thinking（execute/conversation）累积在顶层，单一折叠块，不按 turn 拆分 */}
+        {message.thinking ? (
+          <div className="mb-2">
+            <ThinkingFold text={message.thinking} streaming={streaming} label="Thinking" />
+          </div>
+        ) : null}
         {blocks && blocks.length > 0 ? (
           // 同一 turn 始终只有一个抽屉；commentary 保持其事件顺序独立显示。
+          // thinking 已在顶层展示，此处不再从 behavior 块取 thinking，避免重复。
           groupBlocksByTurn(blocks).map((group, index) => (
             'commentary' in group ? (
               <div
@@ -347,7 +355,7 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
               <TurnFold
                 key={index}
                 turn={group.turn}
-                thinking={group.thinking}
+                thinking={undefined}
                 toolCalls={group.toolCalls ?? []}
                 reviewEntries={group.reviewEntries ?? []}
                 streaming={streaming}
@@ -363,7 +371,7 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
               <ReviewBattle entries={message.reviewEntries} />
             ) : null}
             <TurnFold
-              thinking={message.thinking}
+              thinking={undefined}
               toolCalls={message.toolCalls ?? []}
               reviewEntries={message.reviewEntries ?? []}
               streaming={streaming}
