@@ -1665,6 +1665,16 @@ def test_extract_model_ids_accepts_flat_models_and_string_list():
     assert models == ["gpt-5.5", "gpt-5.6-sol"]
 
 
+def test_extract_model_ids_accepts_valid_empty_model_lists():
+    """合法的空模型列表表示端点可达，但供应商未公开模型目录。"""
+    models, error = _extract_model_ids({"object": "list", "data": []}, "openai_compatible")
+    assert models == []
+    assert error == ""
+    models, error = _extract_model_ids({"models": []}, "openai_compatible")
+    assert models == []
+    assert error == ""
+
+
 def test_extract_model_ids_reports_invalid_on_garbage():
     """§2.2：无法解析的响应应报 model_response_invalid，而不是 0 模型。"""
     models, error = _extract_model_ids({"foo": []}, "openai_compatible")
