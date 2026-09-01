@@ -4,6 +4,7 @@ import { CheckOutlined, DownOutlined, RightOutlined, SendOutlined, StopOutlined 
 
 import { activateProvider, listProviders } from '../../api/client'
 import type { ModelCapability, PermissionMode, Provider, ReasoningEffort } from '../../api/types'
+import { providerModelIds } from './model-options'
 
 interface ComposerProps {
   model: string
@@ -109,11 +110,12 @@ interface ModelGroup {
 }
 
 function modelOptionsFor(provider: Provider | undefined, fallback: ModelCapability[]): ModelOption[] {
-  if (provider?.models?.length) {
+  const modelIds = providerModelIds(provider)
+  if (provider && modelIds.length) {
     const efforts: ReasoningEffort[] = provider.reasoning_efforts?.length
       ? provider.reasoning_efforts
       : ['none']
-    return provider.models.map((id) => ({
+    return modelIds.map((id) => ({
       id,
       display_name: id,
       reasoning_efforts: efforts,
@@ -135,11 +137,12 @@ export default function Composer({ model, modelOptions, running, stopping = fals
   // 默认 provider 已「测试连接」发现模型时，用其模型列表 + 推理档位替代 env 单模型。
   const defaultProvider = providers.find((item) => item.is_default) ?? providers[0]
   const effectiveModelOptions: ModelCapability[] = useMemo(() => {
-    if (!defaultProvider?.models?.length) return modelOptions
+    const modelIds = providerModelIds(defaultProvider)
+    if (!modelIds.length) return modelOptions
     const efforts: ReasoningEffort[] = defaultProvider.reasoning_efforts?.length
       ? defaultProvider.reasoning_efforts
       : ['none']
-    return defaultProvider.models.map((id) => ({ id, display_name: id, reasoning_efforts: efforts }))
+    return modelIds.map((id) => ({ id, display_name: id, reasoning_efforts: efforts }))
   }, [defaultProvider, modelOptions])
   const activeModel = useMemo(
     () => effectiveModelOptions.find((item) => item.id === modelId) ?? effectiveModelOptions[0],
@@ -158,7 +161,7 @@ export default function Composer({ model, modelOptions, running, stopping = fals
 
   // 供应商分组模型列表：每个有模型的供应商一组，用于「模型」展开页分组展示。
   const modelGroups: ModelGroup[] = useMemo(() => {
-    const withModels = providers.filter((p) => p.models?.length)
+    const withModels = providers.filter((p) => providerModelIds(p).length)
     if (withModels.length) {
       return withModels.map((p) => ({
         key: p.provider_id,
