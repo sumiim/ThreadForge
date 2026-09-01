@@ -149,7 +149,7 @@ class NativeRuntimeAdapter:
             event_sink=event_sink,
             shell_output_max_bytes=self._settings.shell_output_max_bytes,
             shell_cleanup_grace_seconds=self._settings.shell_cleanup_grace_seconds,
-            allow_durable_memory_write=False,  # Web path must not write Workspace .pico/memory/
+            allow_durable_memory_write=bool(self._settings.durable_memory_enabled),  # configurable; off by default to keep web path from mutating the workspace
             shell_factory=self._shell_factory,
             # §7.8.9 阶段 3：真实模型开启 review subagent（程序强制）。
             # 离线 FakeModelClient 没有独立 review 输出流，必须显式关闭，

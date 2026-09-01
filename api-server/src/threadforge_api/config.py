@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     worker_release_dir: Path = Path("worker-releases")
     worker_release_max_bytes: int = 128 * 1024 * 1024
     sandbox_enabled: bool = False
+    # Memory convergence: allow Worker/native to write durable memory into the
+    # workspace .pico/memory/ dir and {session}.json. Off by default to keep the
+    # "web path never mutates the user workspace" invariant; enable explicitly per
+    # deployment when cross-session durable memory is needed.
+    durable_memory_enabled: bool = False
     sandbox_image: str = "threadforge-sandbox:latest"
     sandbox_user: str = "65534:65534"
     sandbox_cpu_limit: float = 1.0

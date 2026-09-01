@@ -837,7 +837,7 @@ def run_task(
         shell_cleanup_grace_seconds=float(settings.get("shell_cleanup_grace_seconds", 5)),
         max_read_files=int(settings.get("max_read_files", 4)),
         max_total_steps=int(settings.get("max_total_steps", max(int(task.get("max_steps", 6)) * 3, int(task.get("max_steps", 6)) + 4))),
-        allow_durable_memory_write=False,
+        allow_durable_memory_write=bool(settings.get("durable_memory_enabled", False)),
         shell_factory=shell_factory,
         # §7.8.9 阶段 3：生产开启 review subagent（程序强制，每 6 动作 / final 前）。
         # §7.8.9 决策（2026-08-18）：checklist 打钩机制落地（程序化 file:/grep:/cmd:
