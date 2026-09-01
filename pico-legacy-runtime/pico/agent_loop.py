@@ -469,8 +469,20 @@ def _verify_done_when(agent, done_when, cmd_cache):
                 return False
             if command in cmd_cache:
                 return cmd_cache[command]
-            tool = agent.tools.get("run_shell")
-            content = str(tool["run"]({"command": command, "timeout": 30})) if tool else ""
+            # Route through ToolExecutor instead of a bare tool["run"] so the
+            # checklist's programmatic acceptance goes through the same
+            # validation / approval / read_only / sandbox / memory path, rather
+            # than running an unapproved shell command from model intent.
+            executor = getattr(agent, "tool_executor", None)
+            if executor is not None:
+                try:
+                    result = executor.execute("run_shell", {"command": command, "timeout": 30}, tool_call_id="")
+                    content = str(getattr(result, "content", result) or "")
+                except Exception:
+                    return False
+            else:
+                tool = agent.tools.get("run_shell")
+                content = str(tool["run"]({"command": command, "timeout": 30})) if tool else ""
             ok = "exit_code: 0" in content
             cmd_cache[command] = ok
             return ok
