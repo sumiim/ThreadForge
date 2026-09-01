@@ -2593,6 +2593,42 @@ def test_anthropic_compatible_client_retries_rate_limit_and_respects_deadline():
     assert client.last_completion_metadata["provider_request_attempts"] == 1
 
 
+def test_http_model_not_found_is_reported_without_retries():
+    from pico.providers.clients import ModelProviderError, OpenAICompletionsModelClient
+
+    calls = 0
+
+    def fake_urlopen(request, timeout):
+        nonlocal calls
+        calls += 1
+        raise urllib.error.HTTPError(
+            request.full_url,
+            503,
+            "unavailable",
+            {},
+            io.BytesIO(
+                b'{"error":{"code":"model_not_found","message":"No available channel"}}'
+            ),
+        )
+
+    client = OpenAICompletionsModelClient(
+        model="gpt-5.6-sol",
+        base_url="https://provider.example/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+        max_attempts=3,
+    )
+
+    with patch("urllib.request.urlopen", fake_urlopen), pytest.raises(ModelProviderError) as exc_info:
+        client.complete("hello", 42)
+
+    assert calls == 1
+    assert exc_info.value.code == "model_not_found"
+    assert exc_info.value.retryable is False
+    assert client.last_completion_metadata["provider_error_code"] == "model_not_found"
+
+
 def test_anthropic_compatible_client_raises_provider_error_on_sse_error_event():
     class FakeResponse:
         headers = {"Content-Type": "text/event-stream"}

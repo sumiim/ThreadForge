@@ -156,4 +156,11 @@ describe('session task recovery', () => {
       '所选供应商未同步到本机 Worker，请在供应商页面重新配置并测试连接。',
     )
   })
+
+  it('explains when the provider has no route for the selected model', () => {
+    assert.equal(
+      terminalFailureMessage({ status: 'failed', error_code: 'model_not_found' }),
+      '当前供应商没有该模型的可用通道，请更换模型或供应商后再试。',
+    )
+  })
 })

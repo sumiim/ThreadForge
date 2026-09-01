@@ -27,7 +27,36 @@ class ModelProviderError(RuntimeError):
         self.status_code = int(status_code) if status_code is not None else None
 
 
-def _provider_http_error(code, attempts):
+def _provider_error_code_from_body(body_text):
+    """Extract only a bounded, stable provider error code from an HTTP body."""
+    try:
+        payload = json.loads(str(body_text or ""))
+    except (TypeError, ValueError):
+        return ""
+    error = payload.get("error") if isinstance(payload, dict) else None
+    candidates = []
+    if isinstance(error, dict):
+        candidates.extend([error.get("code"), error.get("type")])
+    if isinstance(payload, dict):
+        candidates.append(payload.get("code"))
+    for candidate in candidates:
+        value = str(candidate or "").strip().lower()
+        if value == "model_not_found":
+            return value
+    return ""
+
+
+def _provider_http_error(code, attempts, body_text=""):
+    provider_code = _provider_error_code_from_body(body_text)
+    if provider_code == "model_not_found":
+        # A gateway may use HTTP 503 while reporting that its model channel is
+        # unavailable. Retrying the same model cannot make that channel appear.
+        return ModelProviderError(
+            provider_code,
+            retryable=False,
+            attempts=attempts,
+            status_code=int(code),
+        )
     status = int(code)
     retryable = status in RETRYABLE_HTTP_STATUSES or status >= 500
     if status == 429:
@@ -761,7 +790,11 @@ class OpenAICompatibleModelClient:
                 }
                 raise exc
             except urllib.error.HTTPError as exc:
-                provider_error = _provider_http_error(exc.code, attempt)
+                try:
+                    body_text = exc.read(4096).decode("utf-8", errors="replace")
+                except Exception:
+                    body_text = ""
+                provider_error = _provider_http_error(exc.code, attempt, body_text)
                 delay = _retry_delay(
                     attempt,
                     (getattr(exc, "headers", None) or {}).get("Retry-After", ""),
@@ -913,7 +946,11 @@ def _run_provider_request(
                 continue
             raise exc
         except urllib.error.HTTPError as exc:
-            provider_error = _provider_http_error(exc.code, attempt)
+            try:
+                body_text = exc.read(4096).decode("utf-8", errors="replace")
+            except Exception:
+                body_text = ""
+            provider_error = _provider_http_error(exc.code, attempt, body_text)
             delay = _retry_delay(
                 attempt,
                 (getattr(exc, "headers", None) or {}).get("Retry-After", ""),

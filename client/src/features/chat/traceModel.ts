@@ -167,6 +167,7 @@ export function inputTimelineEvent(input: TimelineInput): TimelineEvent {
     timestamp: input.createdAt,
     label: '用户输入',
     status: 'completed',
+    text: input.content,
     message_id: input.id,
     source: 'input',
   }
