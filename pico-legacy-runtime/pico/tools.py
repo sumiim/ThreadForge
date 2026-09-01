@@ -295,6 +295,7 @@ def tool_search(context, args):
     deadline = time.monotonic() + SEARCH_TIMEOUT_SECONDS
 
     rg_path = shutil.which("rg")
+    degraded_reason = ""
     if rg_path:
         # 优先用 rg，因为搜索会非常频繁，搜索延迟会直接影响 agent 控制循环。
         try:
@@ -323,18 +324,29 @@ def tool_search(context, args):
             # Packaged Workers may not inherit the interactive shell PATH, and
             # an external rg process may still stall. The bounded fallback
             # below preserves regex semantics without blocking the whole Run.
-            pass
+            degraded_reason = "rg unavailable or timed out; used fallback scanner"
         else:
             if result.returncode in {0, 1}:
                 return result.stdout.strip() or "(no matches)"
             if result.stderr.strip():
                 return result.stderr.strip()
+            degraded_reason = "rg exited unexpectedly"
 
     flags = 0 if any(character.isupper() for character in pattern) else re.IGNORECASE
     try:
         expression = re.compile(pattern, flags)
     except re.error as exc:
         raise ValueError(f"invalid search pattern: {exc}") from exc
+
+    # Hitting the scan limit / deadline without exhausting every file means the
+    # result is truncated, not "no matches". Annotate it so the agent can tell
+    # "search incomplete" from "really no match" and avoid concluding from an
+    # incomplete result. Clear-path no-match wording is unchanged.
+    def _truncated_note():
+        note = ("(no matches; fallback search reached its scan limit"
+                + (f"; {degraded_reason}" if degraded_reason else "")
+                + ")")
+        return note
 
     matches = []
     scanned_files = 0
@@ -349,8 +361,10 @@ def tool_search(context, args):
 
         files = iter_files()
 
+    truncated = False
     for file_path in files:
         if scanned_files >= SEARCH_MAX_FILES or time.monotonic() >= deadline:
+            truncated = True
             break
         scanned_files += 1
         try:
@@ -368,8 +382,8 @@ def tool_search(context, args):
                     return "\n".join(matches)
     if matches:
         return "\n".join(matches)
-    if scanned_files >= SEARCH_MAX_FILES or time.monotonic() >= deadline:
-        return "(no matches; fallback search reached its scan limit)"
+    if truncated or degraded_reason:
+        return _truncated_note()
     return "(no matches)"
 
 
