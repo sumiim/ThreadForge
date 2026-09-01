@@ -247,10 +247,17 @@ export default function Composer({ model, modelOptions, running, stopping = fals
                     <div className="px-3 pb-1 pt-2 text-[11px] font-medium text-stone-400">{group.label}</div>
                   ) : null}
                   {group.options.map((opt) => {
-                    const selected = (activeModel?.id ?? model) === opt.id
+                    // 勾选判定 = 同供应商 + 同模型，而不是只看模型 id。
+                    // 不同供应商（如 ac gpt特惠 / 西牧 gpt）下可能有同名模型
+                    // （如 gpt-5.6-sol），只比 id 会导致两个组都打勾。
+                    // env 兜底组没有 providerId，此时按模型 id 匹配即可。
+                    const activeProviderId = defaultProvider?.provider_id
+                    const selected = opt.providerId
+                      ? opt.providerId === activeProviderId && opt.id === (activeModel?.id ?? model)
+                      : opt.id === (activeModel?.id ?? model)
                     return (
                       <button
-                        key={opt.id}
+                        key={`${opt.providerId ?? 'env'}:${opt.id}`}
                         type="button"
                         onClick={() => handleSelectModel(opt)}
                         disabled={running || disabled}
