@@ -22,6 +22,7 @@ from websockets.http11 import Response
 
 import threadforge_worker.config as config_module
 import threadforge_worker.service as service_module
+from threadforge_worker import __version__
 from threadforge_worker.auto_update import run_auto_update_loop
 from threadforge_worker.cli import _parse_protocol_uri
 from threadforge_worker.cli import main as worker_main
@@ -1613,6 +1614,7 @@ def test_large_unicode_history_stays_within_worker_message_limit(tmp_path):
 def test_list_provider_models_normalizes_base_url_for_v1(monkeypatch):
     """OpenAI/deepseek 用户可填带或不带 /v1 的 Base URL；Anthropic 避免 /v1/v1。"""
     captured_urls = []
+    captured_user_agents = []
 
     class FakeResponse:
         def __init__(self, body):
@@ -1626,6 +1628,7 @@ def test_list_provider_models_normalizes_base_url_for_v1(monkeypatch):
 
     def fake_urlopen(request, timeout=None):
         captured_urls.append(request.full_url)
+        captured_user_agents.append(request.get_header("User-agent"))
         return FakeResponse(b'{"data":[{"id":"gpt-5.6-sol"}]}')
 
     monkeypatch.setattr("threadforge_worker.client.urllib.request.urlopen", fake_urlopen)
@@ -1634,6 +1637,7 @@ def test_list_provider_models_normalizes_base_url_for_v1(monkeypatch):
     assert error == ""
     assert models == ["gpt-5.6-sol"]
     assert captured_urls[-1] == "https://codex.ximuai.com/v1/models"
+    assert captured_user_agents[-1] == f"ThreadForge-Worker/{__version__}"
 
     models, error = _list_provider_models("https://api.anthropic.com", "k", "anthropic")
     assert error == ""

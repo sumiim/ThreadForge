@@ -1082,7 +1082,13 @@ def _list_provider_models(base_url: str, api_key: str, protocol: str) -> tuple[l
     else:
         url = (base if base.endswith("/v1") else base + "/v1") + "/models"
 
-    headers = {"Accept": "application/json"}
+    # urllib's default Python-urllib signature is blocked by some OpenAI-
+    # compatible gateways (for example Cloudflare Error 1010). Identify the
+    # client explicitly without pretending to be a browser.
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": f"ThreadForge-Worker/{__version__}",
+    }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     request = urllib.request.Request(url, headers=headers, method="GET")
