@@ -32,6 +32,7 @@ from threadforge_worker.client import (
     _capability_models_from_provider,
     _extract_model_ids,
     _list_provider_models,
+    _model_capabilities,
     _stable_failure_reason,
     _timestamp_expired,
     _validated_server_url,
@@ -1713,4 +1714,48 @@ def test_capability_models_from_provider_empty_models_forces_default():
     assert len(out) == 1
     assert out[0]["id"] == "gpt-5.6-sol"
     assert out[0]["reasoning_efforts"] == ["none", "high"]
+
+
+def test_model_capabilities_include_models_from_all_providers(tmp_path):
+    """Worker 上报能力时不能遗漏非首个 Provider 的模型。"""
+    store = ConfigStore(tmp_path / "state")
+    store.save_provider(
+        "prv_deepseek",
+        base_url="https://deepseek.example/v1",
+        api_key="deep-secret",
+        model="deepseek-v4-flash",
+        protocol="deepseek",
+        reasoning_efforts=("none", "high"),
+    )
+    store.save_provider(
+        "prv_openai",
+        base_url="https://openai.example/v1",
+        api_key="openai-secret",
+        model="gpt-5.6-sol",
+        protocol="openai_compatible",
+        reasoning_efforts=("none", "low", "medium", "high"),
+    )
+
+    capabilities = _model_capabilities(store)
+    models = {item["id"]: item for item in capabilities["models"]}
+
+    assert set(models) == {"deepseek-v4-flash", "gpt-5.6-sol"}
+    assert "medium" in models["gpt-5.6-sol"]["reasoning_efforts"]
+
+
+def test_model_capabilities_skip_empty_provider(tmp_path):
+    """尚未填写模型的 Provider 不应生成空模型 ID。"""
+    store = ConfigStore(tmp_path / "state")
+    store.save_provider(
+        "prv_empty",
+        base_url="",
+        api_key="",
+        model="",
+        protocol="openai_compatible",
+    )
+
+    with patch.dict("os.environ", {"PICO_OPENAI_MODEL": "env-model"}, clear=True):
+        capabilities = _model_capabilities(store)
+
+    assert all(item["id"] for item in capabilities["models"])
 
