@@ -59,15 +59,6 @@ import { mergeRunIndex } from './run-events'
 
 // ---- assistant 消息交替块(commentary 与行为按事件顺序) ----
 
-function appendThinkingBlock(blocks: MessageBlock[] | undefined, text: string, turn?: number): MessageBlock[] {
-  const list = blocks ?? []
-  const last = list[list.length - 1]
-  if (last && last.kind === 'behavior') {
-    return [...list.slice(0, -1), { ...last, turn: turn ?? last.turn, thinking: `${last.thinking ?? ''}${text}` }]
-  }
-  return [...list, { kind: 'behavior', thinking: text, turn }]
-}
-
 /** 流式叙述(delta)按 turn 归入 commentary 块:避免堆进 content 底部一大坨。 */
 function appendDeltaCommentary(blocks: MessageBlock[] | undefined, text: string, turn?: number): MessageBlock[] {
   const list = blocks ?? []
@@ -928,9 +919,11 @@ export function useSessions(): UseSessions {
                   : stage === 'review'
                     ? { ...message, blocks: appendReviewThinking(message.blocks, text, liveTurn) }
                     : {
+                        // 普通（execute/conversation）思考只累积到顶层 thinking，不
+                        // 再放进按 turn 折叠的 behavior blocks——避免单次模型输出的
+                        // thinking 被 liveTurn 拆成「行为」+「Turn N」多个折叠块。
                         ...message,
                         thinking: `${message.thinking ?? ''}${text}`,
-                        blocks: appendThinkingBlock(message.blocks, text, liveTurn),
                       }
                 : message,
             ))
