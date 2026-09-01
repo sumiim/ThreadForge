@@ -1171,14 +1171,66 @@ def _model_capabilities(store: ConfigStore | None = None) -> dict:
     model = os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4")
     model_provider = os.environ.get("PICO_MODEL_PROVIDER", "").strip().lower()
     efforts = list(_runtime_reasoning_efforts())
-    # 本地已配置 provider 时，用其声明的 model/reasoning_efforts（替代 env 推断）。
+    # 本地已配置 provider 时，汇总所有 provider 的 model/reasoning_efforts。
+    # 控制面用这份矩阵做任务提交前的能力门禁；只上报第一个 provider
+    # 会让其它已配置 provider 的模型在前端可见、但提交时被错误拒绝。
     providers = store.list_providers() if store is not None else []
     if providers:
         first = providers[0]
-        model = str(first.get("model") or model)
-        efforts = [str(item) for item in (first.get("reasoning_efforts") or ["none"])]
         model_provider = str(first.get("protocol") or model_provider)
-        models_output = _capability_models_from_provider(first, model)
+        models_output = []
+        models_by_id: dict[str, dict] = {}
+        for provider in providers:
+            configured_model = str(provider.get("model") or "").strip()
+            raw_models = provider.get("models") or []
+            # A provider may be saved before discovery completes.  Do not turn
+            # an entirely empty provider into an empty model capability entry.
+            if not configured_model and not raw_models:
+                continue
+            provider_models = _capability_models_from_provider(
+                provider, configured_model or model
+            )
+            for capability in provider_models:
+                model_id = str(capability.get("id", "")).strip()
+                if not model_id:
+                    continue
+                existing = models_by_id.get(model_id)
+                if existing is None:
+                    if len(models_output) >= 20:
+                        break
+                    models_by_id[model_id] = capability
+                    models_output.append(capability)
+                    continue
+                # The same model can be exposed by multiple providers. Keep a
+                # single entry for the bounded wire format, but retain every
+                # advertised reasoning effort for UI/task validation.
+                existing_efforts = list(existing.get("reasoning_efforts", []))
+                for effort in capability.get("reasoning_efforts", []):
+                    if effort not in existing_efforts:
+                        existing_efforts.append(effort)
+                existing["reasoning_efforts"] = existing_efforts
+            if len(models_output) >= 20:
+                break
+        # Keep the historical env fallback for malformed/empty provider state.
+        if not models_output:
+            model = os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4")
+            efforts = list(_runtime_reasoning_efforts())
+            models_output = [
+                {
+                    "id": model,
+                    "display_name": model,
+                    "reasoning_efforts": efforts,
+                    "max_output_tokens": 4096,
+                    "usage_fields": [
+                        "input_tokens",
+                        "output_tokens",
+                        "total_tokens",
+                        "cached_tokens",
+                        "cache_hit",
+                    ],
+                    "supports_temperature": "none" in efforts,
+                }
+            ]
     else:
         models_output = [
             {
