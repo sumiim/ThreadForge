@@ -22,6 +22,7 @@ from websockets.http11 import Response
 
 import threadforge_worker.config as config_module
 import threadforge_worker.service as service_module
+from threadforge_worker import __version__
 from threadforge_worker.auto_update import run_auto_update_loop
 from threadforge_worker.cli import _parse_protocol_uri
 from threadforge_worker.cli import main as worker_main
@@ -405,6 +406,25 @@ def test_save_provider_rejects_newline_in_model(tmp_path):
             protocol="deepseek",
             reasoning_efforts=("none",),
         )
+
+
+def test_save_provider_allows_empty_api_key_and_base_url(tmp_path):
+    """§2.2/供应商管理：编辑时 api_key/base_url 留空 = 沿用本地 saved 值；
+    新建未填 key 也是合法状态。save_provider 不应因空 api_key/base_url 抛错。"""
+    store = ConfigStore(tmp_path / "state")
+    store.save_provider(
+        "prv_nokey",
+        base_url="",
+        api_key="",
+        model="",
+        protocol="openai_compatible",
+        reasoning_efforts=("none", "high"),
+    )
+    loaded = store.load_provider("prv_nokey")
+    assert loaded is not None
+    assert loaded["api_key"] == ""
+    assert loaded["base_url"] == ""
+    assert loaded["model"] == ""
 
 
 def test_provider_factory_still_allows_env_fallback_without_local_providers(tmp_path):
@@ -1594,6 +1614,7 @@ def test_large_unicode_history_stays_within_worker_message_limit(tmp_path):
 def test_list_provider_models_normalizes_base_url_for_v1(monkeypatch):
     """OpenAI/deepseek 用户可填带或不带 /v1 的 Base URL；Anthropic 避免 /v1/v1。"""
     captured_urls = []
+    captured_user_agents = []
 
     class FakeResponse:
         def __init__(self, body):
@@ -1607,6 +1628,7 @@ def test_list_provider_models_normalizes_base_url_for_v1(monkeypatch):
 
     def fake_urlopen(request, timeout=None):
         captured_urls.append(request.full_url)
+        captured_user_agents.append(request.get_header("User-agent"))
         return FakeResponse(b'{"data":[{"id":"gpt-5.6-sol"}]}')
 
     monkeypatch.setattr("threadforge_worker.client.urllib.request.urlopen", fake_urlopen)
@@ -1615,6 +1637,7 @@ def test_list_provider_models_normalizes_base_url_for_v1(monkeypatch):
     assert error == ""
     assert models == ["gpt-5.6-sol"]
     assert captured_urls[-1] == "https://codex.ximuai.com/v1/models"
+    assert captured_user_agents[-1] == f"ThreadForge-Worker/{__version__}"
 
     models, error = _list_provider_models("https://api.anthropic.com", "k", "anthropic")
     assert error == ""

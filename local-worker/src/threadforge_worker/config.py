@@ -247,9 +247,11 @@ class ConfigStore:
         max_output_tokens: int = 0,
         context_window: int = 0,
     ) -> None:
-        base_url = _validate_model_value("base_url", base_url, 2048)
-        api_key = _validate_model_value("api_key", api_key, 8192)
-        # 供应商可为「尚未发现模型」的合法状态：model 允许为空，仅拒超长/换行。
+        # base_url / api_key 允许为空（编辑时留空表示沿用 Worker 本地已保存值，
+        # 或新建时尚未填写）；仅拒超长/换行。model 同样允许为空（尚未发现模型）。
+        # 真正跑任务建客户端时，这些字段会被重新校验/回填。
+        base_url = _validate_model_value("base_url", base_url, 2048, allow_empty=True)
+        api_key = _validate_model_value("api_key", api_key, 8192, allow_empty=True)
         model = _validate_model_value("model", model, 200, allow_empty=True)
         protocol = _validate_provider_protocol(protocol)
         providers = self._read_providers()
