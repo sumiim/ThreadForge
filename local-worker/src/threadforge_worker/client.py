@@ -1068,8 +1068,8 @@ def _list_provider_models(base_url: str, api_key: str, protocol: str) -> tuple[l
 
     解析健壮性（§2.2）：OpenAI 兼容 / Anthropic 端点既可能返回标准的
     ``{"data":[{"id": ...}]}``，也可能返回扁平 ``{"models":[...]}`` 或
-    裸字符串数组；这里全部兼容，避免「能连上但解析出空列表」导致的
-    ``0 个模型`` 假阳性。
+    裸字符串数组；这里全部兼容。合法的空列表表示端点可达但没有公开模型，
+    应作为成功返回，供用户手动填写模型名。
     """
     import json
     import urllib.error
@@ -1109,9 +1109,15 @@ def _extract_model_ids(data, protocol: str) -> tuple[list[str], str]:
     """从响应 JSON 中按协议提取模型 id，兼容多种返回结构。"""
     if protocol == "ollama":
         if isinstance(data, dict):
-            raw = data.get("models", [])
+            raw = data.get("models")
             if isinstance(raw, list):
-                return [str(item.get("name", "")) for item in raw if isinstance(item, dict) and item.get("name")], ""
+                models = [
+                    str(item.get("name", ""))
+                    for item in raw
+                    if isinstance(item, dict) and item.get("name")
+                ]
+                if models or not raw:
+                    return models, ""
         return [], "model_response_invalid"
 
     # OpenAI 兼容 / Anthropic：优先标准 data[].id，回退 models[] / 扁平列表。
@@ -1120,7 +1126,7 @@ def _extract_model_ids(data, protocol: str) -> tuple[list[str], str]:
             raw = data.get(key)
             if isinstance(raw, list):
                 ids = _ids_from_list(raw)
-                if ids:
+                if ids or not raw:
                     return ids, ""
         # 某些端点用 object/items 包装或顶层即是 id 集合。
         if isinstance(data, dict) and data.get("object") and isinstance(data.get("data"), list):
