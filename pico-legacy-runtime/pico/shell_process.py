@@ -85,6 +85,11 @@ class ShellProcess:
     ``run()`` drains stdout/stderr with a bounded cap, enforces ``timeout``,
     checks the optional ``cancellation_token`` and terminates the tree when
     the timeout fires or cancellation is observed.
+
+    Optional ``resource_limits`` (``memory_bytes`` / ``max_processes`` /
+    ``cpu_seconds``) apply OS-level containment on top of the process tree:
+    Windows via Job Object limits, POSIX via ``resource.setrlimit``. This is
+    the OS-native sandbox backend used when ``sandbox_backend="os"``.
     """
 
     def __init__(
@@ -97,16 +102,22 @@ class ShellProcess:
         output_max_bytes: int,
         cancellation_token=None,
         cleanup_grace_seconds: float = 5.0,
+        resource_limits: dict | None = None,
     ):
         self.command = command
         self.timeout = int(timeout)
         self.output_max_bytes = max(0, int(output_max_bytes))
         self.cancellation_token = cancellation_token
         self.cleanup_grace_seconds = max(0.0, float(cleanup_grace_seconds))
+        self._resource_limits = dict(resource_limits or {})
         if _is_windows():
-            self._impl = _WindowsJobProcess(command, cwd=cwd, env=env)
+            self._impl = _WindowsJobProcess(
+                command, cwd=cwd, env=env, resource_limits=self._resource_limits
+            )
         else:
-            self._impl = _PosixGroupProcess(command, cwd=cwd, env=env)
+            self._impl = _PosixGroupProcess(
+                command, cwd=cwd, env=env, resource_limits=self._resource_limits
+            )
 
     @property
     def pipe_cap(self):
@@ -130,7 +141,29 @@ class ShellProcess:
 
 
 class _PosixGroupProcess:
-    def __init__(self, command, *, cwd, env):
+    def __init__(self, command, *, cwd, env, resource_limits=None):
+        limits = dict(resource_limits or {})
+
+        def _apply_rlimits():  # runs in the child before exec (POSIX only)
+            try:
+                import resource
+
+                cpu_secs = int(limits.get("cpu_seconds", 0))
+                rss_bytes = int(limits.get("memory_bytes", 0))
+                nproc = int(limits.get("max_processes", 0))
+                if cpu_secs > 0:
+                    resource.setrlimit(resource.RLIMIT_CPU, (cpu_secs, cpu_secs))
+                if rss_bytes > 0:
+                    resource.setrlimit(resource.RLIMIT_AS, (rss_bytes, rss_bytes))
+                    resource.setrlimit(resource.RLIMIT_RSS, (rss_bytes, rss_bytes))
+                if nproc > 0:
+                    resource.setrlimit(resource.RLIMIT_NPROC, (nproc, nproc))
+            except Exception:  # noqa: S110 - best-effort in child pre-exec; Job Object on
+                # Windows and process-group containment remain authoritative, and a
+                # failed RLIMIT must not abort the child (which would cascade a spurious
+                # failure). The resource limit simply won't be enforced on this host.
+                pass
+
         try:
             self.proc = subprocess.Popen(  # noqa: S602 - deliberate shell command execution
                 command,
@@ -144,6 +177,7 @@ class _PosixGroupProcess:
                 bufsize=1,
                 encoding="utf-8",
                 errors="replace",
+                preexec_fn=_apply_rlimits if limits else None,
             )
         except OSError as exc:
             raise ProcessContainmentUnavailable(str(exc)) from exc
@@ -224,7 +258,7 @@ class _PosixGroupProcess:
 
 
 class _WindowsJobProcess:
-    def __init__(self, command, *, cwd, env):
+    def __init__(self, command, *, cwd, env, resource_limits=None):
         self._job = None
         self._proc = None
         self._thread_handle = None
@@ -232,6 +266,7 @@ class _WindowsJobProcess:
         self._err_handles = None
         self._write_handles = []
         self._lifecycle_lock = threading.RLock()
+        self._resource_limits = dict(resource_limits or {})
         try:
             import win32api
             import win32con
@@ -244,6 +279,9 @@ class _WindowsJobProcess:
             job = win32job.CreateJobObject(None, "")
             info = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
             info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            # OS-native sandbox resource limits (Job Object). Applied up-front so
+            # the job caps resources before any command can over-consume.
+            self._apply_job_resource_limits(win32job, info)
             win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, info)
             self._job = job
 
@@ -296,6 +334,32 @@ class _WindowsJobProcess:
         except Exception as exc:
             self._cleanup()
             raise ProcessContainmentUnavailable(str(exc)) from exc
+
+    def _apply_job_resource_limits(self, win32job, info):
+        """Apply OS-native Job Object resource limits from ``resource_limits``.
+
+        ``memory_bytes`` -> ``JOB_OBJECT_LIMIT_PROCESS_MEMORY`` + ``JobMemoryLimit``
+        ``max_processes`` -> ``JOB_OBJECT_LIMIT_ACTIVE_PROCESS`` + ``ActiveProcessLimit``
+        Unknown/unparseable values are ignored (the retained KILL_ON_JOB_CLOSE
+        and process-group containment still apply).
+        """
+        limits = self._resource_limits
+        basic = info["BasicLimitInformation"]
+        try:
+            memory_bytes = int(limits.get("memory_bytes", 0))
+        except (TypeError, ValueError):
+            memory_bytes = 0
+        try:
+            max_processes = int(limits.get("max_processes", 0))
+        except (TypeError, ValueError):
+            max_processes = 0
+        if memory_bytes > 0:
+            basic["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_PROCESS_MEMORY
+            info["ProcessMemoryLimit"] = memory_bytes
+            info["JobMemoryLimit"] = memory_bytes
+        if max_processes > 0:
+            basic["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+            basic["ActiveProcessLimit"] = max_processes
 
     def _cleanup(self):
         if self._job is not None:

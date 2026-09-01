@@ -267,3 +267,27 @@ def test_shell_output_uses_one_combined_byte_budget(tmp_path):
     result = shell.run()
     assert len(result.stdout.encode()) + len(result.stderr.encode()) <= 1024
     assert result.output_truncated is True
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Job Object resource limits are Windows-specific")
+def test_windows_job_applies_resource_limits(tmp_path):
+    """OS-native sandbox: Job Object must carry memory/active-process limits."""
+    from pico.shell_process import _WindowsJobProcess
+
+    proc = _WindowsJobProcess(
+        "cmd /c echo ok",
+        cwd=str(tmp_path),
+        env=dict(os.environ),
+        resource_limits={"memory_bytes": 256 * 1024 * 1024, "max_processes": 8},
+    )
+    import win32job
+
+    job = proc._job
+    info = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
+    flags = info["BasicLimitInformation"]["LimitFlags"]
+    assert flags & win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    assert flags & win32job.JOB_OBJECT_LIMIT_PROCESS_MEMORY
+    assert info["ProcessMemoryLimit"] == 256 * 1024 * 1024
+    assert flags & win32job.JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+    assert info["BasicLimitInformation"]["ActiveProcessLimit"] == 8
+    proc._cleanup()
