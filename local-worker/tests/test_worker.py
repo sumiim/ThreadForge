@@ -53,6 +53,7 @@ from threadforge_worker.runtime import (
     ProviderNotConfiguredError,
     RemoteApprovalStrategy,
     RemoteExecutionHooks,
+    _sandbox_shell_factory,
     _supported_reasoning_efforts,
     run_task,
 )
@@ -1758,4 +1759,46 @@ def test_model_capabilities_skip_empty_provider(tmp_path):
         capabilities = _model_capabilities(store)
 
     assert all(item["id"] for item in capabilities["models"])
+
+
+def test_sandbox_os_backend_builds_native_shell_factory():
+    """OS-native backend returns a factory producing a resource-limited ShellProcess.
+
+    sandbox_backend='os' must not require Docker: the worker factory builds a
+    ShellProcess with Job Object / setrlimit resource caps instead of a Docker
+    per-command container. sandbox_backend='docker' still imports the Docker path.
+    """
+    factory = _sandbox_shell_factory(
+        {
+            "sandbox_enabled": True,
+            "sandbox_backend": "os",
+            "sandbox_memory_limit": "256m",
+            "sandbox_pids_limit": 8,
+        },
+        send_runtime_event=lambda *a, **k: None,
+    )
+    assert factory is not None
+    assert callable(factory)
+    # The factory builds a ShellProcess (not a Docker) that carries resource limits.
+    import os
+    import tempfile
+
+    shell = factory(
+        "echo hi",
+        cwd=tempfile.gettempdir(),
+        env=dict(os.environ),
+        timeout=10,
+        output_max_bytes=1024,
+    )
+    assert shell._resource_limits["max_processes"] == 8
+    assert shell._resource_limits["memory_bytes"] == 256 * 1024 * 1024
+
+
+def test_sandbox_disabled_returns_none():
+    """sandbox_enabled=False keeps the legacy host ShellProcess path."""
+    factory = _sandbox_shell_factory(
+        {"sandbox_enabled": False, "sandbox_backend": "os"},
+        send_runtime_event=lambda *a, **k: None,
+    )
+    assert factory is None
 

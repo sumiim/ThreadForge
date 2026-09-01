@@ -71,31 +71,45 @@ class NativeRuntimeAdapter:
     def _build_sandbox_shell_factory(self):
         """Fail-closed: return a sandbox shell factory or None (legacy CLI path).
 
-        When the sandbox is enabled this returns a Docker-backed factory and
-        raises ``SandboxError`` if Docker or the safety config is unavailable,
-        so the Run fails closed before any shell executes. When the sandbox is
-        disabled (CLI/评测兼容 path) this returns None and the legacy host
-        ``ShellProcess`` remains in use.
+        Selects the backend by ``settings.sandbox_backend``:
+        - ``"os"`` (default): OS-native ``ShellProcess`` Job Object / setrlimit
+          resource limits — no Docker daemon required.
+        - ``"docker"``: ``DockerSandboxBackend`` per-command container.
+        When sandbox is enabled but the config is unsafe or the backend is
+        unavailable it raises, so the Run fails closed before any shell runs.
+        When disabled it returns None and the legacy host ``ShellProcess`` stays.
         """
         if not getattr(self._settings, "sandbox_enabled", False):
             return None
-        from threadforge_sandbox import (
-            DockerSandboxBackend,
-            SandboxConfig,
-            SandboxLifecycle,
-        )
+        if str(getattr(self._settings, "sandbox_backend", "os")).strip().lower() == "docker":
+            from threadforge_sandbox import (
+                DockerSandboxBackend,
+                SandboxConfig,
+                SandboxLifecycle,
+            )
 
-        config = SandboxConfig(
-            image=self._settings.sandbox_image,
-            user=self._settings.sandbox_user,
-            network=self._settings.sandbox_network,
-            cpu_limit=self._settings.sandbox_cpu_limit,
-            memory_limit=self._settings.sandbox_memory_limit,
-            pids_limit=self._settings.sandbox_pids_limit,
+            config = SandboxConfig(
+                image=self._settings.sandbox_image,
+                user=self._settings.sandbox_user,
+                network=self._settings.sandbox_network,
+                cpu_limit=self._settings.sandbox_cpu_limit,
+                memory_limit=self._settings.sandbox_memory_limit,
+                pids_limit=self._settings.sandbox_pids_limit,
+            )
+            lifecycle = SandboxLifecycle(on_event=self._sandbox_event)
+            backend = DockerSandboxBackend(config, lifecycle=lifecycle)
+            return backend.make_shell
+
+        # OS-native backend: resource caps via Job Object / setrlimit.
+        from pico.shell_process import build_native_shell_factory, parse_memory_to_bytes
+
+        return build_native_shell_factory(
+            {
+                "memory_bytes": parse_memory_to_bytes(str(self._settings.sandbox_memory_limit)),
+                "max_processes": int(self._settings.sandbox_pids_limit),
+                "cpu_seconds": int(getattr(self._settings, "sandbox_cpu_seconds", 0)),
+            }
         )
-        lifecycle = SandboxLifecycle(on_event=self._sandbox_event)
-        backend = DockerSandboxBackend(config, lifecycle=lifecycle)
-        return backend.make_shell
 
     def _sandbox_event(self, kind: str, payload: dict) -> None:
         self._publisher.publish(

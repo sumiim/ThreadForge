@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     worker_release_dir: Path = Path("worker-releases")
     worker_release_max_bytes: int = 128 * 1024 * 1024
     sandbox_enabled: bool = False
+    # Sandbox backend: "os" (OS-native Job Object / setrlimit, no Docker needed)
+    # or "docker" (per-command container). Default "os" removes the Docker
+    # daemon requirement on the Worker machine.
+    sandbox_backend: str = "os"
     # Memory convergence: allow Worker/native to write durable memory into the
     # workspace .pico/memory/ dir and {session}.json. Off by default to keep the
     # "web path never mutates the user workspace" invariant; enable explicitly per

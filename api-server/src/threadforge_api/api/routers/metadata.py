@@ -34,7 +34,7 @@ def get_runtime_config(settings=Depends(get_settings)) -> dict:
             if multi_user
             else ExecutionEnvironment.BACKEND_PROCESS.value
         ),
-        "container_sandbox_enabled": False,
+        "container_sandbox_enabled": bool(settings.sandbox_enabled),
         "identity_mode": settings.identity_mode,
         "multi_user_enabled": multi_user,
     }

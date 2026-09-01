@@ -328,7 +328,7 @@ class TaskService:
             "model_id": task.model_id,
             "reasoning_effort": task.reasoning_effort,
             "run_index": list(task.run_index),
-            "container_sandbox_enabled": False,
+            "container_sandbox_enabled": bool(self._settings.sandbox_enabled),
         }
 
 

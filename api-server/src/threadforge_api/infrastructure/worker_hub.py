@@ -890,6 +890,9 @@ class WorkerHub:
                             "sandbox_enabled": bool(
                                 getattr(self._settings, "sandbox_enabled", False)
                             ),
+                            "sandbox_backend": str(
+                                getattr(self._settings, "sandbox_backend", "os")
+                            ),
                             "sandbox_image": str(
                                 getattr(self._settings, "sandbox_image", "threadforge-sandbox:latest")
                             ),

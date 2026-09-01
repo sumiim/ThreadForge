@@ -607,3 +607,52 @@ def _finish_readers(*readers) -> bool:
     for reader in readers:
         reader.join(timeout=0.5)
     return all(not reader.is_alive() for reader in readers)
+
+
+def build_native_shell_factory(resource_limits):
+    """Build a ``shell_factory`` that returns a resource-limited ``ShellProcess``.
+
+    The OS-native sandbox backend: a factory compatible with
+    ``tool_run_shell``'s ``context.shell_factory`` contract, producing a
+    ``ShellProcess`` whose Job Object (Windows) / ``setrlimit`` (POSIX) enforce
+    the supplied resource limits. No Docker required — the containment is
+    entirely OS-level (process tree + resource caps).
+    """
+    limits = dict(resource_limits or {})
+
+    def factory(
+        command,
+        *,
+        cwd,
+        env,
+        timeout,
+        output_max_bytes,
+        cancellation_token=None,
+        cleanup_grace_seconds=5.0,
+    ):
+        return ShellProcess(
+            command,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            output_max_bytes=output_max_bytes,
+            cancellation_token=cancellation_token,
+            cleanup_grace_seconds=cleanup_grace_seconds,
+            resource_limits=limits,
+        )
+
+    return factory
+
+
+def parse_memory_to_bytes(value: str) -> int:
+    """Parse a sandbox memory limit like '512m' / '1g' / '2048' into bytes."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return 0
+    unit = text[-1]
+    try:
+        number = int(text[:-1]) if unit in {"k", "m", "g"} else int(text)
+    except ValueError:
+        return 0
+    multiplier = {"k": 1024, "m": 1024 * 1024, "g": 1024 * 1024 * 1024}
+    return number * multiplier.get(unit, 1)
