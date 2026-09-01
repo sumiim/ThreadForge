@@ -44,6 +44,7 @@ const modelFailureMessages: Record<string, string> = {
   model_timeout: '模型服务响应超时，已自动重试，请稍后再试。',
   model_connection_error: '无法稳定连接模型服务，已自动重试，请检查网络后再试。',
   model_server_error: '模型服务暂时不可用，已自动重试，请稍后再试。',
+  model_not_found: '当前供应商没有该模型的可用通道，请更换模型或供应商后再试。',
   model_auth_error: '模型服务认证失败，请在 Worker 中重新配置 API 密钥。',
   model_request_rejected: 'The model service rejected the request. Check the model and reasoning effort configuration.',
   model_response_invalid: '模型服务返回了无法解析的响应，请稍后再试。',

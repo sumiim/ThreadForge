@@ -2,7 +2,7 @@ import { useMemo, useState, type MouseEvent } from 'react'
 import { Button, Empty, Input, Select, Tag } from 'antd'
 import { CloseOutlined, DownloadOutlined, SearchOutlined } from '@ant-design/icons'
 import type { RunIndexItem, Session, SessionRun } from '../../api/types'
-import { eventLabel, eventOrderTimeOf, eventTimeOf, isFailed, LANE_ORDER, LANE_TITLE, laneOf, sortTimelineItems, timelineBounds, timelineRange, type Lane } from './traceModel'
+import { eventLabel, eventOrderTimeOf, eventTimeOf, inputTimelineEvent, isFailed, LANE_ORDER, LANE_TITLE, laneOf, sortTimelineItems, timelineBounds, timelineRange, type Lane } from './traceModel'
 
 interface RunTracePanelProps {
   open: boolean
@@ -182,7 +182,21 @@ export default function RunTracePanel({ open, session, activeRunId, provider, on
   }, [runs, selectedRunId, activeRunId])
 
   const rows = useMemo<TraceRow[]>(() => sortTimelineItems(
-    (activeRun?.items ?? []).map((item) => ({ ...item, lane: laneOf(item.type), failed: isFailed(item) })),
+    (() => {
+      const items = activeRun?.items ?? []
+      if (!activeRun?.input?.trim() || items.some((item) => item.type === 'user.input')) return items
+      // user.input is a conversation event rather than a Worker SSE event.
+      // Project it into the audit timeline so the request is visible beside
+      // the model/tool lifecycle, including after history reload.
+      return [
+        inputTimelineEvent({
+          id: activeRun.taskId,
+          content: activeRun.input,
+          createdAt: activeRun.startedAt,
+        }),
+        ...items,
+      ]
+    })().map((item) => ({ ...item, lane: laneOf(item.type), failed: isFailed(item) })),
   ), [activeRun])
 
   const filteredRows = useMemo(() => {
@@ -190,7 +204,7 @@ export default function RunTracePanel({ open, session, activeRunId, provider, on
     const rangeRows = range ? rows.filter((row) => range.has(row.event_id)) : rows
     const needle = query.trim().toLowerCase()
     if (!needle) return rangeRows
-    return rangeRows.filter((row) => [row.type, eventLabel(row.type), row.tool_name, row.intent, row.summary, row.status]
+    return rangeRows.filter((row) => [row.type, eventLabel(row.type), row.tool_name, row.intent, row.summary, row.text, row.status]
       .some((value) => String(value ?? '').toLowerCase().includes(needle)))
   }, [query, rangeEventIds, rows])
 
@@ -338,7 +352,8 @@ export default function RunTracePanel({ open, session, activeRunId, provider, on
                   {selectedEvent.text ? (
                     <div>
                       <div className="mb-1.5 text-xs font-medium text-stone-700">
-                        {selectedEvent.type === 'model.completed' ? '模型回复'
+                        {selectedEvent.type === 'user.input' ? '用户请求'
+                          : selectedEvent.type === 'model.completed' ? '模型回复'
                           : selectedEvent.type === 'message.completed' ? '最终回答'
                             : '正文'}
                       </div>
