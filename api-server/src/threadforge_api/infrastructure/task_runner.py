@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from copy import copy
 from dataclasses import dataclass
@@ -38,6 +39,8 @@ from .json_repositories import JsonTaskRepository, StaleGenerationError
 from .native_runtime import NativeRuntimeAdapter
 from .run_gate import RunGate
 from .run_reconciliation import converge_run_artifacts, run_artifacts_match
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -285,9 +288,13 @@ class TaskRunner:
         try:
             adapter.run(request.input)
         except Exception:
-            import traceback
-
-            traceback.print_exc()  # DEBUG: surface the real failure (was silently swallowed)
+            # A native-run failure must not be swallowed into a "normal
+            # terminal". Log it structurally (type/message/stack); then
+            # _converge_terminal converges to a failed state from task_state
+            # rather than falsely reporting success.
+            LOGGER.exception(
+                "native run raised task_id=%s run_id=%s", request.task_id, request.run_id
+            )
         finally:
             ok = False
             try:

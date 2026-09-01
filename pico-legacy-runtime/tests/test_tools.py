@@ -162,3 +162,44 @@ def test_search_fallback_rejects_invalid_regular_expression(tmp_path):
             assert "invalid search pattern" in str(exc)
         else:
             raise AssertionError("invalid regex must be rejected")
+
+
+def test_legal_tool_names_tracks_registered_tools(tmp_path):
+    """Allowlist cross-point: register()'d tools must be seen by legal_tool_names().
+
+    Previously legal_tool_names() hardcoded set(BASE_TOOL_SPECS) while build()/
+    names() use the registry's self.specs, so a register()'d tool would be
+    rejected as 'unknown allowed tool' in _apply_tool_allowlist. Verify the two
+    agree so the cross-point stays fixed.
+    """
+    from pico.tools import _DEFAULT_REGISTRY, legal_tool_names
+
+    def _noop(context, args):
+        return "ok"
+
+    # Save original specs, register a temp tool, restore in finally so the
+    # module-level singleton is not polluted.
+    original_specs = dict(_DEFAULT_REGISTRY.specs)
+    original_runners = dict(_DEFAULT_REGISTRY.runners)
+    try:
+        _DEFAULT_REGISTRY.register(
+            "ping",
+            {"schema": {"x": "str"}, "risky": False, "description": "noop"},
+            _noop,
+        )
+        assert "ping" in _DEFAULT_REGISTRY.names()
+        assert "ping" in legal_tool_names()
+        # Consistent with build(): the new tool appears in the runtime surface.
+        context = ToolContext(
+            root=tmp_path,
+            path_resolver=lambda raw_path: Path(tmp_path / raw_path),
+            shell_env_provider=lambda: {"PWD": str(tmp_path)},
+            depth=1,
+            max_depth=1,
+            spawn_delegate=lambda args: "unused",
+        )
+        assert "ping" in _DEFAULT_REGISTRY.build(context)
+    finally:
+        _DEFAULT_REGISTRY.specs = original_specs
+        _DEFAULT_REGISTRY.runners = original_runners
+    assert "ping" not in legal_tool_names()

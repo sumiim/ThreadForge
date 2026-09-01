@@ -469,8 +469,20 @@ def _verify_done_when(agent, done_when, cmd_cache):
                 return False
             if command in cmd_cache:
                 return cmd_cache[command]
-            tool = agent.tools.get("run_shell")
-            content = str(tool["run"]({"command": command, "timeout": 30})) if tool else ""
+            # Route through ToolExecutor instead of a bare tool["run"] so the
+            # checklist's programmatic acceptance goes through the same
+            # validation / approval / read_only / sandbox / memory path, rather
+            # than running an unapproved shell command from model intent.
+            executor = getattr(agent, "tool_executor", None)
+            if executor is not None:
+                try:
+                    result = executor.execute("run_shell", {"command": command, "timeout": 30}, tool_call_id="")
+                    content = str(getattr(result, "content", result) or "")
+                except Exception:
+                    return False
+            else:
+                tool = agent.tools.get("run_shell")
+                content = str(tool["run"]({"command": command, "timeout": 30})) if tool else ""
             ok = "exit_code: 0" in content
             cmd_cache[command] = ok
             return ok
@@ -714,6 +726,7 @@ class AgentLoop:
         task_state.finish_success(final)
         agent.run_store.write_task_state(task_state)
         agent.emit_agent_state(task_state, "final")
+        task_state.run_finished_emitted = True
         agent.emit_trace(
             task_state,
             "run_finished",
@@ -1127,6 +1140,7 @@ class AgentLoop:
                 final_answer="agent run failed: shell process cleanup could not be confirmed",
             )
             agent.run_store.write_task_state(task_state)
+            task_state.run_finished_emitted = True
             agent.emit_trace(
                 task_state,
                 "run_finished",
@@ -1143,6 +1157,7 @@ class AgentLoop:
             # 取消收敛：不向调用方抛出，最终回答一律以 TaskState.final_answer 为准。
             task_state.stop_user_cancelled()
             agent.run_store.write_task_state(task_state)
+            task_state.run_finished_emitted = True
             agent.emit_trace(
                 task_state,
                 "run_finished",
@@ -2055,6 +2070,7 @@ class AgentLoop:
                         "trigger": "run_finished",
                     },
                 )
+            task_state.run_finished_emitted = True
             agent.emit_trace(
                 task_state,
                 "run_finished",
@@ -2093,6 +2109,7 @@ class AgentLoop:
                     "trigger": task_state.stop_reason or "run_stopped",
                 },
             )
+        task_state.run_finished_emitted = True
         agent.emit_trace(
             task_state,
             "run_finished",

@@ -95,6 +95,11 @@ class TaskState:
     intent: str = ""
     review_status: str = ""
     budget_converged: bool = False
+    # Dedup: AgentLoop finalization (plain_conversation / normal-final / cancel /
+    # failure) already emits `run_finished` once. run_native's finally also calls
+    # `finalize_run`, which must not emit a duplicate, or the frontend shows the
+    # same final answer twice.
+    run_finished_emitted: bool = False
     talk_steps: int = 0
     evidence: list[dict] = field(default_factory=list)
     # §7.8.9 阶段 3 修正（2026-08-18）：被 review redirect 拒绝的 final 候选答案。
@@ -187,6 +192,7 @@ class TaskState:
             intent=str(data.get("intent", "")),
             review_status=str(data.get("review_status", "")),
             budget_converged=bool(data.get("budget_converged", False)),
+            run_finished_emitted=bool(data.get("run_finished_emitted", False)),
             talk_steps=max(0, int(data.get("talk_steps", 0))),
             evidence=[dict(item) for item in data.get("evidence", []) if isinstance(item, dict)],
             rejected_finals=[
@@ -366,6 +372,7 @@ class TaskState:
             "intent": self.intent,
             "review_status": self.review_status,
             "budget_converged": self.budget_converged,
+            "run_finished_emitted": self.run_finished_emitted,
             "talk_steps": self.talk_steps,
             "evidence": [dict(item) for item in self.evidence],
             "rejected_finals": [dict(item) for item in self.rejected_finals],
