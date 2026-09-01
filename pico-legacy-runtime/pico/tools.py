@@ -115,10 +115,18 @@ class ToolRegistry:
 
 
 def legal_tool_names():
-    # §7.8.9 阶段 4：delegate 不再暴露给模型（build() 不注册），但保留在
-    # legal 集合——LangGraph 兼容层（回归参照）仍显式传 allowed_tools 含
-    # delegate，避免 allowlist 校验报错。后续彻底删除兼容层时一并移除。
-    return set(BASE_TOOL_SPECS) | {"delegate"}
+    """Legal tool names = current registry specs + delegate compatibility.
+
+    Previously hardcoded ``set(BASE_TOOL_SPECS)`` while ``ToolRegistry.build()/
+    names()`` use the registry's ``self.specs``. Adding a tool via ``register()``
+    (e.g. MCP/Skill, V1.4) only updates the registry specs, not the module-level
+    ``BASE_TOOL_SPECS``, so ``runtime._apply_tool_allowlist`` would reject the new
+    tool as an ``unknown allowed tool``. Read ``_DEFAULT_REGISTRY.specs`` instead
+    so registry-added tools are accepted by the allowlist. ``delegate`` stays:
+    it is removed from ``build()`` (f7.8.9 phase 4) but the LangGraph compat
+    layer (regression reference) still passes allowed_tools containing delegate.
+    """
+    return set(_DEFAULT_REGISTRY.specs) | {"delegate"}
 
 
 def provider_tool_definitions(tools):
