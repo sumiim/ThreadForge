@@ -1,5 +1,6 @@
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
-from pico.agent_loop import AgentLoop
+from pico.agent_loop import AgentLoop, _verify_done_when
+from pico.approval import ApprovalOutcome
 from pico.planning import parse_plan_steps
 
 
@@ -144,6 +145,27 @@ def test_checklist_programmatic_hook_after_tool(tmp_path):
     trace = agent.run_store.trace_path(state).read_text(encoding="utf-8")
     assert '"event": "checklist_item_checked"' in trace
     assert '"method": "programmatic"' in trace
+
+
+def test_checklist_command_uses_valid_identity_and_preserves_approval(tmp_path):
+    agent = build_agent(tmp_path, [])
+    approvals = []
+    executed = []
+
+    def reject_command(name, args, tool_call_id=""):
+        approvals.append((name, args, tool_call_id))
+        return ApprovalOutcome.REJECTED
+
+    agent.approve_outcome = reject_command
+    agent.tools["run_shell"]["run"] = lambda args: executed.append(args) or "exit_code: 0"
+
+    assert _verify_done_when(agent, "cmd:echo ok", {}) is False
+    assert len(approvals) == 1
+    assert approvals[0][0] == "run_shell"
+    assert approvals[0][1] == {"command": "echo ok", "timeout": 30}
+    assert approvals[0][2].startswith("call_")
+    assert len(approvals[0][2]) == len("call_") + 32
+    assert executed == []
 
 
 def test_checklist_review_semantic_hook(tmp_path):

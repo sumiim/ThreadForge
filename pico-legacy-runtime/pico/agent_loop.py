@@ -476,7 +476,13 @@ def _verify_done_when(agent, done_when, cmd_cache):
             executor = getattr(agent, "tool_executor", None)
             if executor is not None:
                 try:
-                    result = executor.execute("run_shell", {"command": command, "timeout": 30}, tool_call_id="")
+                    # Approval events require a valid tool-call identity. Keep
+                    # checklist commands on the normal risky-tool approval path.
+                    result = executor.execute(
+                        "run_shell",
+                        {"command": command, "timeout": 30},
+                        tool_call_id=_new_tool_call_id(),
+                    )
                     content = str(getattr(result, "content", result) or "")
                 except Exception:
                     return False
