@@ -476,15 +476,12 @@ def _verify_done_when(agent, done_when, cmd_cache):
             executor = getattr(agent, "tool_executor", None)
             if executor is not None:
                 try:
-                    # §7.8.9 修正：checklist 的 cmd: 验收命令是程序化验证（不是模型
-                    # 意图工具），用合法 tool_call_id + skip_approval 执行——否则空
-                    # tool_call_id 上报审批会被服务端以 invalid approval identity 拒，
-                    # 导致 Worker 断连（_verify_done_when 安全债）。
+                    # Approval events require a valid tool-call identity. Keep
+                    # checklist commands on the normal risky-tool approval path.
                     result = executor.execute(
                         "run_shell",
                         {"command": command, "timeout": 30},
                         tool_call_id=_new_tool_call_id(),
-                        skip_approval=True,
                     )
                     content = str(getattr(result, "content", result) or "")
                 except Exception:
