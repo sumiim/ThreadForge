@@ -74,7 +74,7 @@ class ToolExecutor:
             },
         )
 
-    def execute(self, name, args, tool_call_id=""):
+    def execute(self, name, args, tool_call_id="", skip_approval=False):
         agent = self.agent
         tool_call = {"id": tool_call_id, "name": name, "args": dict(args or {})}
 
@@ -146,7 +146,11 @@ class ToolExecutor:
             # 校验通过：tool_requested 是线性化点，之后才可能发起审批。
             agent.execution_hooks.tool_requested(agent.current_task_state, tool_call)
 
-            if tool["risky"]:
+            # §7.8.9 修正：程序化验收（_verify_done_when 的 cmd: 验证命令）走
+            # skip_approval=True，不触发用户级审批——它是 done_when 里写死的确定性
+            # 验证命令，不是模型意图的工具操作（否则空 tool_call_id 上报审批会被
+            # 服务端以 invalid approval identity 拒绝，导致 Worker 断连）。
+            if tool["risky"] and not skip_approval:
                 outcome = agent.approve_outcome(name, args, tool_call_id=tool_call_id)
                 if outcome is ApprovalOutcome.CANCELLED:
                     raise RunCancelled()
