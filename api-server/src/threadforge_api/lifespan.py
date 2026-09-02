@@ -259,6 +259,71 @@ class AppContainer:
                         exc_info=True,
                     )
 
+    def _migrate_orphaned_providers(self) -> None:
+        """把绑定到“已删除设备”的 provider 迁移到现存设备（§device_id 加固）。
+
+        旧版本删除设备（或同一物理机重新配对生成新 device_id）时，不会级联
+        迁移 Provider，导致 provider.device_id 指向一个已不存在的 device →
+        get_active_provider/list_providers 按设备匹配不到 → 前端把 Provider
+        当成“不存在”。此处启动时修复：把绑定到不存在 device 的 provider
+        迁移到 owner 的剩余设备；只剩一个时直接绑定，否则优先未绑定。
+        """
+        import logging
+
+        logger = logging.getLogger("threadforge.migrate")
+        owners = {self.owner_id}
+
+        # 收集所有 owner：有些 provider 可能属于非当前 owner（多用户）。
+        for provider in self.provider_service.list_providers(self.owner_id):
+            owners.add(provider["owner_id"])
+
+        for owner_id in owners:
+            devices = self.device_store.list_for_owner(owner_id)
+            if not devices:
+                # 该 owner 已无设备：把绑定到不存在设备的 provider 解绑为未绑定，
+                # 避免继续悬空指向一个不存在的 device_id。
+                for provider in self.provider_service.list_providers(owner_id):
+                    self._bind_or_unbind_provider(provider, owner_id, "")
+                continue
+            for provider in self.provider_service.list_providers(owner_id):
+                if not provider.get("device_id"):
+                    continue  # 未绑定，交给 _migrate_unbound_providers 处理
+                device_id = provider["device_id"]
+                if not self._device_exists(owner_id, device_id):
+                    self._bind_or_unbind_provider(
+                        provider, owner_id, devices[0].device_id
+                    )
+                    logger.info(
+                        "provider %s rebound from orphaned device %s → %s",
+                        provider["provider_id"],
+                        device_id,
+                        devices[0].device_id,
+                    )
+
+    def _bind_or_unbind_provider(
+        self, provider: dict, owner_id: str, device_id: str
+    ) -> None:
+        """把单个 provider 绑定到 device_id（空串=解绑为未绑定）。"""
+        try:
+            self.provider_service.bind_device(provider["provider_id"], owner_id, device_id)
+        except Exception:
+            import logging
+
+            logging.getLogger("threadforge.migrate").warning(
+                "provider %s rebind failed; retry on next configure",
+                provider["provider_id"],
+                exc_info=True,
+            )
+
+    def _device_exists(self, owner_id: str, device_id: str) -> bool:
+        if not device_id:
+            return False
+        try:
+            self.device_store.get(device_id)
+            return True
+        except Exception:
+            return False
+
     def _default_model_client_factory(self):
         settings = self.settings
         if settings.model_provider == "anthropic":
@@ -313,6 +378,11 @@ class AppContainer:
             ok = False
         try:
             self._migrate_unbound_providers()
+        except Exception:
+            ok = False
+        try:
+            # §device_id 加固：修复绑定到已删除设备的悬空 provider。
+            self._migrate_orphaned_providers()
         except Exception:
             ok = False
         for task_id in self.task_repo.list_stable():

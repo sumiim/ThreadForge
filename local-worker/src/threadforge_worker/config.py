@@ -54,6 +54,7 @@ class WorkerConfig:
     device_id: str = ""
     device_token: str = ""
     device_name: str = ""
+    machine_fingerprint: str = ""
     workspaces: list[LocalWorkspace] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -63,6 +64,7 @@ class WorkerConfig:
             "device_id": self.device_id,
             "device_token": _protect_token(self.device_token),
             "device_name": self.device_name,
+            "machine_fingerprint": self.machine_fingerprint,
             "workspaces": [workspace.__dict__ for workspace in self.workspaces],
         }
 
@@ -73,6 +75,7 @@ class WorkerConfig:
             device_id=str(payload.get("device_id", "")),
             device_token=_unprotect_token(str(payload.get("device_token", ""))),
             device_name=str(payload.get("device_name", "")),
+            machine_fingerprint=str(payload.get("machine_fingerprint", "")),
             workspaces=[
                 LocalWorkspace(
                     workspace_id=str(item["workspace_id"]),

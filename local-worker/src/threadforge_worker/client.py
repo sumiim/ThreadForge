@@ -50,9 +50,11 @@ class WorkerProtocolRejectedError(RuntimeError):
         super().__init__(f"Worker protocol rejected: {self.code}{detail}")
 
 
-def pair(server_url: str, code: str, name: str) -> dict:
+def pair(server_url: str, code: str, name: str, machine_fingerprint: str = "") -> dict:
     server_url = _validated_server_url(server_url)
-    payload = json.dumps({"code": code, "name": name}).encode("utf-8")
+    payload = json.dumps(
+        {"code": code, "name": name, "machine_fingerprint": machine_fingerprint}
+    ).encode("utf-8")
     request = urllib.request.Request(
         server_url.rstrip("/") + "/api/v1/workers/pair",
         data=payload,
@@ -220,6 +222,7 @@ class WorkerClient:
                     "protocol_version": WORKER_PROTOCOL_VERSION,
                     "platform": platform.system().lower(),
                     "architecture": platform.machine().lower(),
+                    "machine_fingerprint": self.config.machine_fingerprint,
                     "model": os.environ.get("PICO_OPENAI_MODEL", "gpt-5.4"),
                     "model_configured": bool(os.environ.get("PICO_OPENAI_API_KEY", "").strip()),
                     "model_provider": os.environ.get("PICO_MODEL_PROVIDER", ""),

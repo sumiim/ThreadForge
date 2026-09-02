@@ -63,6 +63,10 @@ class TaskState:
     run_id: str
     task_id: str
     user_request: str
+    # 会话/工作区归属：run 落盘时从 agent.session 回填，供前端把 run 组织成
+    # 会话树（§历史索引）。缺省空串，兼容旧 run（无归属，仅内容可读）。
+    session_id: str = ""
+    workspace_id: str = ""
     status: str = STATUS_RUNNING
     tool_steps: int = 0
     attempts: int = 0
@@ -132,6 +136,8 @@ class TaskState:
         max_tool_steps=6,
         max_read_files=4,
         max_total_steps=None,
+        session_id="",
+        workspace_id="",
     ):
         if not run_id:
             run_id = "run_" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:6]
@@ -143,6 +149,8 @@ class TaskState:
             run_id=run_id,
             task_id=task_id,
             user_request=user_request,
+            session_id=str(session_id or ""),
+            workspace_id=str(workspace_id or ""),
             checklist=list(DEFAULT_CHECKLIST),
             done_when=["A final answer is grounded in the collected evidence", "The requested work is verified or its blocker is explicit"],
             max_tool_steps=max_tool_steps,
@@ -156,6 +164,8 @@ class TaskState:
             run_id=str(data.get("run_id", "")),
             task_id=str(data.get("task_id", "")),
             user_request=str(data.get("user_request", "")),
+            session_id=str(data.get("session_id", "")),
+            workspace_id=str(data.get("workspace_id", "")),
             status=str(data.get("status", STATUS_RUNNING)),
             tool_steps=int(data.get("tool_steps", 0)),
             attempts=int(data.get("attempts", 0)),
@@ -340,6 +350,8 @@ class TaskState:
             "run_id": self.run_id,
             "task_id": self.task_id,
             "user_request": self.user_request,
+            "session_id": self.session_id,
+            "workspace_id": self.workspace_id,
             "status": self.status,
             "tool_steps": self.tool_steps,
             "attempts": self.attempts,

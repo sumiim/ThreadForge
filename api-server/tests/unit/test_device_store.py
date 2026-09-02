@@ -130,3 +130,39 @@ def test_device_rename_uses_optimistic_display_name_version(tmp_path):
 
     with pytest.raises(RenameConflictError):
         store.rename(device.device_id, OWNER_A, "Other", expected_updated_at=version)
+
+
+def test_pair_or_reuse_reuses_same_device_for_same_fingerprint(tmp_path):
+    """§device_id 加固：同 owner + 同 machine_fingerprint 重新配对应复用同一设备。"""
+    store = DeviceStore(tmp_path)
+    first, token1 = store.pair_or_reuse(OWNER_A, "Laptop-B", "fp_" + "a" * 32)
+    second, token2 = store.pair_or_reuse(OWNER_A, "Laptop-B", "fp_" + "a" * 32)
+
+    # 复用同一个 device_id（不新建），且 token 被轮换（重新授权）。
+    assert second.device_id == first.device_id
+    assert token2 != token1
+    assert len(store.list_for_owner(OWNER_A)) == 1
+    # 新旧 token 只有新 token 能通过认证（旧的已作废）。
+    assert store.authenticate(token2).device_id == first.device_id
+    with pytest.raises(AuthorizationDeniedError):
+        store.authenticate(token1)
+
+
+def test_pair_or_reuse_creates_device_for_new_fingerprint(tmp_path):
+    store = DeviceStore(tmp_path)
+    first, _ = store.pair_or_reuse(OWNER_A, "Laptop-B", "fp_" + "a" * 32)
+    other, _ = store.pair_or_reuse(OWNER_A, "Laptop-B", "fp_" + "b" * 32)
+
+    assert other.device_id != first.device_id
+    assert len(store.list_for_owner(OWNER_A)) == 2
+    assert store.find_by_fingerprint(OWNER_A, "fp_" + "a" * 32).device_id == first.device_id
+
+
+def test_pair_or_reuse_is_scoped_per_owner(tmp_path):
+    store = DeviceStore(tmp_path)
+    device_a, _ = store.pair_or_reuse(OWNER_A, "Laptop-B", "fp_" + "a" * 32)
+    # 另一个 owner 用同一指纹应新建（不跨 owner 复用）。
+    device_b, _ = store.pair_or_reuse(OWNER_B, "Laptop-B", "fp_" + "a" * 32)
+
+    assert device_a.device_id != device_b.device_id
+    assert len(store.list_for_owner(OWNER_B)) == 1
