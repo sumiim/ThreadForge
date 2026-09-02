@@ -267,24 +267,33 @@ export function getLatestWorkerRelease(options?: { force?: boolean }): Promise<W
   return workerReleaseRequest
 }
 
-const WORKER_DOWNLOAD_TIMEOUT_MS = 10 * 60_000
-const WORKER_DOWNLOAD_STALL_TIMEOUT_MS = 45_000
+// 公网入口（Tailscale Funnel/DERP relay）对 20MB 安装包的流式传输不稳定，容易把
+// 大文件链路拖到极慢甚至中断。把总超时与「无数据判定」一并放宽，让断点续传
+// 有足够时间推进，而不是 45 秒没收到新字节就把整个下载判死。
+const WORKER_DOWNLOAD_TIMEOUT_MS = 30 * 60_000
+const WORKER_DOWNLOAD_STALL_TIMEOUT_MS = 120_000
+const WORKER_DOWNLOAD_MAX_ATTEMPTS = 5
+
+/** 跨尝试共享的下载状态：已下字节、总字节、文件名。失败后保留已下部分用于 Range 续传。 */
+type WorkerDownloadState = { received: number; total: number; filename: string }
 
 export async function downloadWorkerRelease(
   platformName: string,
   onProgress: (received: number, total: number) => void,
 ): Promise<{ blob: Blob; filename: string }> {
-  const maxAttempts = 2
+  const state: WorkerDownloadState = { received: 0, total: 0, filename: 'threadforge-worker.exe' }
+  const chunks: ArrayBuffer[] = []
   let lastError: unknown
+  const maxAttempts = WORKER_DOWNLOAD_MAX_ATTEMPTS
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     if (attempt > 0) await delay(750)
     try {
-      return await downloadWorkerReleaseAttempt(platformName, onProgress)
+      return await downloadWorkerReleaseAttempt(platformName, state, chunks, onProgress)
     } catch (cause) {
       lastError = cause
       if (!isRetryableWorkerDownloadError(cause) || attempt + 1 >= maxAttempts) throw cause
-      // A retry starts a fresh response; reset the progress bar instead of
-      // leaving the user with a percentage that can no longer advance.
+      // 中断：保留已下字节（state.received）供下一轮 Range 续传，进度条先归零，
+      // 避免给用户留下一个再也无法推进的百分比。
       onProgress(0, 0)
     }
   }
@@ -295,6 +304,8 @@ export async function downloadWorkerRelease(
 
 async function downloadWorkerReleaseAttempt(
   platformName: string,
+  state: WorkerDownloadState,
+  chunks: ArrayBuffer[],
   onProgress: (received: number, total: number) => void,
 ): Promise<{ blob: Blob; filename: string }> {
   const controller = new AbortController()
@@ -304,11 +315,16 @@ async function downloadWorkerReleaseAttempt(
     controller.abort()
   }, WORKER_DOWNLOAD_TIMEOUT_MS)
   try {
+    const resumeFrom = state.received
+    const headers: Record<string, string> = {}
+    // 已有部分字节时从断点续传，服务器应返回 206 + Content-Range。
+    if (resumeFrom > 0) headers['Range'] = `bytes=${resumeFrom}-`
+
     let response: Response
     try {
       response = await fetch(
         apiUrl(`/api/v1/worker/releases/download/${encodeURIComponent(platformName)}`),
-        { credentials: 'include', signal: controller.signal },
+        { credentials: 'include', signal: controller.signal, headers },
       )
     } catch (cause) {
       if (timedOut || (cause as { name?: string })?.name === 'AbortError') {
@@ -327,10 +343,29 @@ async function downloadWorkerReleaseAttempt(
       throw new ApiError(message, 'worker_release_unavailable', response.status)
     }
 
-    const total = Number(response.headers.get('Content-Length') ?? 0)
     const disposition = response.headers.get('Content-Disposition') ?? ''
-    const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? 'threadforge-worker.exe'
-    onProgress(0, total)
+    const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? state.filename
+    state.filename = filename
+
+    // 总字节：206 用 Content-Range 里的「/total」；200 用 Content-Length。
+    const contentRange = response.headers.get('Content-Range') ?? ''
+    const isPartial = response.status === 206
+    let total = Number(response.headers.get('Content-Length') ?? 0)
+    const rangeMatch = isPartial && contentRange
+      ? /bytes\s+(\d+)-(\d+)\/(\d+)/.exec(contentRange)
+      : null
+    if (rangeMatch) total = Number(rangeMatch[3])
+
+    // 服务器忽略 Range（返回 200 全量）而此前已下过字节：这次响应从文件头开始，
+    // 必须丢弃之前缓存的字节并从 0 重新接收，否则会拼出错包。
+    if (!isPartial && resumeFrom > 0) {
+      chunks.length = 0
+      state.received = 0
+      onProgress(0, total)
+    }
+    state.total = total
+    onProgress(state.received, total)
+
     if (!response.body) {
       const blob = await response.blob()
       onProgress(blob.size, total || blob.size)
@@ -338,8 +373,6 @@ async function downloadWorkerReleaseAttempt(
     }
 
     const reader = response.body.getReader()
-    const chunks: ArrayBuffer[] = []
-    let received = 0
     for (;;) {
       let result: ReadableStreamReadResult<Uint8Array>
       try {
@@ -355,8 +388,8 @@ async function downloadWorkerReleaseAttempt(
       if (result.done) break
       if (!result.value?.byteLength) continue
       chunks.push(Uint8Array.from(result.value).buffer)
-      received += result.value.byteLength
-      onProgress(received, total)
+      state.received += result.value.byteLength
+      onProgress(state.received, state.total)
     }
     return { blob: new Blob(chunks, { type: 'application/octet-stream' }), filename }
   } finally {

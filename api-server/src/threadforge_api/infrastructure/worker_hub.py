@@ -81,6 +81,11 @@ _PUBLIC_EVENT_TYPE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 _WORKSPACE_SELECTION_TTL_SECONDS = 120
 _EPHEMERAL_ANSWER_TTL_SECONDS = 600
 _EPHEMERAL_PROGRESS_TTL_SECONDS = 600
+# 高频流式事件：这类事件频率高、语义为「按出现顺序追加/合并」，逐条同步落盘会让
+# 每条都触发整条 task payload 全量重写 + 2 次 fsync，密集 thinking 时把 WebSocket
+# 接收循环拖到积压 → 连接被掐断（run 显示「运行因服务重启或连接中断而终止」）。
+# 改为暂存合并，等下一个低频/终态事件或连接断开时批量写一次。
+_STREAM_PERSIST_EVENTS = frozenset({"assistant.thinking", "assistant.commentary"})
 LOGGER = logging.getLogger(__name__)
 
 
@@ -178,6 +183,9 @@ class WorkerHub:
         self._update_requests: dict[str, PendingWorkerRequest] = {}
         self._terminal_answers: dict[str, tuple[float, str]] = {}
         self._agent_progress: dict[str, tuple[float, dict]] = {}
+        # 高频流式事件（thinking/commentary）暂存缓冲：按 task_id 累积等待批量落盘。
+        # 键：task_id；值：[(event_dict, safe_data), ...]，保持到达顺序。
+        self._pending_stream_events: dict[str, list[tuple[dict, dict]]] = {}
         self._lock = threading.RLock()
         # The digest only needs to remain stable for the lifetime of an active
         # Worker run. Active runs are failed during restart recovery, so a
@@ -235,6 +243,9 @@ class WorkerHub:
                 for task_id in task_ids:
                     self._device_by_task.pop(task_id, None)
         for task_id in task_ids:
+            # 断线前先把该任务暂存的流式事件（thinking/commentary）冲刷落盘，
+            # 避免最后一批思考在连接断开时丢失。
+            await self._flush_stream_events(task_id)
             # §7.8.9 修正（2026-08-19）：断线 ≠ 运行失败——任务因连接中断而终止,
             # 前端应显示「运行因服务重启或连接中断而终止」而非「Agent 运行失败」。
             self._fail_task(task_id, "worker_disconnected", status=TaskStatus.INTERRUPTED)
@@ -995,6 +1006,9 @@ class WorkerHub:
         elif message_type == "approval.requested":
             self._handle_approval(connection, message)
         elif message_type == "terminal":
+            # 终态落盘前先冲刷该任务暂存的流式事件（thinking/commentary），
+            # 否则这些已广播但未落盘的思考会在终端事件里丢失。
+            await self._flush_stream_events(str(message.get("task_id", "")))
             self._handle_terminal(connection, message)
         elif message_type == "workspaces.updated":
             self._handle_workspaces_updated(connection, message)
@@ -1665,14 +1679,17 @@ class WorkerHub:
         event = self._publisher.publish(
             task_id, task.run_id, event_type, safe_data, **metadata
         )
+        if event_type in _STREAM_PERSIST_EVENTS:
+            # 高频流式事件（thinking/commentary）：暂存到任务级缓冲，待下一个低频/终态
+            # 事件或连接断开时批量落盘。避免每条都 to_thread 全量重写 + fsync。
+            self._enqueue_stream_event(task_id, event.to_dict(), safe_data)
+            return
         if event_type in {
             "plan.created",
             "plan.skipped",
-            "assistant.commentary",
             # Keep the complete, bounded conversation projection.  The live
             # client already receives these frames, but history reload used to
             # discard them because they were never appended to run_index.
-            "assistant.thinking",
             "model.started",
             "model.completed",
             "review.started",
@@ -1685,15 +1702,31 @@ class WorkerHub:
             "tool.failed",
             "message.completed",
         }:
-            # Worker thinking can arrive dozens of times per second. Repository
-            # updates write SQLite plus the compatibility JSON mirror, so doing
-            # them on the ASGI loop starves WebSocket ping/pong, SSE delivery,
-            # and ordinary REST requests under a dense stream.
+            # 先冲刷该任务暂存的流式事件（保序），再同步落盘当前低频/终态事件。
+            # Worker thinking/commentary 可每秒数十条，逐条同步写 SQLite+JSON mirror
+            # 会让 WebSocket 接收循环积压，最终触发连接中断（run 被 interrupted）。
+            await self._flush_stream_events(task_id)
             await asyncio.to_thread(
                 self._task_repo.update,
                 task_id,
                 lambda item: _append_run_index(item, event.to_dict(), safe_data),
             )
+
+    def _enqueue_stream_event(self, task_id: str, event_dict: dict, safe_data: dict) -> None:
+        with self._lock:
+            self._pending_stream_events.setdefault(task_id, []).append((event_dict, safe_data))
+
+    async def _flush_stream_events(self, task_id: str) -> None:
+        with self._lock:
+            pending = self._pending_stream_events.pop(task_id, None)
+        if not pending:
+            return
+        # 一次 update 里按到达顺序合并全部暂存流式事件，只触发一次全量写+fsync。
+        await asyncio.to_thread(
+            self._task_repo.update,
+            task_id,
+            lambda item: _append_pending_stream_events(item, pending),
+        )
 
     def _handle_approval(self, connection: WorkerConnection, message: dict) -> None:
         task_id = str(message.get("task_id", ""))
@@ -2435,6 +2468,23 @@ def _append_run_index(task, event: dict, data: dict):
 
     task.run_index = [*task.run_index[-499:], item]
     task.updated_at = utc_now()
+    return task
+
+
+def _append_pending_stream_events(task, pending: list[tuple[dict, dict]]):
+    """把暂存的高频流式事件按到达顺序批量合并进 run_index，只写一次。
+
+    ``pending`` 是 ``[(event_dict, safe_data), ...]``，顺序即到达顺序。逐条复用
+    ``_append_run_index`` 以保持其「连续同 phase 思考合并」的语义，最终由外层
+    ``_task_repo.update`` 一次全量写回（一次 SQLite 写 + 一次 mirror fsync）。
+    """
+    for event_dict, safe_data in pending:
+        try:
+            task = _append_run_index(task, event_dict, safe_data)
+        except Exception:
+            # 单条暂存事件合并失败不应丢弃整批已成功的部分；记录并继续，
+            # 避免批处理期间某条异常导致前序 thinking 全部丢失。
+            LOGGER.warning("Failed to persist a deferred stream event", exc_info=True)
     return task
 
 
