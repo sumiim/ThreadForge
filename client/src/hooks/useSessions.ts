@@ -882,6 +882,16 @@ export function useSessions(): UseSessions {
           case 'assistant.delta': {
             const text = String(data.text ?? '')
             if (!text) return
+            if (data.final === true) {
+              // §前端去重：worker 标记 final=true 的是「最终答案」流式文本，写入 content
+              // （流式），而不是 commentary——否则 message.completed 设 content 时会重复显示两遍。
+              updateSessionMessages(sessionId, (messages) => messages.map((message) =>
+                message.id === assistantId
+                  ? { ...message, content: `${message.content ?? ''}${text}` }
+                  : message,
+              ))
+              return
+            }
             // §7.8.9 修正（2026-08-19）：流式叙述按 turn 归入 commentary 块,不再堆进
             // content 底部。content 只保留最终答案(message.completed / task.* 终答)。
             updateSessionMessages(sessionId, (messages) => messages.map((message) =>
