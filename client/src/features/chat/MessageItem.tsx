@@ -16,6 +16,8 @@ type TurnGroup = {
   thinking?: string
   toolCalls?: ToolCall[]
   reviewEntries?: ReviewBattleEntry[]
+  /** §渲染去重：该 turn 的「先导中间话」——模型先说一句、再进入这轮的工具。显示在 turn 块上方。 */
+  leadingCommentary?: string
 }
 
 function extractEntries(block: { entries?: ReviewBattleEntry[] }): ReviewBattleEntry[] {
@@ -38,7 +40,14 @@ function groupBlocksByTurn(blocks: MessageBlock[]): Array<TurnGroup | { commenta
 
   for (const block of blocks) {
     if (block.kind === 'commentary') {
-      output.push({ commentary: block.text })
+      // §渲染去重：commentary 带 turn 时，作为该 turn 的「先导中间话」（话在上、turn 在下），
+      // 而不是作为独立条目散在 turn 之间（否则顺序看起来“turn 在上、话在下”反了）。
+      if (block.turn != null) {
+        const group = getGroup(block.turn)
+        group.leadingCommentary = (group.leadingCommentary ?? '') + (group.leadingCommentary ? '\n' : '') + block.text
+      } else {
+        output.push({ commentary: block.text })
+      }
       continue
     }
     const group = getGroup(block.turn)
@@ -355,6 +364,22 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
                 className="whitespace-pre-wrap py-1 text-sm leading-relaxed text-stone-800 dark:text-stone-100"
               >
                 {group.commentary}
+              </div>
+            ) : group.leadingCommentary ? (
+              // §渲染去重：话在前、该 turn 在下——先显示这一轮的先导中间话，再显示 Turn 抽屉。
+              <div key={index}>
+                <div className="whitespace-pre-wrap py-1 text-sm leading-relaxed text-stone-800 dark:text-stone-100">
+                  {group.leadingCommentary}
+                </div>
+                <TurnFold
+                  turn={group.turn}
+                  thinking={group.thinking}
+                  toolCalls={group.toolCalls ?? []}
+                  reviewEntries={group.reviewEntries ?? []}
+                  streaming={streaming}
+                  onApprove={(toolCallId) => onApprove(message.id, toolCallId)}
+                  onReject={(toolCallId) => onReject(message.id, toolCallId)}
+                />
               </div>
             ) : (
               <TurnFold
