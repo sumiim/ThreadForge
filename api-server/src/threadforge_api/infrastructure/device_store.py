@@ -65,6 +65,9 @@ class Device:
     model_capabilities: dict = field(default_factory=dict)
     update_status: dict = field(default_factory=dict)
     workspaces: list[WorkerWorkspace] = field(default_factory=list)
+    # 稳定机器指纹（§device_id 加固）：同一物理机重新配对时控制面据此“复用/接管”
+    # 现有 Device，而不是每次生成新 device_id，避免重复设备与归属悬空。
+    machine_fingerprint: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -89,6 +92,7 @@ class Device:
             "model_capabilities": dict(self.model_capabilities),
             "update_status": dict(self.update_status),
             "workspaces": [workspace.to_dict() for workspace in self.workspaces],
+            "machine_fingerprint": self.machine_fingerprint,
         }
 
     @classmethod
@@ -138,6 +142,7 @@ class Device:
                 for item in payload.get("workspaces", [])
                 if isinstance(item, dict)
             ],
+            machine_fingerprint=str(payload.get("machine_fingerprint", "")),
         )
 
 
@@ -190,7 +195,9 @@ class DeviceStore:
     def _token_digest(token: str) -> str:
         return hashlib.sha256(token.encode("ascii")).hexdigest()
 
-    def create(self, owner_id: str, name: str) -> tuple[Device, str]:
+    def create(
+        self, owner_id: str, name: str, machine_fingerprint: str = ""
+    ) -> tuple[Device, str]:
         owner_id = canonical_owner_id(owner_id)
         device_id = "dev_" + secrets.token_hex(16)
         token = secrets.token_urlsafe(48)
@@ -200,11 +207,58 @@ class DeviceStore:
             name=name.strip(),
             token_digest=self._token_digest(token),
             display_name_source="user",
+            machine_fingerprint=str(machine_fingerprint or "").strip(),
         )
         device.display_name_updated_at = device.created_at
         with self._lock:
             write_json_atomic(self.root / f"{device_id}.json", device.to_dict())
         return device, token
+
+    def find_by_fingerprint(
+        self, owner_id: str, machine_fingerprint: str
+    ) -> Device | None:
+        """Return the device owned by ``owner_id`` with this stable fingerprint.
+
+        §device_id 加固：同一物理机重新配对时，控制面据此找到并“接管”现有
+        Device，而不是生成新的随机 device_id（否则重复设备+归属悬空）。
+        """
+        owner_id = canonical_owner_id(owner_id)
+        fingerprint = str(machine_fingerprint or "").strip()
+        if not fingerprint:
+            return None
+        with self._lock:
+            for path in self.root.glob("dev_*.json"):
+                device = Device.from_dict(read_json(path))
+                if (
+                    device.owner_id == owner_id
+                    and device.machine_fingerprint == fingerprint
+                ):
+                    return device
+        return None
+
+    def pair_or_reuse(
+        self, owner_id: str, name: str, machine_fingerprint: str = ""
+    ) -> tuple[Device, str]:
+        """Pair a Worker, reusing the existing device for the same machine.
+
+        If a device with the same ``owner_id + machine_fingerprint`` already
+        exists, rotate its token (a fresh pairing acts as a re-authorization)
+        and return that same device — so bound Providers / history don't get
+        orphaned by a new random device_id. Otherwise fall back to creating a
+        new device.
+        """
+        existing = self.find_by_fingerprint(owner_id, machine_fingerprint)
+        if existing is not None:
+            token = secrets.token_urlsafe(48)
+            existing.token_digest = self._token_digest(token)
+            existing.name = str(name or existing.name).strip()
+            existing.last_seen_at = utc_now()
+            with self._lock:
+                write_json_atomic(
+                    self.root / f"{existing.device_id}.json", existing.to_dict()
+                )
+            return existing, token
+        return self.create(owner_id, name, machine_fingerprint=machine_fingerprint)
 
     def get(self, device_id: str) -> Device:
         if not _DEVICE_ID.fullmatch(str(device_id)):

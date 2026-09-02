@@ -17,6 +17,9 @@ class CreateSessionRequest(BaseModel):
 class PairWorkerRequest(BaseModel):
     code: str = Field(min_length=8, max_length=64)
     name: str = Field(min_length=1, max_length=100)
+    # 稳定机器指纹（§device_id 加固）：同一物理机重新配对时服务端据此“复用/接管”
+    # 现有 Device，避免重复设备与归属悬空。可选（旧客户端不带时按原逻辑新建）。
+    machine_fingerprint: str = Field(default="", max_length=128)
 
     @field_validator("name")
     @classmethod

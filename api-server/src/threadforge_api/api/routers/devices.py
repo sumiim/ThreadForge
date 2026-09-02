@@ -16,6 +16,7 @@ from ..dependencies import (
     get_actor,
     get_device_store,
     get_pairing_store,
+    get_provider_service,
     get_session_service,
     get_worker_hub,
     require_csrf,
@@ -42,7 +43,11 @@ def pair_worker(
     device_store: DeviceStore = Depends(get_device_store),
 ) -> dict:
     owner_id = pairing_store.consume(body.code)
-    device, token = device_store.create(owner_id, body.name)
+    # §device_id 加固：同一物理机（按 machine_fingerprint）重新配对时复用/接管
+    # 现有 Device，而不是新建随机 device_id（否则重复设备 + Provider/历史归属悬空）。
+    device, token = device_store.pair_or_reuse(
+        owner_id, body.name, body.machine_fingerprint
+    )
     return {
         "device_id": device.device_id,
         "device_token": token,
@@ -281,7 +286,19 @@ def revoke_device(
     actor: Actor = Depends(get_actor),
     worker_hub: WorkerHub = Depends(get_worker_hub),
     session_service: SessionService = Depends(get_session_service),
+    device_store: DeviceStore = Depends(get_device_store),
+    provider_service: ProviderService = Depends(get_provider_service),
 ) -> dict:
+    # §device_id 加固：删除设备前，把绑定到该设备的 Provider 迁移到 owner 的
+    # 另一台设备（或解绑为未绑定），避免 Provider 因设备被删而“悬空”
+    # （get_active_provider 匹配不到 → 前端把它们当成不存在）。
+    remaining = [
+        d for d in device_store.list_for_owner(actor.owner_id) if d.device_id != device_id
+    ]
+    target_device_id = remaining[0].device_id if remaining else ""
+    for provider in provider_service.list_providers(actor.owner_id, device_id):
+        provider_service.bind_device(provider["provider_id"], actor.owner_id, target_device_id)
+
     worker_hub.revoke(device_id, actor.owner_id)
     # 解绑后级联删除该设备的孤儿会话索引，避免前端残留「本地 Worker 不存在」。
     session_service.delete_sessions_for_device(device_id, actor.owner_id)

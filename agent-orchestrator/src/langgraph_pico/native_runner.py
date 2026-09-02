@@ -219,6 +219,10 @@ def run_native(
             max_tool_steps=agent.max_steps,
             max_read_files=agent.max_read_files,
             max_total_steps=agent.max_total_steps,
+            # 初始归属传入（仅作初始值；AgentLoop 会重建 task_state，最终归属见下方
+            # loop 完成后对 agent.current_task_state 的回填）。
+            session_id=str((agent.session or {}).get("id", "")),
+            workspace_id=str(workspace_id or (agent.session or {}).get("workspace_id", "")),
         )
         agent.current_task_state = task_state
         # 明确的社交短句走无工作区、无工具的轻量路径。其余任务仍不做主观
@@ -250,6 +254,15 @@ def run_native(
         task_state = agent.current_task_state
         if task_state is not None:
             task_state.intent = intent
+            # 归属回填：AgentLoop 会重建正式 TaskState，必须在此（而非 create 处）
+            # 把 session_id/workspace_id 补到最终 task_state 上，否则落盘
+            # （task_state.json/report.json）会丢失会话归属 → Web 历史接不上。
+            session_id = str((agent.session or {}).get("id", "") or "")
+            ws_id = str(
+                workspace_id or (agent.session or {}).get("workspace_id", "") or ""
+            )
+            task_state.session_id = session_id
+            task_state.workspace_id = ws_id
 
         # 收尾 review gate（写触发，确定性兜底）。
         # §7.8.9 决策（2026-08-18）：无 max_steps turn 硬顶——gate 不再用

@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from .client import WorkerClient, _validated_server_url, pair
 from .config import ConfigStore
+from .machine import machine_fingerprint
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -127,11 +128,14 @@ def _pair_and_save(
     normalized_name = name.strip()
     if not normalized_name or len(normalized_name) > 100:
         raise ValueError("device name is invalid")
-    result = pair(validated_server, code, normalized_name)
+    # 稳定机器指纹：优先沿用已持久化的值（重装/重配对不重建 device），否则现算。
+    fingerprint = config.machine_fingerprint or machine_fingerprint()
+    result = pair(validated_server, code, normalized_name, machine_fingerprint=fingerprint)
     config.server_url = validated_server
     config.device_id = result["device_id"]
     config.device_token = result["device_token"]
     config.device_name = result["name"]
+    config.machine_fingerprint = fingerprint
     store.save(config)
 
 

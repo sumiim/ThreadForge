@@ -728,6 +728,9 @@ class Pico:
         return {
             "run_id": task_state.run_id,
             "task_id": task_state.task_id,
+            "session_id": getattr(task_state, "session_id", ""),
+            "workspace_id": getattr(task_state, "workspace_id", ""),
+            "input": task_state.user_request,
             "status": task_state.status,
             "stop_reason": task_state.stop_reason,
             "final_answer": task_state.final_answer,
