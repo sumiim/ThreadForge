@@ -98,7 +98,6 @@ function TurnFold({ turn, thinking, toolCalls, reviewEntries, streaming, onAppro
           {hasTools && (
             <ToolFold
               toolCalls={toolCalls!}
-              streaming={streaming}
               onApprove={onApprove}
               onReject={onReject}
             />
@@ -186,14 +185,14 @@ function ThinkingFold({ text, streaming, label = 'Thinking' }: { text: string; s
 }
 
 /** 工具二级目录：行为 → Tool → 具体工具调用。 */
-function ToolFold({ toolCalls, streaming, onApprove, onReject }: {
+function ToolFold({ toolCalls, onApprove, onReject }: {
   toolCalls: ToolCall[]
-  streaming: boolean
   onApprove: (toolCallId: string) => void
   onReject: (toolCallId: string) => void
 }) {
   const [manualOpen, setManualOpen] = useState<boolean | null>(null)
-  const open = manualOpen ?? streaming
+  // 默认折叠：不因 streaming 自动展开，始终由用户手动控制（点击切换）。
+  const open = manualOpen ?? false
   const runningCount = toolCalls.filter((toolCall) => toolCall.status === 'running').length
   const pendingCount = toolCalls.filter((toolCall) => toolCall.status === 'pending').length
   const statusSummary = runningCount > 0
@@ -206,7 +205,7 @@ function ToolFold({ toolCalls, streaming, onApprove, onReject }: {
     <div>
       <button
         type="button"
-        onClick={() => setManualOpen((current) => !(current ?? streaming))}
+        onClick={() => setManualOpen(!open)}
         className="flex w-full cursor-pointer select-none items-center gap-2 rounded-md px-2 py-1 text-left text-[11px] text-stone-500 transition-colors hover:bg-stone-100/80 dark:text-stone-400 dark:hover:bg-stone-700/40"
         aria-expanded={open}
       >
@@ -328,11 +327,17 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
       className="message-enter flex justify-start"
     >
       <div className="min-w-0 max-w-[90%]">
-        {/* planning 思考独立显示，无论有无 blocks 都展示 */}
-        {message.planningThinking ? (
-          <div className="mb-2">
-            <ThinkingFold text={message.planningThinking} streaming={streaming} label="Planning" />
-          </div>
+        {/* planning 思考：可能因 review 触发多次 replan → 多个 planning 段，每段独立折叠块 */}
+        {(message.planningThinking ?? []).length > 0 ? (
+          (message.planningThinking ?? []).map((segment, index) => (
+            <div key={index} className="mb-2">
+              <ThinkingFold
+                text={segment}
+                streaming={streaming}
+                label={index === 0 ? 'Planning' : `Planning · replan ${index}`}
+              />
+            </div>
+          ))
         ) : null}
         {/* 普通 thinking（execute/conversation）累积在顶层，单一折叠块，不按 turn 拆分 */}
         {message.thinking ? (
@@ -355,7 +360,7 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
               <TurnFold
                 key={index}
                 turn={group.turn}
-                thinking={undefined}
+                thinking={group.thinking}
                 toolCalls={group.toolCalls ?? []}
                 reviewEntries={group.reviewEntries ?? []}
                 streaming={streaming}

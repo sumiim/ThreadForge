@@ -509,8 +509,11 @@ export interface Message {
   commentary?: string // 模型过程中间话（流式回传，区别于 final content）
   /** DeepSeek 思考过程（assistant.thinking 流式累积；独立于 content，UI 折叠展示） */
   thinking?: string
-  /** §7.8.9 决策（2026-08-18）：planning 阶段的思考（stage=planning），与每轮 turn thinking 分区展示 */
-  planningThinking?: string
+  /** §7.8.9 决策（2026-08-18）：planning 阶段的思考（stage=planning），与每轮 turn thinking 分区展示。
+   * 一个 run 可能因 review 触发多次 replan → 多个 planning 段，这里用数组按段存储。 */
+  planningThinking?: string[]
+  /** 上一次收到 thinking 的 stage（planning/execute/review），用于判断 planning 是否为新的一段。 */
+  lastThinkingStage?: string
   toolCalls?: ToolCall[]
   /**
    * 按事件到达顺序的交替块（commentary 与行为交替，而非行为全堆顶部）。

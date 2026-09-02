@@ -128,6 +128,40 @@ function appendReviewThinking(blocks: MessageBlock[] | undefined, text: string, 
   return [...list, { kind: 'review', entries: [], thinking: text, turn }]
 }
 
+/**
+ * 把「普通（execute/conversation）阶段」的 thinking 累积到**当前 turn 的 behavior 块**，
+ * 让每个 turn 里既能看到该轮思考、也能看到该轮工具——而不是全部堆到顶层 thinking 抽屉。
+ * 与 appendReviewThinking 同理，但目标是 behavior 块（工具 + 思考同属一个 turn）。
+ */
+function appendTurnThinking(blocks: MessageBlock[] | undefined, text: string, turn?: number): MessageBlock[] {
+  const list = blocks ?? []
+  const last = list[list.length - 1]
+  if (last && last.kind === 'behavior' && (last.turn ?? undefined) === turn) {
+    return [...list.slice(0, -1), { ...last, thinking: `${last.thinking ?? ''}${text}` }]
+  }
+  // 当前 turn 无 behavior 块：先开一个只含 thinking 的占位块，后续该 turn 的工具
+  // 会 append 进同一块（appendToolCallBlock 复用末尾 behavior 块）。
+  return [...list, { kind: 'behavior', thinking: text, turn }]
+}
+
+/**
+ * planning 思考按「段」累积为数组。一次 run 可能因 review 触发多次 replan，
+ * 每次 replan 都是一段新的 planning 思考。这里通过「上一次 thinking 的 stage 是否
+ * 仍是 planning」判断：连续 planning 追加到当前段；否则（上一段是 execute/review，
+ * 即中间经历了执行/审查 → 触发新的 replan）新开一段。
+ */
+function appendPlanningThinking(
+  existing: string[] | undefined,
+  text: string,
+  lastStage?: string,
+): string[] {
+  const list = existing ?? []
+  if (list.length > 0 && lastStage === 'planning') {
+    return [...list.slice(0, -1), `${list[list.length - 1]}${text}`]
+  }
+  return [...list, text]
+}
+
 /** 是否存在「未完成(entries 为空)」的激活 review 块（thinking 已累积,等 completed 塞结果）。 */
 function hasPendingReviewBlock(blocks: MessageBlock[] | undefined): boolean {
   const last = (blocks ?? [])[blocks?.length ? blocks.length - 1 : -1]
@@ -909,22 +943,23 @@ export function useSessions(): UseSessions {
             // DeepSeek 思考过程：独立于 content 累积，UI 折叠展示（不进正文）。
             const text = String(data.text ?? '')
             if (!text) return
-            // §7.8.9 决策（2026-08-18）：thinking 按 stage 分区——planning 思考
-            // 进 planningThinking（独立面板），每轮 turn 思考进 thinking + 行为块。
+            // §7.8.9 决策（2026-08-18）：thinking 按 stage 分区——planning 思考进
+            // planningThinking（最上面、label=Planning 的独立抽屉），每轮 execute/
+            // conversation turn 思考进该 turn 的 behavior 块（和该轮工具放一起），
+            // review 思考进 review 块。
             const stage = String(data.stage ?? 'execute')
             updateSessionMessages(sessionId, (messages) => messages.map((message) =>
               message.id === assistantId
-                ? stage === 'planning'
-                  ? { ...message, planningThinking: `${message.planningThinking ?? ''}${text}` }
-                  : stage === 'review'
-                    ? { ...message, blocks: appendReviewThinking(message.blocks, text, liveTurn) }
-                    : {
-                        // 普通（execute/conversation）思考只累积到顶层 thinking，不
-                        // 再放进按 turn 折叠的 behavior blocks——避免单次模型输出的
-                        // thinking 被 liveTurn 拆成「行为」+「Turn N」多个折叠块。
-                        ...message,
-                        thinking: `${message.thinking ?? ''}${text}`,
-                      }
+                ? {
+                    ...message,
+                    // 记录本次 thinking 的 stage，供下一次 planning 判断是否为新段。
+                    lastThinkingStage: stage,
+                    ...(stage === 'planning'
+                      ? { planningThinking: appendPlanningThinking(message.planningThinking, text, message.lastThinkingStage) }
+                      : stage === 'review'
+                        ? { blocks: appendReviewThinking(message.blocks, text, liveTurn) }
+                        : { blocks: appendTurnThinking(message.blocks, text, liveTurn) }),
+                  }
                 : message,
             ))
             return
@@ -1247,7 +1282,13 @@ export function useSessions(): UseSessions {
             createdAt: m.created_at,
             status: 'done' as const,
             thinking: m.thinking,
-            planningThinking: m.planning_thinking ?? undefined,
+            // 历史回放：服务端 planning_thinking 是单个 string（或可能已是数组），
+            // 归一化为 string[] 以匹配新的多段 planning 渲染。
+            planningThinking: Array.isArray(m.planning_thinking)
+              ? m.planning_thinking
+              : m.planning_thinking
+                ? [m.planning_thinking]
+                : undefined,
             toolCalls: m.tool_calls?.map((tool) => ({
               id: tool.id,
               toolName: tool.tool_name,
