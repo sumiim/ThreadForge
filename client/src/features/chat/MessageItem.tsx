@@ -331,7 +331,7 @@ export default function MessageItem({ message, onApprove, onReject }: MessageIte
         {/* planning 思考独立显示，无论有无 blocks 都展示 */}
         {message.planningThinking ? (
           <div className="mb-2">
-            <ThinkingFold text={message.planningThinking} streaming={streaming} label="Planning thinking" />
+            <ThinkingFold text={message.planningThinking} streaming={streaming} label="Planning" />
           </div>
         ) : null}
         {/* 普通 thinking（execute/conversation）累积在顶层，单一折叠块，不按 turn 拆分 */}
