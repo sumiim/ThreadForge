@@ -1664,6 +1664,7 @@ class AgentLoop:
                         has_write_or_shell=has_write_or_shell,
                         verification_passed=verification_passed,
                         prior_feedback=prior_review_feedback,
+                        model_client=self.agent.review_model_client,
                     )
                     actions_since_review = 0
                     review_triggered = True
@@ -1882,6 +1883,7 @@ class AgentLoop:
                         has_write_or_shell=has_write_or_shell,
                         verification_passed=verification_passed,
                         prior_feedback=prior_review_feedback,
+                        model_client=self.agent.review_model_client,
                     )
                     actions_since_review = 0
                     review_triggered = True
@@ -1956,6 +1958,7 @@ class AgentLoop:
                     has_write_or_shell=has_write_or_shell,
                     verification_passed=verification_passed,
                     prior_feedback=prior_review_feedback,
+                    model_client=self.agent.review_model_client,
                 )
             )
             self._apply_review_completed_steps(task_state, review_decision)

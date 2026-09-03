@@ -342,6 +342,58 @@ def test_local_task_uses_the_only_device_provider_without_default_marker(client)
         assert start["task"]["settings"]["provider_id"] == provider.json()["provider_id"]
 
 
+def test_local_task_uses_session_main_and_review_provider(client):
+    """§review 双 provider（2026-09-03）：任务显式带 session 级主循环 provider +
+    独立 review provider/model，下发 worker 的 settings 应完整带上下行。
+    """
+    paired = _pair(client)
+    headers = {"Authorization": f"Bearer {paired['device_token']}"}
+    with client.websocket_connect("/api/v1/workers/connect", headers=headers) as socket:
+        workspace_id = _hello(socket)
+        main_provider = client.post(
+            "/api/v1/providers",
+            json={
+                "device_id": paired["device_id"],
+                "name": "Main provider",
+                "protocol": "openai_compatible",
+                "base_url": "https://main.example/v1",
+                "model": "fake-local-model",
+            },
+        ).json()
+        review_provider = client.post(
+            "/api/v1/providers",
+            json={
+                "device_id": paired["device_id"],
+                "name": "Review provider",
+                "protocol": "openai_compatible",
+                "base_url": "https://review.example/v1",
+                "model": "review-model",
+            },
+        ).json()
+        # 两个 provider 都无 default 标记时，不带 provider_id 会因「多个 provider」
+        # 被拒；这里显式传 provider_id + review_provider_id 走 session 级。
+        session = client.post(
+            "/api/v1/sessions", json={"workspace_id": workspace_id}
+        ).json()
+        task = client.post(
+            "/api/v1/tasks",
+            json={
+                "session_id": session["session_id"],
+                "input": "hello",
+                "provider_id": main_provider["provider_id"],
+                "review_provider_id": review_provider["provider_id"],
+                "review_model_id": "review-special-model",
+            },
+        )
+        assert task.status_code == 202
+        start = socket.receive_json()
+        assert start["type"] == "task.start"
+        settings = start["task"]["settings"]
+        assert settings["provider_id"] == main_provider["provider_id"]
+        assert settings["review_provider_id"] == review_provider["provider_id"]
+        assert settings["review_model_id"] == "review-special-model"
+
+
 def test_local_task_rejects_multiple_device_providers_without_default(client):
     paired = _pair(client)
     headers = {"Authorization": f"Bearer {paired['device_token']}"}

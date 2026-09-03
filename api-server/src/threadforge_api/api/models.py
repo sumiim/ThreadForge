@@ -78,6 +78,10 @@ class CreateTaskRequest(BaseModel):
     model_id: str | None = Field(default=None, min_length=1, max_length=200)
     reasoning_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] = "none"
     permission_mode: Literal["plan", "acceptEdits", "default", "bypass"] = "default"
+    # §review 双 provider（2026-09-03）：会话级主循环 provider + 独立 review provider/model。
+    provider_id: str | None = Field(default=None, min_length=1, max_length=200)
+    review_provider_id: str | None = Field(default=None, min_length=1, max_length=200)
+    review_model_id: str | None = Field(default=None, min_length=1, max_length=200)
 
     @field_validator("input")
     @classmethod

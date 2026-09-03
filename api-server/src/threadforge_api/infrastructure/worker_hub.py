@@ -898,6 +898,9 @@ class WorkerHub:
                             "model_id": task.model_id,
                             "reasoning_effort": task.reasoning_effort,
                             "provider_id": task.provider_id,
+                            # §review 双 provider（2026-09-03）：独立 review provider/model。
+                            "review_provider_id": task.review_provider_id,
+                            "review_model_id": task.review_model_id,
                             "sandbox_enabled": bool(
                                 getattr(self._settings, "sandbox_enabled", False)
                             ),

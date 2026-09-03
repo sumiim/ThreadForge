@@ -38,6 +38,9 @@ class Task:
     model_id: str = ""
     reasoning_effort: str = "none"
     provider_id: str = ""
+    # §review 双 provider（2026-09-03）：会话级独立 review provider/model（可选）。
+    review_provider_id: str = ""
+    review_model_id: str = ""
     run_index: list[dict] = field(default_factory=list)
     final_answer: str | None = None
     stop_reason: str | None = None

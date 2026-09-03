@@ -750,6 +750,60 @@ class ModelProviderFactory:
         )
         return provider_model_client, router_provider_client
 
+    def resolve_review(self) -> dict | None:
+        """解析 review 独立 provider（settings.review_provider_id）；未配置 → None。
+
+        §review 双 provider（2026-09-03）：review 可复用本机某个独立 Provider,
+        与主循环分离（不同模型/provider 真·互驳）。未配置 review_provider_id
+        时返回 None（review 回退主循环 client）。
+        """
+        review_provider_id = str(self.settings.get("review_provider_id", "")).strip()
+        if not review_provider_id:
+            return None
+        provider_cfg = ConfigStore(self.data_dir).load_provider(review_provider_id)
+        if provider_cfg is None:
+            raise ProviderNotConfiguredError(review_provider_id)
+        # review_model_id 覆盖 provider 的默认模型（用户可在 UI 给 review 单独挑模型）。
+        model = (
+            str(self.settings.get("review_model_id", "")).strip()
+            or str(provider_cfg["model"]).strip()
+        )
+        return {
+            "provider_id": review_provider_id,
+            "model": model,
+            "model_provider": _provider_protocol_to_model_provider(provider_cfg["protocol"]),
+            "base_url": str(provider_cfg["base_url"]).strip(),
+            "api_key": str(provider_cfg["api_key"]).strip(),
+            "supported_reasoning_efforts": tuple(
+                str(item) for item in (provider_cfg.get("reasoning_efforts") or ["none"])
+            ),
+        }
+
+    def create_review_client(self, *, temperature, timeout, max_attempts):
+        """构建 review 独立 client；未配置 review provider 或测试注入 → None。
+
+        测试注入（model_client_factory）不读 Provider/CfgStore（无真实 provider），
+        返回 None 让 review 回退主循环——已有测试不消费 review 的额外顺序输出。
+        """
+        if self.model_client_factory is not None:
+            return None
+        profile = self.resolve_review()
+        if profile is None:
+            return None
+        return _create_model_client(
+            model_provider=profile["model_provider"],
+            model=profile["model"],
+            base_url=profile["base_url"],
+            api_key=profile["api_key"],
+            temperature=temperature,
+            timeout=timeout,
+            max_attempts=max_attempts,
+            # review 走低推理档（方向/验证监督，不需要 planning 高推理档）。
+            reasoning_effort="none",
+            supported_reasoning_efforts=profile["supported_reasoning_efforts"],
+            instructions=THREADFORGE_MODEL_INSTRUCTIONS,
+        )
+
 
 def run_task(
     *,
@@ -824,8 +878,21 @@ def run_task(
         if router_provider_client is provider_model_client
         else CancellableModelClient(router_provider_client, active.token)
     )
+    # §review 双 provider（2026-09-03）：可选独立 review client（settings.review_provider_id
+    # 指向本机另一个 Provider）。未配置 → None，review 回退主循环 model_client。
+    review_provider_client = provider_factory.create_review_client(
+        temperature=0.2,
+        timeout=model_timeout,
+        max_attempts=model_max_attempts,
+    )
+    review_model_client = (
+        None
+        if review_provider_client is None
+        else CancellableModelClient(review_provider_client, active.token)
+    )
     pico = Pico(
         model_client=model_client,
+        review_model_client=review_model_client,
         workspace=WorkspaceContext.build(workspace_path),
         session_store=session_store,
         run_store=run_store,
