@@ -693,6 +693,29 @@ def test_review_can_list_files_for_direction_check(tmp_path):
     assert state.review_audit == []
 
 
+def test_tool_counts_as_write_bash_by_workspace_change():
+    """§review bash 分层（2026-09-03）：run_shell 按是否真的改了文件算写。
+
+    write_file/patch_file 恒算写；run_shell 只有 workspace_changed=True（快照 diff
+    判定实际改动工作区文件）才算写——只读/验证命令（rg/git diff/pytest 等不改文件）
+    不算写，避免仅读任务被 review 误判成写任务而要求改代码。
+    """
+    from pico.agent_loop import _tool_counts_as_write
+
+    class _Result:
+        def __init__(self, workspace_changed):
+            self.metadata = {"workspace_changed": workspace_changed}
+
+    # 写工具恒算写（即使本轮 workspace_changed=False）
+    assert _tool_counts_as_write("write_file", _Result(False)) is True
+    assert _tool_counts_as_write("patch_file", _Result(False)) is True
+    # run_shell 按 workspace_changed
+    assert _tool_counts_as_write("run_shell", _Result(False)) is False  # 只读/验证命令
+    assert _tool_counts_as_write("run_shell", _Result(True)) is True    # 实际改了文件
+    # 其他工具不算写
+    assert _tool_counts_as_write("read_file", _Result(True)) is False
+
+
 def test_result_fingerprint_distinguishes_changed_file_reload(tmp_path):
     """§7.8.9 修正（2026-08-18）：结果参与重复判定——同动作但结果变了不算重复。
 
