@@ -55,6 +55,7 @@ def create_task(
         provider_id=body.provider_id,
         review_provider_id=body.review_provider_id,
         review_model_id=body.review_model_id,
+        review_reasoning_effort=body.review_reasoning_effort,
     )
     return TaskQueuedResponse(
         task_id=task.task_id,

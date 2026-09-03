@@ -283,7 +283,7 @@ export interface UseSessions {
   retryHistory: () => void
   select: (id: string) => void
   createSession: (workspaceId: string, deviceId?: string) => void
-  sendMessage: (content: string, modelId?: string, reasoningEffort?: ReasoningEffort, permissionMode?: PermissionMode, providerId?: string, reviewProviderId?: string, reviewModelId?: string) => void
+  sendMessage: (content: string, modelId?: string, reasoningEffort?: ReasoningEffort, permissionMode?: PermissionMode, providerId?: string, reviewProviderId?: string, reviewModelId?: string, reviewReasoningEffort?: ReasoningEffort) => void
   renameDevice: (deviceId: string, displayName: string) => Promise<void>
   renameWorkspace: (deviceId: string, workspaceId: string, displayName: string) => Promise<void>
   renameSession: (sessionId: string, displayName: string) => Promise<void>
@@ -1571,7 +1571,7 @@ export function useSessions(): UseSessions {
   )
 
   const sendMessage = useCallback(
-    (content: string, modelId?: string, reasoningEffort: ReasoningEffort = 'none', permissionMode: PermissionMode = 'default', providerId?: string, reviewProviderId?: string, reviewModelId?: string) => {
+    (content: string, modelId?: string, reasoningEffort: ReasoningEffort = 'none', permissionMode: PermissionMode = 'default', providerId?: string, reviewProviderId?: string, reviewModelId?: string, reviewReasoningEffort: ReasoningEffort = 'none') => {
       const sessionId = activeId
       if (!sessionId || !content.trim()) return
       const activeSession = sessionsRef.current.find((session) => session.id === sessionId)
@@ -1635,6 +1635,7 @@ export function useSessions(): UseSessions {
             providerId,
             reviewProviderId,
             reviewModelId,
+            reviewReasoningEffort,
           )
           queuedTaskId = queued.task_id
           activeRunByTaskRef.current.set(queued.task_id, {

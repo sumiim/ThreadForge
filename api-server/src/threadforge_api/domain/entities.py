@@ -41,6 +41,7 @@ class Task:
     # §review 双 provider（2026-09-03）：会话级独立 review provider/model（可选）。
     review_provider_id: str = ""
     review_model_id: str = ""
+    review_reasoning_effort: str = "none"
     run_index: list[dict] = field(default_factory=list)
     final_answer: str | None = None
     stop_reason: str | None = None

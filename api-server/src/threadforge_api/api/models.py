@@ -82,6 +82,7 @@ class CreateTaskRequest(BaseModel):
     provider_id: str | None = Field(default=None, min_length=1, max_length=200)
     review_provider_id: str | None = Field(default=None, min_length=1, max_length=200)
     review_model_id: str | None = Field(default=None, min_length=1, max_length=200)
+    review_reasoning_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] = "none"
 
     @field_validator("input")
     @classmethod

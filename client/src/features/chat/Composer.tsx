@@ -14,7 +14,7 @@ interface ComposerProps {
   disabled?: boolean
   /** 当前会话绑定的本地 Worker；用于把供应商列表和“设为默认”限定到这台设备。 */
   deviceId?: string
-  onSend: (content: string, modelId?: string, reasoningEffort?: ReasoningEffort, permissionMode?: PermissionMode, providerId?: string, reviewProviderId?: string, reviewModelId?: string) => void
+  onSend: (content: string, modelId?: string, reasoningEffort?: ReasoningEffort, permissionMode?: PermissionMode, providerId?: string, reviewProviderId?: string, reviewModelId?: string, reviewReasoningEffort?: ReasoningEffort) => void
   onStop: () => void
 }
 
@@ -142,6 +142,13 @@ export default function Composer({ model, modelOptions, running, stopping = fals
   const activeProviderId = selectedProviderId ?? defaultProvider?.provider_id
   const [reviewProviderId, setReviewProviderId] = useState<string | null>(null)
   const [reviewModelId, setReviewModelId] = useState<string | null>(null)
+  // §review 推理等级（2026-09-03）：review 也可单独选推理档（默认 none）。
+  const [reviewReasoningEffort, setReviewReasoningEffort] = useState<ReasoningEffort>('none')
+  const reviewProvider = providers.find((item) => item.provider_id === reviewProviderId)
+  const reviewEfforts: ReasoningEffort[] = (reviewProvider?.reasoning_efforts?.length
+    ? reviewProvider.reasoning_efforts
+    : (['none'] as ReasoningEffort[]))
+  const activeReviewEffort = reviewEfforts.includes(reviewReasoningEffort) ? reviewReasoningEffort : ('none' as ReasoningEffort)
   // 模型列表跟随会话选中 provider（activeProviderId），而非设备 default——
   // 选了非 default provider 的模型也能正确展示/校验。
   const activeProviderForModels = providers.find((item) => item.provider_id === activeProviderId)
@@ -188,7 +195,7 @@ export default function Composer({ model, modelOptions, running, stopping = fals
 
   const handleSend = () => {
     if (!value.trim() || disabled) return
-    onSend(value, activeModel?.id ?? model, activeReasoningEffort, permissionMode, activeProviderId, reviewProviderId ?? undefined, reviewModelId ?? undefined)
+    onSend(value, activeModel?.id ?? model, activeReasoningEffort, permissionMode, activeProviderId, reviewProviderId ?? undefined, reviewModelId ?? undefined, activeReviewEffort)
     setValue('')
   }
 
@@ -463,6 +470,26 @@ export default function Composer({ model, modelOptions, running, stopping = fals
                           })}
                         </div>
                       ))}
+                      {reviewProviderId ? (
+                        <div className="mt-1 border-t border-stone-100">
+                          <div className="px-3 pt-2 pb-1 text-[11px] font-medium text-stone-400">推理等级</div>
+                          {reviewEfforts.map((effort) => (
+                            <button
+                              key={`review-effort:${effort}`}
+                              type="button"
+                              onClick={() => {
+                                setReviewReasoningEffort(effort)
+                                setReviewOpen(false)
+                              }}
+                              disabled={running || disabled}
+                              className="flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-sm text-stone-700 hover:bg-stone-100 disabled:opacity-50"
+                            >
+                              <span className="min-w-0 flex-1 truncate">{effortLabels[effort]}</span>
+                              {effort === activeReviewEffort ? <CheckOutlined className="shrink-0 text-blue-600" /> : null}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 }
@@ -478,6 +505,7 @@ export default function Composer({ model, modelOptions, running, stopping = fals
                 >
                   <span className="shrink-0 text-stone-400">review</span>
                   <span className="max-w-32 min-w-0 truncate font-medium">{reviewModelId ?? '跟随主循环'}</span>
+                  <span className="shrink-0 text-stone-400">{effortLabels[activeReviewEffort]}</span>
                   <DownOutlined className={`shrink-0 text-[10px] text-stone-400 transition-transform ${reviewOpen ? 'rotate-180' : ''}`} />
                 </button>
               </Popover>

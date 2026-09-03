@@ -383,6 +383,7 @@ def test_local_task_uses_session_main_and_review_provider(client):
                 "provider_id": main_provider["provider_id"],
                 "review_provider_id": review_provider["provider_id"],
                 "review_model_id": "review-special-model",
+                "review_reasoning_effort": "high",
             },
         )
         assert task.status_code == 202
@@ -392,6 +393,7 @@ def test_local_task_uses_session_main_and_review_provider(client):
         assert settings["provider_id"] == main_provider["provider_id"]
         assert settings["review_provider_id"] == review_provider["provider_id"]
         assert settings["review_model_id"] == "review-special-model"
+        assert settings["review_reasoning_effort"] == "high"
 
 
 def test_local_task_rejects_multiple_device_providers_without_default(client):
