@@ -148,7 +148,7 @@ export default function Composer({ model, modelOptions, running, stopping = fals
   const effectiveModelOptions: ModelCapability[] = useMemo(() => {
     const modelIds = providerModelIds(activeProviderForModels)
     if (!modelIds.length) return modelOptions
-    const efforts: ReasoningEffort[] = activeProviderForModels.reasoning_efforts?.length
+    const efforts: ReasoningEffort[] = activeProviderForModels?.reasoning_efforts?.length
       ? activeProviderForModels.reasoning_efforts
       : ['none']
     return modelIds.map((id) => ({ id, display_name: id, reasoning_efforts: efforts }))
