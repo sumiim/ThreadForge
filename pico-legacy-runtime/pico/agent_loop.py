@@ -186,6 +186,21 @@ def _interval_overlap_ratio(interval_a, interval_b):
     return overlap / len_current
 
 
+def _tool_counts_as_write(name, tool_result):
+    """§review bash 分层（2026-09-03）：一个动作是否算「写任务」。
+
+    write_file/patch_file 本来就是写工具 → 恒算写；run_shell 只有**实际改了工作区
+    文件**（tool_result.metadata.workspace_changed，快照 diff 判定）才算写——只读/
+    验证命令（rg / git diff / pytest / npm test 等，不改工作区文件）不算写，
+    避免「仅读/诊断」任务被 review 误判成写任务、进而逼着改代码。
+    """
+    if name in {"write_file", "patch_file"}:
+        return True
+    if name == "run_shell":
+        return bool(getattr(tool_result, "metadata", {}).get("workspace_changed"))
+    return False
+
+
 def _tool_fingerprint(name, args):
     """工具调用指纹：语义等价归一化（复用 runtime._normalize_tool_args 思路）。
 
@@ -1654,7 +1669,7 @@ class AgentLoop:
                 turn_tool_repeated = bool(repeated)
                 # §7.8.9 阶段 3：动作统计 + 周期 review 触发。
                 actions_since_review += 1
-                if name in {"write_file", "patch_file", "run_shell"}:
+                if _tool_counts_as_write(name, tool_result):
                     has_write_or_shell = True
                 if actions_since_review >= review_interval:
                     review_decision = self._maybe_run_review(
@@ -1872,8 +1887,10 @@ class AgentLoop:
                 # §7.8.9 阶段 3：动作统计 + 周期 review 触发（批内每个动作计一次）。
                 for item in tools:
                     actions_since_review += 1
-                    iname = str(item.get("name", ""))
-                    if iname in {"write_file", "patch_file", "run_shell"}:
+                # §review bash 分层：批内 run_shell 按是否真的改了文件判定写属性
+                # （从已执行结果取 workspace_changed，只读/验证命令不算写）。
+                for _name, _args, _tc, _ts, _tres in executed.values():
+                    if _tool_counts_as_write(_name, _tres):
                         has_write_or_shell = True
                 if actions_since_review >= review_interval:
                     review_decision = self._maybe_run_review(
