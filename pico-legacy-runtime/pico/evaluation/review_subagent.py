@@ -18,6 +18,9 @@ from ..workspace import clip
 
 REVIEW_POLL_ACTIONS = 6          # 每 N 个工具动作触发一次 review
 REVIEW_MAX_NEW_TOKENS = 512
+# §review 简单双向对抗（2026-09-03）：一轮 final 对抗的 review 次数上限。达到上限后
+# review 只建议、主循环终决——主循环重提 final 有权 override review 结束，不再被拦。
+REVIEW_BATTLE_MAX_ROUNDS = 2
 # §7.8.9 决策（2026-08-18）：review 工具化——review 内部可调 read/search/bash
 # 跑验证（如测试/编译），否则 finalize 前无法自证。review 的工具执行走轻量
 # 路径（不 hooks/record/commit/审批），结果只回 feed review 上下文，不污染

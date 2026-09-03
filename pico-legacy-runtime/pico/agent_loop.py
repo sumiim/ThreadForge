@@ -15,6 +15,7 @@ from .checkpoint import (
     CHECKPOINT_WORKSPACE_MISMATCH_STATUS,
 )
 from .evaluation.review_subagent import REVIEW_POLL_ACTIONS
+from .evaluation.review_subagent import REVIEW_BATTLE_MAX_ROUNDS
 from .execution_hooks import ProcessCleanupFailed, RunCancelled
 from .task_state import (
     PHASE_ACT_OR_ANSWER,
@@ -1225,6 +1226,10 @@ class AgentLoop:
         # 双向对抗：review 的同意决策暂存（awaiting 期间），主循环反驳时
         # 用于 main_loop_rebuttal 事件的「against_verdict/feedback」。
         pending_review_decision = None
+        # §review 简单双向对抗（2026-09-03）：一轮 final 对抗用到的最多 review 次数。
+        # 达到 REVIEW_BATTLE_MAX_ROUNDS（2）后达上限——review 只建议，主循环终决：
+        # 主循环重提 final 即有权 override（结束），不再被 review 拦。
+        review_battle_rounds = 0
         # §7.8.9 决策（2026-08-18）：checklist 打钩——cmd: 验收标准的结果缓存
         #（同一命令本 run 只跑一次,防每轮重跑测试烧时间）。
         cmd_cache = {}
@@ -1954,6 +1959,11 @@ class AgentLoop:
                 )
             )
             self._apply_review_completed_steps(task_state, review_decision)
+            # §review 简单双向对抗（2026-09-03）：记录本轮 final 对抗用到的 review 次数。
+            # 达到上限后 review 只建议、主循环终决。只读短路（read_only_no_result_review）
+            # 不算一次真实 review。
+            if review_decision.get("reason") != "read_only_no_result_review":
+                review_battle_rounds += 1
             if review_decision.get("verdict") == "redirect":
                 # §7.8.9 修正（2026-08-19）：**无写/shell 动作（只读/纯对话任务）直接
                 # 放行**（用户定）——读相关任务的空转由坏轮窗口 + 重叠读取拦截管,
@@ -2020,28 +2030,43 @@ class AgentLoop:
                 awaiting_review_confirmation = False
             else:
                 # 第一次 review 同意 → 不完成,等主循环确认。
-                awaiting_review_confirmation = True
-                pending_review_decision = dict(review_decision)
-                protocol_feedback = (
-                    "The review approves completion. Re-submit your final answer to "
-                    "confirm, or keep working if you still have work (your next action "
-                    "will be treated as a rebuttal and recorded)."
-                )
-                task_state.set_phase(
-                    PHASE_ACT_OR_ANSWER,
-                    next_step="Review approves completion; re-submit final to confirm or keep working",
-                )
-                agent.emit_trace(
-                    task_state,
-                    "review_awaiting_confirmation",
-                    {
-                        "verdict": str(review_decision.get("verdict", "")),
-                        "feedback": str(review_decision.get("feedback", ""))[:500],
-                        "reason": str(review_decision.get("reason", ""))[:200],
-                    },
-                )
-                agent.run_store.write_task_state(task_state)
-                continue
+                if review_battle_rounds >= REVIEW_BATTLE_MAX_ROUNDS:
+                    # §review 简单双向对抗（2026-09-03）：已达上限（2 轮）。review 只
+                    # 建议、主循环终决——主循环重提 final 即有权收尾，不再强制再确认。
+                    awaiting_review_confirmation = False
+                    pending_review_decision = None
+                    agent.emit_trace(
+                        task_state,
+                        "review_battle_cap_reached",
+                        {
+                            "rounds": review_battle_rounds,
+                            "verdict": str(review_decision.get("verdict", "")),
+                            "feedback": str(review_decision.get("feedback", ""))[:500],
+                        },
+                    )
+                else:
+                    awaiting_review_confirmation = True
+                    pending_review_decision = dict(review_decision)
+                    protocol_feedback = (
+                        "The review approves completion. Re-submit your final answer to "
+                        "confirm, or keep working if you still have work (your next action "
+                        "will be treated as a rebuttal and recorded)."
+                    )
+                    task_state.set_phase(
+                        PHASE_ACT_OR_ANSWER,
+                        next_step="Review approves completion; re-submit final to confirm or keep working",
+                    )
+                    agent.emit_trace(
+                        task_state,
+                        "review_awaiting_confirmation",
+                        {
+                            "verdict": str(review_decision.get("verdict", "")),
+                            "feedback": str(review_decision.get("feedback", ""))[:500],
+                            "reason": str(review_decision.get("reason", ""))[:200],
+                        },
+                    )
+                    agent.run_store.write_task_state(task_state)
+                    continue
             # final 通过双方确认：清零连续被拒计数。
             consecutive_final_rejected = 0
             turn_final_rejected = False
