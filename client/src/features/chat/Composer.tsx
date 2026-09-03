@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Button, Input, Modal, Popover, message } from 'antd'
+import { Button, Input, Modal, Popover } from 'antd'
 import { CheckOutlined, DownOutlined, RightOutlined, SendOutlined, StopOutlined } from '@ant-design/icons'
 
-import { activateProvider, listProviders } from '../../api/client'
+import { listProviders } from '../../api/client'
 import type { ModelCapability, PermissionMode, Provider, ReasoningEffort } from '../../api/types'
 import { providerModelIds } from './model-options'
 
@@ -14,7 +14,7 @@ interface ComposerProps {
   disabled?: boolean
   /** 当前会话绑定的本地 Worker；用于把供应商列表和“设为默认”限定到这台设备。 */
   deviceId?: string
-  onSend: (content: string, modelId?: string, reasoningEffort?: ReasoningEffort, permissionMode?: PermissionMode) => void
+  onSend: (content: string, modelId?: string, reasoningEffort?: ReasoningEffort, permissionMode?: PermissionMode, providerId?: string, reviewProviderId?: string, reviewModelId?: string) => void
   onStop: () => void
 }
 
@@ -136,14 +136,23 @@ export default function Composer({ model, modelOptions, running, stopping = fals
   const [modelId, setModelId] = useState(modelOptions[0]?.id ?? model)
   // 默认 provider 已「测试连接」发现模型时，用其模型列表 + 推理档位替代 env 单模型。
   const defaultProvider = providers.find((item) => item.is_default) ?? providers[0]
+  // §review 双 provider（2026-09-03）：会话级主循环 provider + 独立 review provider/model。
+  // 不再 activateProvider（设备级 active provider），改为本会话记住选择并在发送时下发。
+  const [selectedProviderId, setSelectedProviderId] = useState<string | undefined>(undefined)
+  const activeProviderId = selectedProviderId ?? defaultProvider?.provider_id
+  const [reviewProviderId, setReviewProviderId] = useState<string | null>(null)
+  const [reviewModelId, setReviewModelId] = useState<string | null>(null)
+  // 模型列表跟随会话选中 provider（activeProviderId），而非设备 default——
+  // 选了非 default provider 的模型也能正确展示/校验。
+  const activeProviderForModels = providers.find((item) => item.provider_id === activeProviderId)
   const effectiveModelOptions: ModelCapability[] = useMemo(() => {
-    const modelIds = providerModelIds(defaultProvider)
+    const modelIds = providerModelIds(activeProviderForModels)
     if (!modelIds.length) return modelOptions
-    const efforts: ReasoningEffort[] = defaultProvider.reasoning_efforts?.length
-      ? defaultProvider.reasoning_efforts
+    const efforts: ReasoningEffort[] = activeProviderForModels.reasoning_efforts?.length
+      ? activeProviderForModels.reasoning_efforts
       : ['none']
     return modelIds.map((id) => ({ id, display_name: id, reasoning_efforts: efforts }))
-  }, [defaultProvider, modelOptions])
+  }, [activeProviderForModels, modelOptions])
   const activeModel = useMemo(
     () => effectiveModelOptions.find((item) => item.id === modelId) ?? effectiveModelOptions[0],
     [modelId, effectiveModelOptions],
@@ -158,6 +167,10 @@ export default function Composer({ model, modelOptions, running, stopping = fals
   // 下拉面板开关 + 当前层级。
   const [panelOpen, setPanelOpen] = useState(false)
   const [panelView, setPanelView] = useState<PanelView>('root')
+  // §审批独立（2026-09-03）：审批模式从模型下拉拆出，成为独立控件。
+  const [approvalOpen, setApprovalOpen] = useState(false)
+  // §review 双 provider（2026-09-03）：review 模型下拉开关。
+  const [reviewOpen, setReviewOpen] = useState(false)
 
   // 供应商分组模型列表：每个有模型的供应商一组，用于「模型」展开页分组展示。
   const modelGroups: ModelGroup[] = useMemo(() => {
@@ -175,26 +188,18 @@ export default function Composer({ model, modelOptions, running, stopping = fals
 
   const handleSend = () => {
     if (!value.trim() || disabled) return
-    onSend(value, activeModel?.id ?? model, activeReasoningEffort, permissionMode)
+    onSend(value, activeModel?.id ?? model, activeReasoningEffort, permissionMode, activeProviderId, reviewProviderId ?? undefined, reviewModelId ?? undefined)
     setValue('')
   }
 
   const handleSelectModel = async (option: ModelOption) => {
-    const nextProviderId = option.providerId
-    try {
-      if (nextProviderId && nextProviderId !== defaultProvider?.provider_id) {
-        await activateProvider(nextProviderId, deviceId)
-        const { providers: list } = await listProviders()
-        setProviders(deviceId ? list.filter((item) => item.device_id === deviceId) : list)
-      }
-      setModelId(option.id)
-      const nextEfforts = option.reasoning_efforts?.length ? option.reasoning_efforts : (['none'] as ReasoningEffort[])
-      setReasoningEffort(readPersistedEffort(option.id, nextEfforts))
-      setPanelView('root')
-      setPanelOpen(false)
-    } catch {
-      message.warning('切换供应商失败')
-    }
+    // §review 双 provider（2026-09-03）：session 级——只记住选择，不再激活设备级 provider。
+    setSelectedProviderId(option.providerId)
+    setModelId(option.id)
+    const nextEfforts = option.reasoning_efforts?.length ? option.reasoning_efforts : (['none'] as ReasoningEffort[])
+    setReasoningEffort(readPersistedEffort(option.id, nextEfforts))
+    setPanelView('root')
+    setPanelOpen(false)
   }
 
   const handleSelectEffort = (effort: ReasoningEffort) => {
@@ -229,7 +234,6 @@ export default function Composer({ model, modelOptions, running, stopping = fals
   const rootRows = [
     { view: 'model' as PanelView, label: '模型', value: activeModel?.display_name ?? model },
     { view: 'effort' as PanelView, label: '推理等级', value: effortLabels[activeReasoningEffort] },
-    { view: 'approval' as PanelView, label: '审批模式', value: permissionModeLabels[permissionMode] },
   ]
 
   const panelContent = () => {
@@ -251,7 +255,6 @@ export default function Composer({ model, modelOptions, running, stopping = fals
                     // 不同供应商（如 ac gpt特惠 / 西牧 gpt）下可能有同名模型
                     // （如 gpt-5.6-sol），只比 id 会导致两个组都打勾。
                     // env 兜底组没有 providerId，此时按模型 id 匹配即可。
-                    const activeProviderId = defaultProvider?.provider_id
                     const selected = opt.providerId
                       ? opt.providerId === activeProviderId && opt.id === (activeModel?.id ?? model)
                       : opt.id === (activeModel?.id ?? model)
@@ -299,28 +302,11 @@ export default function Composer({ model, modelOptions, running, stopping = fals
     }
 
     if (panelView === 'approval') {
-      return (
-        <div className="flex w-72 flex-col">
-          <PanelHeader label="审批模式" onBack={() => setPanelView('root')} />
-          <div className="p-1">
-            {(Object.keys(permissionModeLabels) as PermissionMode[]).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                onClick={() => handleSelectPermission(mode)}
-                disabled={running || disabled}
-                className="flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-sm text-stone-700 hover:bg-stone-100 disabled:opacity-50"
-              >
-                <span className="min-w-0 flex-1 truncate">{permissionModeLabels[mode]}</span>
-                {mode === permissionMode ? <CheckOutlined className="shrink-0 text-blue-600" /> : null}
-              </button>
-            ))}
-          </div>
-        </div>
-      )
+      // 审批模式已拆成独立控件（approvalOpen Popover），此分支不再触发，保留防御。
+      return null
     }
 
-    // root：模型 / 推理等级 / 审批模式 三个可展开行。
+    // root：模型 / 推理等级 两个可展开行。
     return (
       <div className="flex w-72 flex-col">
         {rootRows.map((row, idx) => (
@@ -371,6 +357,45 @@ export default function Composer({ model, modelOptions, running, stopping = fals
               <Popover
                 trigger="click"
                 placement="topLeft"
+                open={approvalOpen}
+                onOpenChange={setApprovalOpen}
+                content={
+                  <div className="flex w-56 flex-col p-1">
+                    <div className="border-b border-stone-100 px-3 py-2 text-xs font-medium text-stone-500">审批模式</div>
+                    {(Object.keys(permissionModeLabels) as PermissionMode[]).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => {
+                          handleSelectPermission(mode)
+                          setApprovalOpen(false)
+                        }}
+                        disabled={running || disabled}
+                        className="flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-sm text-stone-700 hover:bg-stone-100 disabled:opacity-50"
+                      >
+                        <span className="min-w-0 flex-1 truncate">{permissionModeLabels[mode]}</span>
+                        {mode === permissionMode ? <CheckOutlined className="shrink-0 text-blue-600" /> : null}
+                      </button>
+                    ))}
+                  </div>
+                }
+                arrow={false}
+                styles={{ container: { padding: 0 } }}
+              >
+                <button
+                  type="button"
+                  disabled={running || disabled}
+                  aria-label="审批模式"
+                  aria-expanded={approvalOpen}
+                  className="flex h-8 items-center gap-1.5 rounded-full border border-stone-200 bg-white px-3 text-xs text-stone-700 shadow-sm transition-colors hover:border-stone-300 hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <span className="shrink-0 text-stone-400">审批</span>
+                  <span className="max-w-32 min-w-0 truncate font-medium">{permissionModeLabels[permissionMode]}</span>
+                </button>
+              </Popover>
+              <Popover
+                trigger="click"
+                placement="topLeft"
                 open={panelOpen}
                 onOpenChange={(open) => {
                   setPanelOpen(open)
@@ -390,6 +415,70 @@ export default function Composer({ model, modelOptions, running, stopping = fals
                   <span className="max-w-44 min-w-0 truncate font-medium">{activeModel?.display_name ?? model}</span>
                   <span className="shrink-0 text-stone-400">{effortLabels[activeReasoningEffort]}</span>
                   <DownOutlined className={`shrink-0 text-[10px] text-stone-400 transition-transform ${panelOpen ? 'rotate-180' : ''}`} />
+                </button>
+              </Popover>
+              <Popover
+                trigger="click"
+                placement="topLeft"
+                open={reviewOpen}
+                onOpenChange={setReviewOpen}
+                content={
+                  <div className="flex max-h-80 w-72 flex-col overflow-hidden">
+                    <div className="border-b border-stone-100 px-3 py-2 text-xs font-medium text-stone-500">review模型</div>
+                    <div className="flex-1 overflow-y-auto p-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setReviewProviderId(null)
+                          setReviewModelId(null)
+                          setReviewOpen(false)
+                        }}
+                        disabled={running || disabled}
+                        className="flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-sm text-stone-700 hover:bg-stone-100 disabled:opacity-50"
+                      >
+                        <span className="min-w-0 flex-1 truncate">跟随主循环</span>
+                        {!reviewProviderId ? <CheckOutlined className="shrink-0 text-blue-600" /> : null}
+                      </button>
+                      {modelGroups.map((group) => (
+                        <div key={group.key}>
+                          {group.label ? <div className="px-3 pb-1 pt-2 text-[11px] font-medium text-stone-400">{group.label}</div> : null}
+                          {group.options.map((opt) => {
+                            const selected = reviewProviderId === opt.providerId && reviewModelId === opt.id
+                            return (
+                              <button
+                                key={`review:${opt.providerId ?? 'env'}:${opt.id}`}
+                                type="button"
+                                onClick={() => {
+                                  setReviewProviderId(opt.providerId ?? null)
+                                  setReviewModelId(opt.id)
+                                  setReviewOpen(false)
+                                }}
+                                disabled={running || disabled}
+                                className="flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-sm text-stone-700 hover:bg-stone-100 disabled:opacity-50"
+                              >
+                                <span className="min-w-0 flex-1 truncate">{opt.display_name}</span>
+                                {selected ? <CheckOutlined className="shrink-0 text-blue-600" /> : null}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                }
+                arrow={false}
+                styles={{ container: { padding: 0 } }}
+              >
+                <button
+                  type="button"
+                  disabled={running || disabled}
+                  aria-label="review模型"
+                  aria-expanded={reviewOpen}
+                  className="flex h-8 items-center gap-1.5 rounded-full border border-stone-200 bg-white px-3 text-xs text-stone-700 shadow-sm transition-colors hover:border-stone-300 hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <span className="shrink-0 text-stone-400">review</span>
+                  <span className="max-w-32 min-w-0 truncate font-medium">{reviewModelId ?? '跟随主循环'}</span>
+                  <DownOutlined className={`shrink-0 text-[10px] text-stone-400 transition-transform ${reviewOpen ? 'rotate-180' : ''}`} />
                 </button>
               </Popover>
               {running ? (

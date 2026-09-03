@@ -71,6 +71,10 @@ class TaskService:
         model_id: str | None = None,
         reasoning_effort: str = "none",
         permission_mode: str = "default",
+        # §review 双 provider（2026-09-03）：会话级主循环 provider + 独立 review provider/model。
+        provider_id: str | None = None,
+        review_provider_id: str | None = None,
+        review_model_id: str | None = None,
     ) -> Task:
         owner_id = canonical_owner_id(owner_id)
         validate_session_id(session_id)
@@ -85,20 +89,27 @@ class TaskService:
         selected_model = str(model_id or "").strip()
         selected_effort = str(reasoning_effort or "none").strip().lower()
         active_provider_id = ""
+        requested_provider = str(provider_id or "").strip()
         if execution_environment == "local_worker" and self._provider_service is not None:
-            # Composer 展示逻辑在没有 default 标记时会使用设备上的第一个
-            # Provider。控制面也必须采用同一规则，否则新建的唯一 Provider
-            # 会以空 provider_id 派发，Worker 随后只能安全地拒绝 .env 回退。
             device_providers = self._provider_service.list_providers(owner_id, device_id)
-            active_provider = self._provider_service.get_active_provider(owner_id, device_id)
-            if active_provider is None:
-                if len(device_providers) == 1:
-                    active_provider = device_providers[0]
-                elif len(device_providers) > 1:
-                    raise ProviderNotConfiguredError(
-                        "multiple Providers are configured for this Worker; select a default Provider",
-                        {"device_id": device_id},
-                    )
+            provider_ids = {str(item.get("provider_id", "")) for item in device_providers}
+            # §review 双 provider（2026-09-03）：客户端显式传 provider_id 时视为会话级
+            # provider 优先使用；否则回退设备 active provider（与 Composer 展示逻辑一致，
+            # 保证新建的唯一 Provider 不会以空 provider_id 派发）。
+            if requested_provider:
+                if requested_provider not in provider_ids:
+                    raise ProviderNotConfiguredError(requested_provider, {"device_id": device_id})
+                active_provider = self._provider_service.get_provider(requested_provider, owner_id)
+            else:
+                active_provider = self._provider_service.get_active_provider(owner_id, device_id)
+                if active_provider is None:
+                    if len(device_providers) == 1:
+                        active_provider = device_providers[0]
+                    elif len(device_providers) > 1:
+                        raise ProviderNotConfiguredError(
+                            "multiple Providers are configured for this Worker; select a default Provider",
+                            {"device_id": device_id},
+                        )
             if active_provider is not None:
                 active_provider_id = str(active_provider.get("provider_id", ""))
                 selected_model = selected_model or str(active_provider.get("model", ""))
@@ -153,6 +164,8 @@ class TaskService:
             model_id=selected_model,
             reasoning_effort=selected_effort,
             provider_id=active_provider_id,
+            review_provider_id=str(review_provider_id or "").strip(),
+            review_model_id=str(review_model_id or "").strip(),
         )
         if execution_environment == "local_worker":
             # The plaintext prompt is dispatched from memory. Persist only

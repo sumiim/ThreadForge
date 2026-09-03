@@ -466,6 +466,43 @@ def test_provider_factory_create_clients_uses_injected_factory(tmp_path):
     assert captured == [1]  # factory 只调用一次
 
 
+def test_provider_factory_review_client_only_when_configured(tmp_path):
+    """§review 双 provider（2026-09-03）：未配 review_provider_id → None（回退主循环）；
+    配置了且本机存在该 provider → 构建独立 review client（review_model_id 覆盖默认模型）。
+    """
+    # 未配置 review_provider_id → review client None。
+    factory = ModelProviderFactory(
+        data_dir=tmp_path / "state",
+        settings={},
+        model_client_factory=None,
+    )
+    assert factory.create_review_client(temperature=0.2, timeout=30, max_attempts=3) is None
+    assert factory.resolve_review() is None
+
+    # 配置 review_provider_id + 本机存在该 provider → 独立 review client。
+    store = ConfigStore(tmp_path / "state")
+    store.save_provider(
+        "prv_review",
+        base_url="https://review.example/v1",
+        api_key="test-key",
+        model="review-model",
+        protocol="openai_compatible",
+    )
+    factory2 = ModelProviderFactory(
+        data_dir=tmp_path / "state",
+        settings={"review_provider_id": "prv_review", "review_model_id": "special-review-model"},
+        model_client_factory=None,
+    )
+    profile = factory2.resolve_review()
+    assert profile is not None
+    assert profile["provider_id"] == "prv_review"
+    # review_model_id 覆盖 provider 默认模型
+    assert profile["model"] == "special-review-model"
+    rev_client = factory2.create_review_client(temperature=0.2, timeout=30, max_attempts=3)
+    assert rev_client is not None
+    assert getattr(rev_client, "model", None) == "special-review-model"
+
+
 def test_service_lock_prevents_duplicate_worker_processes(tmp_path):
     outer = ServiceLock(tmp_path)
     inner = ServiceLock(tmp_path)

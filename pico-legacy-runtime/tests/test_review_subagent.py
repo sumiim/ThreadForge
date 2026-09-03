@@ -347,3 +347,49 @@ def test_agent_loop_review_battle_caps_at_two_rounds(tmp_path):
     state = agent.current_task_state
     assert state.status == "completed"
     assert [a["verdict"] for a in state.review_audit] == ["finalize", "finalize"]
+
+
+def test_review_uses_independent_review_model_client(tmp_path):
+    """§review 双 provider（2026-09-03）：review 用独立的 review_model_client，
+    不复用主循环 model_client。
+
+    主循环 client A（写 + final）、review client B（验证 + 判决）各给 3 个顺序
+    输出。若 review 误用主循环 client，会把 A 的 write/final 当判决、B 的输出
+    没人消费 → 流不对。断言双方输出都被消费，证明各走各的 client。
+    """
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    ws = WorkspaceContext.build(tmp_path)
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    main_client = FakeModelClient(
+        [
+            '<tool>{"name":"write_file","args":{"path":"a.txt","content":"hi\\n"}}</tool>',
+            "<final>done</final>",
+            "<final>done</final>",
+        ]
+    )
+    review_client = FakeModelClient(
+        [
+            '<tool>{"name":"run_shell","args":{"command":"echo ok"}}</tool>',  # review#1 内部验证
+            '{"verdict":"finalize","feedback":"verified by shell exit 0","reason":"done"}',  # review#1
+            '{"verdict":"finalize","feedback":"confirmed; verified by shell exit 0","reason":"done"}',  # review#2
+        ]
+    )
+    agent = Pico(
+        model_client=main_client,
+        review_model_client=review_client,
+        workspace=ws,
+        session_store=store,
+        approval_policy="auto",
+        feature_flags={"review_subagent": True},
+    )
+
+    answer = agent.ask("modify a.txt")
+
+    assert answer == "done"
+    state = agent.current_task_state
+    assert state.status == "completed"
+    assert [a["verdict"] for a in state.review_audit] == ["finalize", "finalize"]
+    # review 用独立 client：B 的 3 个输出（验证 + 判决#1 + 判决#2）全部被消费
+    assert len(review_client.outputs) == 0
+    # 主循环用 A 的 3 个输出（写 + final#1 + final#2 确认）
+    assert len(main_client.outputs) == 0

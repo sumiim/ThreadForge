@@ -137,8 +137,13 @@ class Pico:
         # 默认 1 小时 / 50 万 token——正常任务永远碰不到，死循环烧到上限被切。
         max_elapsed_seconds=3600,
         max_total_tokens=500_000,
+        # §review 双 provider（2026-09-03）：可选独立的 review model client（用户经
+        # provider 卡片选一个独立 provider/model）。为 None 时 review 复用主循环
+        # agent.model_client（回退）。由 worker 侧构建后注入。
+        review_model_client=None,
     ):
         self.model_client = model_client
+        self.review_model_client = review_model_client
         self.workspace = workspace
         self.root = Path(workspace.repo_root)
         self.session_store = session_store
