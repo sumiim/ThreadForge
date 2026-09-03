@@ -457,7 +457,9 @@ class RemoteExecutionHooks:
             return
 
         if self._stream_mode == "plain_final":
-            self._emit_public_delta(str(text), completed=False)
+            # §前端去重：plain_final 是「模型直接输出的最终答案」，用 is_final=True
+            # 标记，前端把流式文本写入 content 而非 commentary（防重复显示两遍）。
+            self._emit_public_delta(str(text), completed=False, is_final=True)
             return
 
         self._stream_buffer += str(text)
@@ -504,7 +506,7 @@ class RemoteExecutionHooks:
             self._stream_buffer = self._stream_buffer[-keep:]
         self._emit_public_delta(visible, completed=completed)
 
-    def _emit_public_delta(self, text: str, *, completed: bool) -> None:
+    def _emit_public_delta(self, text: str, *, completed: bool, is_final: bool = False) -> None:
         self._redaction_buffer += str(text)
         if completed:
             visible = redact_text(self._redaction_buffer)
@@ -531,7 +533,10 @@ class RemoteExecutionHooks:
                 if self._answer_candidate_active:
                     self._answer_candidate_deltas.append(chunk)
                 else:
-                    self._send("assistant.delta", {"text": chunk})
+                    # §前端去重：is_final=True 表示这是「最终答案」的流式文本，
+                    # 前端应写入 content 而非 commentary（否则 message.completed 设
+                    # content 时会和 commentary 重复显示两遍）。
+                    self._send("assistant.delta", {"text": chunk, "final": is_final})
 
     def begin_answer_candidate(self, task_state) -> None:
         self._check()
