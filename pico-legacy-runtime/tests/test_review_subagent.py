@@ -319,3 +319,31 @@ def test_agent_loop_review_internal_shell_verifies_write(tmp_path):
     assert state.review_verified is True
     # review 的内部调查不污染主循环 evidence（主循环只有 write_file）
     assert {e.get("tool_name") for e in state.evidence} == {"write_file"}
+
+
+def test_agent_loop_review_battle_caps_at_two_rounds(tmp_path):
+    """§review 简单双向对抗（2026-09-03）：对抗最多 2 轮，主循环终决。
+
+    写任务：review#1 finalize → 主循环反驳（调工具,清 awaiting）→ 重提 final →
+    review#2 finalize → 已达上限（REVIEW_BATTLE_MAX_ROUNDS=2）→ 主循环有权收尾,
+    不再要求 review#3 再确认。若未 cap,FakeModelClient 会被 review#3 耗尽输出而失败。
+    """
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"write_file","args":{"path":"a.txt","content":"hi\\n"}}</tool>',
+            "<final>answer one</final>",
+            '<tool>{"name":"run_shell","args":{"command":"echo ok"}}</tool>',   # review#1 内部验证
+            '{"verdict": "finalize", "feedback": "verified by shell exit 0", "reason": "done"}',
+            '<tool>{"name":"read_file","args":{"path":"a.txt","start":1,"end":1}}</tool>',   # 主循环反驳（行动）
+            "<final>answer final</final>",
+            '{"verdict": "finalize", "feedback": "confirmed; write verified by shell exit 0", "reason": "done"}',
+        ],
+        feature_flags={"review_subagent": True},
+    )
+    answer = agent.ask("modify a.txt")
+
+    assert answer == "answer final"
+    state = agent.current_task_state
+    assert state.status == "completed"
+    assert [a["verdict"] for a in state.review_audit] == ["finalize", "finalize"]
