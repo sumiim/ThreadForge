@@ -768,15 +768,23 @@ class ModelProviderFactory:
             str(self.settings.get("review_model_id", "")).strip()
             or str(provider_cfg["model"]).strip()
         )
+        supported_efforts = tuple(
+            str(item) for item in (provider_cfg.get("reasoning_efforts") or ["none"])
+        )
+        # §review 推理等级（2026-09-03）：review 也可单独选推理档，默认 none（省 token）。
+        requested_effort = (
+            str(self.settings.get("review_reasoning_effort", "none")).strip().lower() or "none"
+        )
+        if requested_effort not in supported_efforts:
+            raise RuntimeError(f"requested review reasoning effort '{requested_effort}' is not supported by this provider")
         return {
             "provider_id": review_provider_id,
             "model": model,
             "model_provider": _provider_protocol_to_model_provider(provider_cfg["protocol"]),
             "base_url": str(provider_cfg["base_url"]).strip(),
             "api_key": str(provider_cfg["api_key"]).strip(),
-            "supported_reasoning_efforts": tuple(
-                str(item) for item in (provider_cfg.get("reasoning_efforts") or ["none"])
-            ),
+            "supported_reasoning_efforts": supported_efforts,
+            "reasoning_effort": requested_effort,
         }
 
     def create_review_client(self, *, temperature, timeout, max_attempts):
@@ -798,8 +806,8 @@ class ModelProviderFactory:
             temperature=temperature,
             timeout=timeout,
             max_attempts=max_attempts,
-            # review 走低推理档（方向/验证监督，不需要 planning 高推理档）。
-            reasoning_effort="none",
+            # §review 推理等级（2026-09-03）：用用户在 UI 选的 review 推理档（默认 none）。
+            reasoning_effort=profile["reasoning_effort"],
             supported_reasoning_efforts=profile["supported_reasoning_efforts"],
             instructions=THREADFORGE_MODEL_INSTRUCTIONS,
         )

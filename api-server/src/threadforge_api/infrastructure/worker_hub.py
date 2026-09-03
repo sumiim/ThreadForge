@@ -901,6 +901,7 @@ class WorkerHub:
                             # §review 双 provider（2026-09-03）：独立 review provider/model。
                             "review_provider_id": task.review_provider_id,
                             "review_model_id": task.review_model_id,
+                            "review_reasoning_effort": task.review_reasoning_effort,
                             "sandbox_enabled": bool(
                                 getattr(self._settings, "sandbox_enabled", False)
                             ),

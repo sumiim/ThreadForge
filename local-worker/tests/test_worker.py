@@ -487,6 +487,7 @@ def test_provider_factory_review_client_only_when_configured(tmp_path):
         api_key="test-key",
         model="review-model",
         protocol="openai_compatible",
+        reasoning_efforts=("none", "high"),
     )
     factory2 = ModelProviderFactory(
         data_dir=tmp_path / "state",
@@ -498,9 +499,37 @@ def test_provider_factory_review_client_only_when_configured(tmp_path):
     assert profile["provider_id"] == "prv_review"
     # review_model_id 覆盖 provider 默认模型
     assert profile["model"] == "special-review-model"
+    # review 推理等级默认 none
+    assert profile["reasoning_effort"] == "none"
     rev_client = factory2.create_review_client(temperature=0.2, timeout=30, max_attempts=3)
     assert rev_client is not None
     assert getattr(rev_client, "model", None) == "special-review-model"
+
+    # §review 推理等级：settings.review_reasoning_effort 生效（且在 supported 内）。
+    factory3 = ModelProviderFactory(
+        data_dir=tmp_path / "state",
+        settings={
+            "review_provider_id": "prv_review",
+            "review_model_id": "special-review-model",
+            "review_reasoning_effort": "high",
+        },
+        model_client_factory=None,
+    )
+    profile3 = factory3.resolve_review()
+    assert profile3["reasoning_effort"] == "high"
+    assert getattr(factory3.create_review_client(temperature=0.2, timeout=30, max_attempts=3), "reasoning_effort", None) == "high"
+
+    # 不在 supported 内 → 拒绝（保持与主循环一致的校验）。
+    factory_bad = ModelProviderFactory(
+        data_dir=tmp_path / "state",
+        settings={
+            "review_provider_id": "prv_review",
+            "review_reasoning_effort": "xhigh",
+        },
+        model_client_factory=None,
+    )
+    with pytest.raises(RuntimeError):
+        factory_bad.resolve_review()
 
 
 def test_service_lock_prevents_duplicate_worker_processes(tmp_path):

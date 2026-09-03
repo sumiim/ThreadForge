@@ -75,6 +75,7 @@ class TaskService:
         provider_id: str | None = None,
         review_provider_id: str | None = None,
         review_model_id: str | None = None,
+        review_reasoning_effort: str = "none",
     ) -> Task:
         owner_id = canonical_owner_id(owner_id)
         validate_session_id(session_id)
@@ -166,6 +167,7 @@ class TaskService:
             provider_id=active_provider_id,
             review_provider_id=str(review_provider_id or "").strip(),
             review_model_id=str(review_model_id or "").strip(),
+            review_reasoning_effort=str(review_reasoning_effort or "none").strip().lower() or "none",
         )
         if execution_environment == "local_worker":
             # The plaintext prompt is dispatched from memory. Persist only

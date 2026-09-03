@@ -475,6 +475,7 @@ export function createTask(
   providerId?: string,
   reviewProviderId?: string,
   reviewModelId?: string,
+  reviewReasoningEffort: string = 'none',
 ): Promise<TaskQueued> {
   return request('/api/v1/tasks', {
     method: 'POST',
@@ -488,6 +489,7 @@ export function createTask(
       provider_id: providerId ?? null,
       review_provider_id: reviewProviderId ?? null,
       review_model_id: reviewModelId ?? null,
+      review_reasoning_effort: reviewReasoningEffort,
     }),
   })
 }
