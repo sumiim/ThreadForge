@@ -585,6 +585,7 @@ class AgentLoop:
         has_write_or_shell,
         verification_passed,
         prior_feedback,
+        model_client=None,
     ):
         """§7.8.9 阶段 3：程序强制触发 review subagent。
 
@@ -593,20 +594,11 @@ class AgentLoop:
 
         feature flag `review_subagent` 关闭时跳过（阶段推进中；测试用
         FakeModelClient 不开启，避免 review 消费其顺序输出）。
+
+        §review 身份分层（2026-09-03）：删去「只读任务跳 review」——仅读任务也走
+        review（独立模型做方向监督，防跑偏），仅读不做结果 review。`model_client`
+        为可注入的独立 review client（provider 卡片选择），否则复用主循环 client。
         """
-        # 只读任务不需要 Review 门禁。重复动作和停滞窗口仍然负责收敛，
-        # 但不会再额外消耗模型回合或因方向审查误驳回正常答案。
-        if not has_write_or_shell:
-            self.agent.emit_trace(
-                task_state,
-                "review_skipped",
-                {"trigger": trigger, "reason": "read_only_task"},
-            )
-            return {
-                "verdict": "finalize",
-                "feedback": "read-only task does not require review",
-                "reason": "review_skipped_read_only",
-            }
         if not self.agent.feature_enabled("review_subagent"):
             return {
                 "verdict": "continue",
@@ -623,6 +615,7 @@ class AgentLoop:
             has_write_or_shell=has_write_or_shell,
             verification_passed=verification_passed,
             prior_feedback=prior_feedback,
+            model_client=model_client,
         )
 
     def _initial_plan(self, task_state, user_message):
@@ -1946,13 +1939,19 @@ class AgentLoop:
             # §7.8.9 阶段 3：final 前确认——模型想 final 时先过 review。
             # verdict=finalize（且对抗性验证通过）→ 放行；redirect → 注入
             # feedback 继续；continue → 继续。review 由程序强制调用。
-            review_decision = self._maybe_run_review(
-                task_state,
-                user_message,
-                trigger="final_before",
-                has_write_or_shell=has_write_or_shell,
-                verification_passed=verification_passed,
-                prior_feedback=prior_review_feedback,
+            # §review 身份分层（2026-09-03）：仅读任务（无写/shell）不做结果 review——
+            # 仅读结果质量低无大碍，主循环 final 直接过，不再由 review 拦（防反复 reject 死循环）。
+            review_decision = (
+                {"verdict": "finalize", "feedback": "", "reason": "read_only_no_result_review"}
+                if not has_write_or_shell
+                else self._maybe_run_review(
+                    task_state,
+                    user_message,
+                    trigger="final_before",
+                    has_write_or_shell=has_write_or_shell,
+                    verification_passed=verification_passed,
+                    prior_feedback=prior_review_feedback,
+                )
             )
             self._apply_review_completed_steps(task_state, review_decision)
             if review_decision.get("verdict") == "redirect":
@@ -2014,6 +2013,7 @@ class AgentLoop:
             elif review_decision.get("reason") in {
                 "review_subagent_disabled",
                 "review_skipped_read_only",
+                "read_only_no_result_review",
             } or review_decision.get("review_failed"):
                 # review 未启用（测试/降级）或模型调用失败——按原语义直接放行,
                 # 不强制双向确认（避免 review 故障把 run 卡死）。
