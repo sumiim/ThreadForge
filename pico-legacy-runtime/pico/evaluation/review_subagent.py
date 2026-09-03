@@ -247,6 +247,7 @@ def run_review(
     has_write_or_shell: bool,
     verification_passed: bool,
     prior_feedback: str = "",
+    model_client=None,
 ) -> dict:
     """程序强制调用 review 子 agent（复用主 model_client 做独立上下文的调用）。
 
@@ -311,12 +312,13 @@ def run_review(
     tool_rounds = 0
     for step in range(REVIEW_MAX_STEPS):
         try:
-            raw = agent.model_client.complete(
+            # §review 独立模型（2026-09-03）：review 用注入的 model_client（可独立
+            # provider/model，用户经卡片选择），否则默认复用主循环 agent.model_client。
+            # 独立模型使双向对抗化为不同模型真·互驳，不再同模型 double-check。
+            client = model_client or agent.model_client
+            raw = client.complete(
                 context,
                 REVIEW_MAX_NEW_TOKENS,
-                # §7.8.9 决策（2026-08-18）：review 的思考流式回传（stage=review）——
-                # 审查对抗块里可展开 review 的推理过程（为什么这么判）,与
-                # planning/execute 思考分区。结果只回 feed 前端,不进 session history。
                 on_thinking_delta=lambda delta: getattr(
                     agent.execution_hooks, "model_thinking_delta", lambda *_args: None
                 )(task_state, "review", delta),

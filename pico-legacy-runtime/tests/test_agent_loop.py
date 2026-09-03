@@ -635,11 +635,12 @@ def test_dual_confirmation_main_loop_rebuts_with_tool(tmp_path):
 
 
 def test_redirect_tracking_converges_after_two_rejects(tmp_path):
-    """只读探索不触发 Review redirect 跟踪。
+    """只读探索仍走 process review —— redirect 跟踪收敛。
 
-    action_poll review#1 redirect → interval 6→3 提前复查；再 3 动作后 review#2
-    redirect → tracking_rejects=2 → 强制收敛（review_tracking_converged），
-    不再无限跑。
+    §review 身份分层（2026-09-03）：仅读任务不做「结果 review」，但做「过程
+    review」防跑偏。action_poll review#1 redirect → interval 6→3 提前复查；
+    再 3 动作后 review#2 redirect → tracking_rejects=2 → 强制收敛
+    （review_tracking_converged），不再无限跑。
     """
     for index in range(9):
         (tmp_path / f"f{index}.txt").write_text(f"content {index}\n", encoding="utf-8")
@@ -657,8 +658,9 @@ def test_redirect_tracking_converges_after_two_rejects(tmp_path):
     state = agent.current_task_state
     assert state.status in {"stopped", "blocked"}
     trace = agent.run_store.trace_path(state).read_text(encoding="utf-8")
-    assert '"event": "review_completed"' not in trace
-    assert '"event": "review_skipped"' in trace
+    # 只读也跑 process review → review_completed 出现、不再 review_skipped。
+    assert '"event": "review_completed"' in trace
+    assert '"event": "review_skipped"' not in trace
 
 
 def test_review_can_list_files_for_direction_check(tmp_path):
