@@ -5,6 +5,7 @@ import { CheckOutlined, DownOutlined, RightOutlined, SendOutlined, StopOutlined 
 import { listProviders } from '../../api/client'
 import type { ModelCapability, PermissionMode, Provider, ReasoningEffort } from '../../api/types'
 import { providerModelIds } from './model-options'
+import { loadSessionSettings, saveSessionSettings, type SessionSettings } from './session-settings'
 
 interface ComposerProps {
   model: string
@@ -14,6 +15,8 @@ interface ComposerProps {
   disabled?: boolean
   /** 当前会话绑定的本地 Worker；用于把供应商列表和“设为默认”限定到这台设备。 */
   deviceId?: string
+  /** 当前会话 id；用于按会话持久化 主循环/review/审批 选择。 */
+  sessionId?: string
   onSend: (content: string, modelId?: string, reasoningEffort?: ReasoningEffort, permissionMode?: PermissionMode, providerId?: string, reviewProviderId?: string, reviewModelId?: string, reviewReasoningEffort?: ReasoningEffort) => void
   onStop: () => void
 }
@@ -125,7 +128,7 @@ function modelOptionsFor(provider: Provider | undefined, fallback: ModelCapabili
   return fallback.map((m) => ({ id: m.id, display_name: m.display_name, reasoning_efforts: m.reasoning_efforts }))
 }
 
-export default function Composer({ model, modelOptions, running, stopping = false, disabled = false, deviceId, onSend, onStop }: ComposerProps) {
+export default function Composer({ model, modelOptions, running, stopping = false, disabled = false, deviceId, sessionId, onSend, onStop }: ComposerProps) {
   const [value, setValue] = useState('')
   const [providers, setProviders] = useState<Provider[]>([])
   useEffect(() => {
@@ -133,17 +136,19 @@ export default function Composer({ model, modelOptions, running, stopping = fals
       .then(({ providers: list }) => setProviders(deviceId ? list.filter((item) => item.device_id === deviceId) : list))
       .catch(() => {})
   }, [deviceId])
-  const [modelId, setModelId] = useState(modelOptions[0]?.id ?? model)
+  // §会话级持久化（2026-09-03）：启动时按 session 恢复上次的主循环/review/审批选择。
+  const initialSettings = useMemo(() => loadSessionSettings(sessionId), [sessionId])
+  const [modelId, setModelId] = useState(initialSettings.modelId ?? modelOptions[0]?.id ?? model)
   // 默认 provider 已「测试连接」发现模型时，用其模型列表 + 推理档位替代 env 单模型。
   const defaultProvider = providers.find((item) => item.is_default) ?? providers[0]
   // §review 双 provider（2026-09-03）：会话级主循环 provider + 独立 review provider/model。
   // 不再 activateProvider（设备级 active provider），改为本会话记住选择并在发送时下发。
-  const [selectedProviderId, setSelectedProviderId] = useState<string | undefined>(undefined)
+  const [selectedProviderId, setSelectedProviderId] = useState<string | undefined>(initialSettings.providerId)
   const activeProviderId = selectedProviderId ?? defaultProvider?.provider_id
-  const [reviewProviderId, setReviewProviderId] = useState<string | null>(null)
-  const [reviewModelId, setReviewModelId] = useState<string | null>(null)
+  const [reviewProviderId, setReviewProviderId] = useState<string | null>(initialSettings.reviewProviderId ?? null)
+  const [reviewModelId, setReviewModelId] = useState<string | null>(initialSettings.reviewModelId ?? null)
   // §review 推理等级（2026-09-03）：review 也可单独选推理档（默认 none）。
-  const [reviewReasoningEffort, setReviewReasoningEffort] = useState<ReasoningEffort>('none')
+  const [reviewReasoningEffort, setReviewReasoningEffort] = useState<ReasoningEffort>(initialSettings.reviewReasoningEffort ?? 'none')
   const reviewProvider = providers.find((item) => item.provider_id === reviewProviderId)
   const reviewEfforts: ReasoningEffort[] = (reviewProvider?.reasoning_efforts?.length
     ? reviewProvider.reasoning_efforts
@@ -167,9 +172,9 @@ export default function Composer({ model, modelOptions, running, stopping = fals
   const efforts: ReasoningEffort[] = activeModel?.reasoning_efforts?.length
     ? activeModel.reasoning_efforts
     : ['none']
-  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(() => readPersistedEffort(modelId, efforts))
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(initialSettings.reasoningEffort ?? readPersistedEffort(modelId, efforts))
   const activeReasoningEffort = efforts.includes(reasoningEffort) ? reasoningEffort : efforts[0]
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>(() => readPersistedPermissionMode())
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(initialSettings.permissionMode ?? readPersistedPermissionMode())
 
   // 下拉面板开关 + 当前层级。
   const [panelOpen, setPanelOpen] = useState(false)
@@ -199,12 +204,15 @@ export default function Composer({ model, modelOptions, running, stopping = fals
     setValue('')
   }
 
+  const persist = (patch: Partial<SessionSettings>) => saveSessionSettings(sessionId, patch)
+
   const handleSelectModel = async (option: ModelOption) => {
     // §review 双 provider（2026-09-03）：session 级——只记住选择，不再激活设备级 provider。
     setSelectedProviderId(option.providerId)
     setModelId(option.id)
     const nextEfforts = option.reasoning_efforts?.length ? option.reasoning_efforts : (['none'] as ReasoningEffort[])
     setReasoningEffort(readPersistedEffort(option.id, nextEfforts))
+    persist({ providerId: option.providerId, modelId: option.id, reasoningEffort: readPersistedEffort(option.id, nextEfforts) })
     setPanelView('root')
     setPanelOpen(false)
   }
@@ -212,6 +220,7 @@ export default function Composer({ model, modelOptions, running, stopping = fals
   const handleSelectEffort = (effort: ReasoningEffort) => {
     setReasoningEffort(effort)
     writePersistedEffort(activeModel?.id ?? model, effort)
+    persist({ reasoningEffort: effort })
     setPanelView('root')
     setPanelOpen(false)
   }
@@ -226,6 +235,7 @@ export default function Composer({ model, modelOptions, running, stopping = fals
         cancelText: '取消',
         onOk: () => {
           setPermissionMode('bypass')
+          persist({ permissionMode: 'bypass' })
           setPanelView('root')
           setPanelOpen(false)
         },
@@ -234,6 +244,7 @@ export default function Composer({ model, modelOptions, running, stopping = fals
     }
     setPermissionMode(mode)
     writePersistedPermissionMode(mode)
+    persist({ permissionMode: mode })
     setPanelView('root')
     setPanelOpen(false)
   }
@@ -438,6 +449,7 @@ export default function Composer({ model, modelOptions, running, stopping = fals
                         onClick={() => {
                           setReviewProviderId(null)
                           setReviewModelId(null)
+                          persist({ reviewProviderId: null, reviewModelId: null, reviewReasoningEffort: 'none' })
                           setReviewOpen(false)
                         }}
                         disabled={running || disabled}
@@ -458,6 +470,7 @@ export default function Composer({ model, modelOptions, running, stopping = fals
                                 onClick={() => {
                                   setReviewProviderId(opt.providerId ?? null)
                                   setReviewModelId(opt.id)
+                                  persist({ reviewProviderId: opt.providerId ?? null, reviewModelId: opt.id })
                                   setReviewOpen(false)
                                 }}
                                 disabled={running || disabled}
@@ -479,6 +492,7 @@ export default function Composer({ model, modelOptions, running, stopping = fals
                               type="button"
                               onClick={() => {
                                 setReviewReasoningEffort(effort)
+                                persist({ reviewReasoningEffort: effort })
                                 setReviewOpen(false)
                               }}
                               disabled={running || disabled}
