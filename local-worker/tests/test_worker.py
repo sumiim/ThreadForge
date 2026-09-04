@@ -519,7 +519,7 @@ def test_provider_factory_review_client_only_when_configured(tmp_path):
     assert profile3["reasoning_effort"] == "high"
     assert getattr(factory3.create_review_client(temperature=0.2, timeout=30, max_attempts=3), "reasoning_effort", None) == "high"
 
-    # 不在 supported 内 → 拒绝（保持与主循环一致的校验）。
+    # 不在 supported 内 → 回退 none（§review 稳健性：不 raise，避免 review 配置崩掉 run）。
     factory_bad = ModelProviderFactory(
         data_dir=tmp_path / "state",
         settings={
@@ -528,8 +528,19 @@ def test_provider_factory_review_client_only_when_configured(tmp_path):
         },
         model_client_factory=None,
     )
-    with pytest.raises(RuntimeError):
-        factory_bad.resolve_review()
+    profile_bad = factory_bad.resolve_review()
+    assert profile_bad is not None
+    assert profile_bad["reasoning_effort"] == "none"
+    assert factory_bad.create_review_client(temperature=0.2, timeout=30, max_attempts=3) is not None
+
+    # review provider 不存在 → resolve_review 返回 None（跳过独立 review，不崩）。
+    factory_missing = ModelProviderFactory(
+        data_dir=tmp_path / "state",
+        settings={"review_provider_id": "prv_does_not_exist"},
+        model_client_factory=None,
+    )
+    assert factory_missing.resolve_review() is None
+    assert factory_missing.create_review_client(temperature=0.2, timeout=30, max_attempts=3) is None
 
 
 def test_service_lock_prevents_duplicate_worker_processes(tmp_path):
