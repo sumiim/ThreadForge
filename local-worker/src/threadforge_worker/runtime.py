@@ -762,7 +762,9 @@ class ModelProviderFactory:
             return None
         provider_cfg = ConfigStore(self.data_dir).load_provider(review_provider_id)
         if provider_cfg is None:
-            raise ProviderNotConfiguredError(review_provider_id)
+            # §review 稳健性（2026-09-03）：review provider 未配置/找不到 → 跳过独立
+            # review（返回 None，review 回退主循环），不让整个 run 因为 review 配置崩。
+            return None
         # review_model_id 覆盖 provider 的默认模型（用户可在 UI 给 review 单独挑模型）。
         model = (
             str(self.settings.get("review_model_id", "")).strip()
@@ -772,11 +774,14 @@ class ModelProviderFactory:
             str(item) for item in (provider_cfg.get("reasoning_efforts") or ["none"])
         )
         # §review 推理等级（2026-09-03）：review 也可单独选推理档，默认 none（省 token）。
+        # 所选档不被 provider 支持 → 回退 none（不 raise，避免 review 配置把 run 搞崩）。
         requested_effort = (
             str(self.settings.get("review_reasoning_effort", "none")).strip().lower() or "none"
         )
+        if not supported_efforts:
+            supported_efforts = ("none",)
         if requested_effort not in supported_efforts:
-            raise RuntimeError(f"requested review reasoning effort '{requested_effort}' is not supported by this provider")
+            requested_effort = "none"
         return {
             "provider_id": review_provider_id,
             "model": model,
@@ -795,22 +800,31 @@ class ModelProviderFactory:
         """
         if self.model_client_factory is not None:
             return None
-        profile = self.resolve_review()
+        try:
+            profile = self.resolve_review()
+        except Exception:
+            # §review 稳健性（2026-09-03）：review 配置解析失败 → 跳过独立 review。
+            return None
         if profile is None:
             return None
-        return _create_model_client(
-            model_provider=profile["model_provider"],
-            model=profile["model"],
-            base_url=profile["base_url"],
-            api_key=profile["api_key"],
-            temperature=temperature,
-            timeout=timeout,
-            max_attempts=max_attempts,
-            # §review 推理等级（2026-09-03）：用用户在 UI 选的 review 推理档（默认 none）。
-            reasoning_effort=profile["reasoning_effort"],
-            supported_reasoning_efforts=profile["supported_reasoning_efforts"],
-            instructions=THREADFORGE_MODEL_INSTRUCTIONS,
-        )
+        try:
+            return _create_model_client(
+                model_provider=profile["model_provider"],
+                model=profile["model"],
+                base_url=profile["base_url"],
+                api_key=profile["api_key"],
+                temperature=temperature,
+                timeout=timeout,
+                max_attempts=max_attempts,
+                # §review 推理等级（2026-09-03）：用用户在 UI 选的 review 推理档（默认 none）。
+                reasoning_effort=profile["reasoning_effort"],
+                supported_reasoning_efforts=profile["supported_reasoning_efforts"],
+                instructions=THREADFORGE_MODEL_INSTRUCTIONS,
+            )
+        except Exception:
+            # §review 稳健性：建 client 失败（bad base_url/api_key 等）→ 回退主循环，
+            # 不让 review 配置崩掉整个 run。
+            return None
 
 
 def run_task(
