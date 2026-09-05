@@ -79,6 +79,9 @@ _REVIEW_USER_TEMPLATE = (
     "Semantic acceptance criteria to verify (free-text, cannot be auto-checked; "
     "verify each with tools and include the goals you confirmed in "
     "completed_steps):\n{semantic_criteria}\n"
+    # §review 只读软化（2026-09-03）：run 未做任何写/修改（has_write_or_shell=False）
+    # 时注入明确指引——评审只判方向与答案质量，不要要求代码修改/补测试/验证通过。
+    "{read_only_guidance}"
 )
 
 REVIEW_VERDICTS = frozenset({"finalize", "continue", "redirect"})
@@ -295,6 +298,19 @@ def run_review(
         run_trail = agent.history_text()
     except Exception:
         run_trail = ""
+    # §review 只读软化（2026-09-03）：run 未做任何写/修改（has_write_or_shell=False，
+    # 由 #178 判定：write/patch 恒写，run_shell 仅在真改了文件时才写）→ 明确告诉 review
+    # 别要求改代码/补测试/验证，只判方向与答案质量（防「只读诊断却被 review 逼着写」）。
+    read_only_guidance = (
+        (
+            "\n[Read-only run]: This run performed no write or file-modifying actions "
+            "(read-only / diagnostic). Judge only direction and answer quality; do NOT "
+            "require code changes, added tests, or verification to pass. Do not treat "
+            "'not verified' as an obstacle, and do not push the agent toward a write.\n"
+        )
+        if not has_write_or_shell
+        else ""
+    )
     context = (
         _REVIEW_SYSTEM_TEMPLATE
         + "\n"
@@ -307,6 +323,7 @@ def run_review(
             prior_feedback=str(prior_feedback or "")[:500],
             obstacles="; ".join(obstacles) if obstacles else "(none)",
             semantic_criteria="\n".join(semantic_criteria) if semantic_criteria else "(none)",
+            read_only_guidance=read_only_guidance,
         )
     )
     started_at = time.monotonic()

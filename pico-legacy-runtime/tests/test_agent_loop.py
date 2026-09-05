@@ -119,23 +119,22 @@ def test_pico_ask_delegates_to_agent_loop(tmp_path):
     assert agent.ask("Use facade") == "Facade works."
 
 
-def test_plain_conversation_uses_minimal_prompt_without_tools_or_history(tmp_path):
+def test_conversation_routes_through_agent_loop(tmp_path):
+    """§review 统一链路（2026-09-03）：纯对话不再走 `_run_plain_conversation` 最小 prompt
+    快路，而是走 agent 循环（带上下文/记忆）。模型直接回 `<final>` → completed、零工具。
+    """
     class CapturingModel(FakeModelClient):
         def complete(self, prompt, max_new_tokens, **kwargs):
             self.completion_kwargs = kwargs
             return super().complete(prompt, max_new_tokens, **kwargs)
 
-    agent = build_agent(tmp_path, ["<final>Earlier task complete.</final>"])
-    assert agent.ask("Inspect the workspace") == "Earlier task complete."
-    agent.session["memory"]["working"]["task_summary"] = "读取整个项目"
+    agent = build_agent(tmp_path, [])
     model = CapturingModel(["<final>你好！有什么我可以帮你的？</final>"])
     agent.model_client = model
 
     assert agent.ask("你好") == "你好！有什么我可以帮你的？"
-    assert model.completion_kwargs["tool_definitions"] == ()
-    assert "读取整个项目" not in model.prompts[0]
-    assert "README.md" not in model.prompts[0]
-    assert agent.current_task_state.intent == "conversation"
+    # 走 agent 循环：工具定义非空（不再是纯对话快路的 tool_definitions=()）。
+    assert model.completion_kwargs["tool_definitions"] != ()
     assert agent.current_task_state.tool_steps == 0
     assert agent.current_task_state.status == "completed"
 

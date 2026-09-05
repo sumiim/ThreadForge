@@ -393,3 +393,31 @@ def test_review_uses_independent_review_model_client(tmp_path):
     assert len(review_client.outputs) == 0
     # 主循环用 A 的 3 个输出（写 + final#1 + final#2 确认）
     assert len(main_client.outputs) == 0
+
+
+def test_review_injects_read_only_guidance_only_when_no_write(tmp_path):
+    """§review 只读软化（2026-09-03）：has_write_or_shell=False 时 review 上下文注入
+    「Read-only run」指引（别要求改代码/验证）；有写时不含，避免只读诊断被 review 逼着写。
+    """
+    class Capturing(FakeModelClient):
+        def complete(self, prompt, max_new_tokens, **kwargs):
+            self.prompt = str(prompt)
+            return '{"verdict": "finalize", "feedback": "ok", "reason": "done"}'
+
+    def _run(has_write):
+        agent = build_agent(tmp_path, ["<final>ok</final>"])
+        agent.ask("hello")
+        state = agent.current_task_state
+        model = Capturing(())
+        agent.model_client = model
+        run_review(
+            agent, state,
+            request="hello",
+            trigger="final_before",
+            has_write_or_shell=has_write,
+            verification_passed=has_write,  # 有写且验证过，避免 verification 障碍干扰
+        )
+        return model.prompt
+
+    assert "Read-only run" in _run(has_write=False)   # 只读 → 注入软指引
+    assert "Read-only run" not in _run(has_write=True)  # 有写 → 不注入
